@@ -409,6 +409,10 @@
                 renderPatch(message.payload);
               } else if (message.type === 'watchdog') {
                 log('Watchdog ping', message.payload);
+              } else if (message.type === 'reset') {
+                state.itemsByUnit.clear();
+                transcriptList.innerHTML = '';
+                log('Transcript reset by server.');
               }
             } catch (err) {
               log('WS message parse failed', { error: err?.message });

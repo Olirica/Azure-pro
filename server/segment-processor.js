@@ -464,6 +464,12 @@ class SegmentProcessor {
       translatedPatches
     };
   }
+
+  reset() {
+    this.units.clear();
+    this.translationCache.clear();
+    this.translationIndex.clear();
+  }
 }
 
 module.exports = {

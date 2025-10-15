@@ -168,6 +168,15 @@ function createStateStore({ logger, maxUnits, maxPatches }) {
     await redis.del(keyName);
   }
 
+  async function clearRoom(roomId) {
+    await ensure();
+    const pattern = key('room', roomId, '*');
+    const keys = await redis.keys(pattern);
+    if (keys.length) {
+      await redis.del(keys);
+    }
+  }
+
   async function close() {
     try {
       await redis.quit();
@@ -190,6 +199,7 @@ function createStateStore({ logger, maxUnits, maxPatches }) {
     saveTtsQueue,
     loadTtsQueue,
     clearTtsQueue,
+    clearRoom,
     close
   };
 }

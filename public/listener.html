@@ -412,6 +412,16 @@
                 enqueueTts(message.payload);
               } else if (message.type === 'hello') {
                 console.debug('Hello', message.payload);
+              } else if (message.type === 'reset') {
+                state.itemsByUnit.clear();
+                state.queue = [];
+                if (state.playing) {
+                  state.playing.audio.pause();
+                  state.playing = null;
+                }
+                transcriptEl.innerHTML = '';
+                nowPlayingEl.textContent = 'Nothing queued.';
+                setQueueStats('Queue reset');
               }
             } catch (err) {
               console.warn('Failed to parse message', err);

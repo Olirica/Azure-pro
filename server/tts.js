@@ -538,6 +538,16 @@ function createTtsQueue({
   emitter.cancel = cancel;
   emitter.shutdown = shutdown;
   emitter.getBacklogSeconds = getBacklogSeconds;
+  emitter.reset = () => {
+    for (const [lang, state] of queueByLang.entries()) {
+      cleanupSynthesizer(state);
+      state.queue = [];
+      state.playing = null;
+      state.processing = false;
+      updateQueueBacklog(lang);
+      persistQueueState(lang);
+    }
+  };
 
   return emitter;
 }

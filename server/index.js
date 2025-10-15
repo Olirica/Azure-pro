@@ -216,6 +216,28 @@ function safeSend(socket, payload) {
   }
 }
 
+async function resetRoom(room) {
+  room.logger.info({ component: 'room', action: 'reset' }, 'Resetting room state.');
+  room.processor.reset();
+  if (stateStore?.clearRoom) {
+    try {
+      await stateStore.clearRoom(room.id);
+    } catch (err) {
+      room.logger.warn({ component: 'room', err: err?.message }, 'Failed to clear store cache.');
+    }
+  }
+  for (const queue of room.ttsQueues.values()) {
+    if (typeof queue.reset === 'function') {
+      queue.reset();
+    }
+  }
+  for (const client of room.clients) {
+    safeSend(client.socket, { type: 'reset' });
+  }
+  room.watchdog.markEvent();
+  room.watchdog.markPcm();
+}
+
 async function broadcastPatch(room, result) {
   if (!result || result.stale) {
     return;
@@ -452,6 +474,9 @@ wsServer.on('connection', async (socket, request) => {
     const room = ensureRoom(roomId);
     if (room.ready) {
       await room.ready;
+    }
+    if (role === 'speaker') {
+      await resetRoom(room);
     }
     const client = { socket, role, lang, wantsTts, voice: requestedVoice, lastSeen: {} };
 
