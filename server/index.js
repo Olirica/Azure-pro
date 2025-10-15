@@ -110,6 +110,26 @@ const stateStore = createStateStore({
   maxPatches: PATCH_LRU_PER_ROOM
 });
 
+const WS_VERBOSE =
+  process.env.WS_VERBOSE_LOG === 'true' ||
+  process.env.WS_VERBOSE_LOG === '1' ||
+  process.env.DEBUG_WS === 'true';
+
+function wsVerbose(roomId, tag, details) {
+  if (!WS_VERBOSE) {
+    return;
+  }
+  logger.debug(
+    {
+      component: 'ws-verbose',
+      roomId,
+      tag,
+      ...details
+    },
+    'WS event.'
+  );
+}
+
 const rooms = new Map();
 
 function defaultRoomTargets(room) {
@@ -576,19 +596,40 @@ wsServer.on('connection', async (socket, request) => {
       if (role === 'speaker') {
         room.watchdog.markEvent();
       }
-      // Speakers can push PCM heartbeat events to keep the watchdog alive.
+      let parsed = null;
+      let raw = '';
       try {
-        const parsed = JSON.parse(data);
-        if (parsed?.type === 'heartbeat' && parsed?.payload?.pcm === true) {
-          room.watchdog.markPcm();
-          return;
-        }
-        if (parsed?.type === 'resume' && parsed?.payload?.versions) {
-          client.lastSeen = parsed.payload.versions || {};
-          return;
-        }
+        raw = typeof data === 'string' ? data : data?.toString?.() || '';
+        parsed = JSON.parse(raw);
       } catch (err) {
+        wsVerbose(roomId, 'bad-json', { role, error: err?.message, raw: raw.slice(0, 160) });
         room.logger.debug({ component: 'ws', err: err?.message }, 'Failed to parse WS message.');
+        return;
+      }
+
+      const payloadInfo = {};
+      if (parsed?.unitId) {
+        payloadInfo.unitId = parsed.unitId;
+      }
+      if (typeof parsed?.text === 'string') {
+        payloadInfo.len = parsed.text.length;
+      }
+      if (typeof parsed?.seq === 'number') {
+        payloadInfo.seq = parsed.seq;
+      }
+      if (typeof parsed?.srcStart === 'number' || typeof parsed?.srcEnd === 'number') {
+        payloadInfo.srcStart = parsed.srcStart;
+        payloadInfo.srcEnd = parsed.srcEnd;
+      }
+      wsVerbose(roomId, parsed?.type || 'unknown', { role, ...payloadInfo });
+
+      if (parsed?.type === 'heartbeat' && parsed?.payload?.pcm === true) {
+        room.watchdog.markPcm();
+        return;
+      }
+      if (parsed?.type === 'resume' && parsed?.payload?.versions) {
+        client.lastSeen = parsed.payload.versions || {};
+        return;
       }
     });
 

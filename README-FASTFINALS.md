@@ -49,6 +49,7 @@ If you need to fall back mid-show:
 - Leave `FASTFINALS_MIN_STABLE_MS` at 600 ms unless you have short, punchy scripts—dropping it further will increase the chance of committing the wrong word.
 - Adjust `FASTFINALS_PUNCT_STABLE_MS` (default 350 ms) if you need prefixes to snap even faster on obvious punctuation, or increase it for speakers who pause mid-sentence.
 - Use `FASTFINALS_TAIL_GUARD_CHARS` / `FASTFINALS_TAIL_GUARD_WORDS` to keep the trailing words of a clause uncommitted while new audio is still arriving; this prevents Azure’s streaming growth from constantly resetting the stability timer.
+- Set `WS_VERBOSE_LOG=true` during rehearsals to capture per-message diagnostics (prefix/soft/final payload lengths, schema issues) without needing the browser console.
 
 ## Testing checklist
 
