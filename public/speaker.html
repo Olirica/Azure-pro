@@ -211,7 +211,8 @@
           minStableMs: 600,
           minChars: 28,
           minWords: 6,
-          emitThrottleMs: 700
+          emitThrottleMs: 700,
+          punctStableMs: 350
         });
 
         const DEFAULT_CONFIG = {
@@ -289,6 +290,11 @@
               emitThrottleMs: coerce(
                 incomingFastFinals.emitThrottleMs,
                 DEFAULT_FAST_FINALS.emitThrottleMs
+              ),
+              punctStableMs: coerce(
+                incomingFastFinals.punctStableMs,
+                DEFAULT_FAST_FINALS.punctStableMs,
+                0
               )
             };
             mergedConfig.fastFinals = { ...fastFinals };
@@ -431,7 +437,12 @@
             minStableMs: coerce(cfg.minStableMs, DEFAULT_FAST_FINALS.minStableMs, 0),
             minChars: coerce(cfg.minChars, DEFAULT_FAST_FINALS.minChars, 1),
             minWords: coerce(cfg.minWords, DEFAULT_FAST_FINALS.minWords, 1),
-            emitThrottleMs: coerce(cfg.emitThrottleMs, DEFAULT_FAST_FINALS.emitThrottleMs, 0)
+            emitThrottleMs: coerce(cfg.emitThrottleMs, DEFAULT_FAST_FINALS.emitThrottleMs, 0),
+            punctStableMs: coerce(
+              cfg.punctStableMs,
+              DEFAULT_FAST_FINALS.punctStableMs,
+              0
+            )
           };
         }
 
@@ -836,10 +847,10 @@
                   const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
                   const segment = rawSlice.trim();
                   const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
-                  const neededStable =
-                    boundary >= 0
-                      ? Math.min(fastConfig.minStableMs, 350)
-                      : fastConfig.minStableMs;
+                  const isPunctCut = boundary >= 0;
+                  const neededStable = isPunctCut
+                    ? fastConfig.punctStableMs
+                    : fastConfig.minStableMs;
                   const stableOk =
                     now - (prefixState.candidateStableAt || 0) >= neededStable;
                   const lengthOk =

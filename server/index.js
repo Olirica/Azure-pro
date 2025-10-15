@@ -90,6 +90,7 @@ const FASTFINALS_MIN_STABLE_MS = getNumberEnv('FASTFINALS_MIN_STABLE_MS', 600);
 const FASTFINALS_MIN_CHARS = getNumberEnv('FASTFINALS_MIN_CHARS', 28);
 const FASTFINALS_MIN_WORDS = getNumberEnv('FASTFINALS_MIN_WORDS', 6);
 const FASTFINALS_EMIT_THROTTLE_MS = getNumberEnv('FASTFINALS_EMIT_THROTTLE_MS', 700);
+const FASTFINALS_PUNCT_STABLE_MS = getNumberEnv('FASTFINALS_PUNCT_STABLE_MS', 350);
 const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
@@ -432,7 +433,8 @@ app.get('/api/config', (_req, res) => {
       minStableMs: FASTFINALS_MIN_STABLE_MS,
       minChars: FASTFINALS_MIN_CHARS,
       minWords: FASTFINALS_MIN_WORDS,
-      emitThrottleMs: FASTFINALS_EMIT_THROTTLE_MS
+      emitThrottleMs: FASTFINALS_EMIT_THROTTLE_MS,
+      punctStableMs: FASTFINALS_PUNCT_STABLE_MS
     }
   });
 });
