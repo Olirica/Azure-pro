@@ -18,6 +18,8 @@ FASTFINALS_MIN_CHARS=28
 FASTFINALS_MIN_WORDS=6
 FASTFINALS_EMIT_THROTTLE_MS=700
 FASTFINALS_PUNCT_STABLE_MS=350
+FASTFINALS_TAIL_GUARD_CHARS=12
+FASTFINALS_TAIL_GUARD_WORDS=2
 
 # Azure STT pressure
 SPEECH_STABLE_PARTIALS=4
@@ -46,6 +48,7 @@ If you need to fall back mid-show:
 - Raise `FASTFINALS_STABLE_K` to 4–5 if you expect noisier rooms or highly accented speakers; lower to 2 for very crisp audio once you trust the pipeline.
 - Leave `FASTFINALS_MIN_STABLE_MS` at 600 ms unless you have short, punchy scripts—dropping it further will increase the chance of committing the wrong word.
 - Adjust `FASTFINALS_PUNCT_STABLE_MS` (default 350 ms) if you need prefixes to snap even faster on obvious punctuation, or increase it for speakers who pause mid-sentence.
+- Use `FASTFINALS_TAIL_GUARD_CHARS` / `FASTFINALS_TAIL_GUARD_WORDS` to keep the trailing words of a clause uncommitted while new audio is still arriving; this prevents Azure’s streaming growth from constantly resetting the stability timer.
 
 ## Testing checklist
 

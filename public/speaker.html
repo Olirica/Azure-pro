@@ -295,6 +295,16 @@
                 incomingFastFinals.punctStableMs,
                 DEFAULT_FAST_FINALS.punctStableMs,
                 0
+              ),
+              tailGuardChars: coerce(
+                incomingFastFinals.tailGuardChars,
+                DEFAULT_FAST_FINALS.tailGuardChars,
+                0
+              ),
+              tailGuardWords: coerce(
+                incomingFastFinals.tailGuardWords,
+                DEFAULT_FAST_FINALS.tailGuardWords,
+                0
               )
             };
             mergedConfig.fastFinals = { ...fastFinals };
@@ -442,7 +452,9 @@
               cfg.punctStableMs,
               DEFAULT_FAST_FINALS.punctStableMs,
               0
-            )
+            ),
+            tailGuardChars: coerce(cfg.tailGuardChars, DEFAULT_FAST_FINALS.tailGuardChars, 0),
+            tailGuardWords: coerce(cfg.tailGuardWords, DEFAULT_FAST_FINALS.tailGuardWords, 0)
           };
         }
 
@@ -496,6 +508,37 @@
           }
           const tokens = text.trim().match(/\S+/g);
           return tokens ? tokens.length : 0;
+        }
+
+        function applyTailGuards(fullText, startIdx, endIdx, config) {
+          if (!fullText || endIdx <= startIdx) {
+            return startIdx;
+          }
+          let candidate = endIdx;
+          const guardChars = Math.max(Number(config.tailGuardChars || 0), 0);
+          if (guardChars > 0 && candidate - startIdx > guardChars) {
+            candidate = Math.max(startIdx, candidate - guardChars);
+          }
+          const guardWords = Math.max(Number(config.tailGuardWords || 0), 0);
+          if (guardWords > 0) {
+            const slice = fullText.slice(startIdx, candidate);
+            const words = slice.match(/\S+/g) || [];
+            if (words.length > guardWords) {
+              const keepCount = words.length - guardWords;
+              let keepEnd = startIdx;
+              const matcher = /\S+/g;
+              let match;
+              let seen = 0;
+              while (seen < keepCount && (match = matcher.exec(slice))) {
+                seen += 1;
+                keepEnd = startIdx + match.index + match[0].length;
+              }
+              candidate = Math.max(startIdx, Math.min(candidate, keepEnd));
+            } else {
+              candidate = startIdx;
+            }
+          }
+          return candidate;
         }
 
         function computeFinalRemainder(finalText) {
@@ -836,7 +879,18 @@
                 stableLen > prefixState.committedChars
                   ? lastBoundaryBefore(merged, stableLen)
                   : -1;
-              const candidateEnd = boundary >= 0 ? boundary : stableLen;
+              let candidateEnd = boundary >= 0 ? boundary : stableLen;
+              if (boundary < 0) {
+                candidateEnd = applyTailGuards(
+                  merged,
+                  prefixState.committedChars,
+                  candidateEnd,
+                  fastConfig
+                );
+              }
+              if (candidateEnd < prefixState.committedChars) {
+                candidateEnd = prefixState.committedChars;
+              }
               if (candidateEnd !== prefixState.lastCandidateEnd) {
                 prefixState.lastCandidateEnd = candidateEnd;
                 prefixState.candidateStableAt = now;
