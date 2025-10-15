@@ -561,13 +561,18 @@
           if (!cleaned) {
             return null;
           }
+          const prevVersion = state.version;
           state.version = 0;
+          const unitIdHint = options.unitId || buildUnitId();
           const unitId = await postPatch(cleaned, 'hard', result, {
             meta: options.meta,
             targets: options.targets,
-            srcLang: options.srcLang
+            srcLang: options.srcLang,
+            unitId: unitIdHint
           });
           if (!unitId) {
+            state.version = prevVersion;
+            log('Prefix commit aborted', { length: cleaned.length });
             return null;
           }
           state.unitIndex += 1;
@@ -601,14 +606,14 @@
           if (!text) {
             return null;
           }
-          state.version += 1;
+          const nextVersion = state.version + 1;
           const unitId = options.unitId || buildUnitId();
           const targets = Array.isArray(options.targets) ? options.targets : state.targetLangs;
           const patch = {
             unitId,
             stage,
             op: 'replace',
-            version: state.version,
+            version: nextVersion,
             text,
             srcLang:
               options.srcLang ?? state.patchSourceLang ?? state.sourceLang,
@@ -626,18 +631,25 @@
             const res = await fetch('/api/segments', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              log('Patch POST failed', { status: res.status, body });
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            let body = null;
+            try {
+              body = await res.json();
+            } catch (parseErr) {
+              body = await res.text().catch(() => null);
             }
-            return unitId;
-          } catch (err) {
-            log('Patch POST error', { error: err?.message });
+            log('Patch POST failed', { status: res.status, body });
+            return null;
           }
-          return null;
+          state.version = nextVersion;
+          return unitId;
+        } catch (err) {
+          log('Patch POST error', { error: err?.message });
         }
+        return null;
+      }
 
         function renderPatch(patch) {
           if (!patch || !patch.unitId) {
