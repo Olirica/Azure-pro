@@ -1,31 +1,14 @@
 const { EventEmitter } = require('events');
 const sdk = require('microsoft-cognitiveservices-speech-sdk');
-const axios = require('axios');
 const { segmentText } = require('../scripts/segment-text');
 
 const DEFAULT_VOICE = 'en-US-JennyNeural';
 const WORDS_PER_MINUTE = 160;
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
-const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
-const ELEVENLABS_TTS_ENDPOINT =
-  process.env.ELEVENLABS_TTS_ENDPOINT || 'https://api.elevenlabs.io/v1/text-to-speech';
-const ELEVENLABS_TIMEOUT_MS = Number(process.env.ELEVENLABS_TIMEOUT_MS || 15000);
-const ELEVENLABS_STABILITY =
-  process.env.ELEVENLABS_STABILITY !== undefined
-    ? Number(process.env.ELEVENLABS_STABILITY)
-    : undefined;
-const ELEVENLABS_SIMILARITY =
-  process.env.ELEVENLABS_SIMILARITY !== undefined
-    ? Number(process.env.ELEVENLABS_SIMILARITY)
-    : undefined;
-
-const DEFAULT_ELEVENLABS_FR_CA = process.env.ELEVENLABS_VOICE_FR_CA || 'NsFK0aDGLbVusA7tQfOB';
-
 const LANGUAGE_VOICE_DEFAULTS = {
   'en-US': 'en-US-GuyNeural',
   'en-CA': 'en-CA-ClaraNeural',
   'en-GB': 'en-GB-RyanNeural',
-  'fr-CA': ELEVENLABS_API_KEY ? `elevenlabs:${DEFAULT_ELEVENLABS_FR_CA}` : 'fr-CA-SylvieNeural',
+  'fr-CA': 'fr-CA-SylvieNeural',
   'fr-FR': 'fr-FR-DeniseNeural',
   'es-ES': 'es-ES-AlvaroNeural',
   'es-MX': 'es-MX-JorgeNeural'
@@ -108,58 +91,6 @@ function splitByCharLengths(text, lengths) {
   return segments.length ? segments : null;
 }
 
-function isElevenLabsVoice(voiceName) {
-  return typeof voiceName === 'string' && voiceName.toLowerCase().startsWith('elevenlabs:');
-}
-
-function elevenLabsVoiceId(voiceName) {
-  if (!isElevenLabsVoice(voiceName)) {
-    return null;
-  }
-  const parts = voiceName.split(':');
-  return parts.length >= 2 && parts[1] ? parts[1] : null;
-}
-
-async function synthesizeWithElevenLabs(text, voiceId) {
-  if (!ELEVENLABS_API_KEY) {
-    throw new Error('ElevenLabs API key not configured');
-  }
-  if (!voiceId) {
-    throw new Error('ElevenLabs voice ID missing');
-  }
-  const endpoint = ELEVENLABS_TTS_ENDPOINT.replace(/\/$/, '') + '/' + voiceId;
-  const body = {
-    model_id: ELEVENLABS_MODEL_ID,
-    text
-  };
-  if (
-    ELEVENLABS_STABILITY !== undefined ||
-    ELEVENLABS_SIMILARITY !== undefined
-  ) {
-    body.voice_settings = {};
-    if (!Number.isNaN(ELEVENLABS_STABILITY) && ELEVENLABS_STABILITY !== undefined) {
-      body.voice_settings.stability = ELEVENLABS_STABILITY;
-    }
-    if (!Number.isNaN(ELEVENLABS_SIMILARITY) && ELEVENLABS_SIMILARITY !== undefined) {
-      body.voice_settings.similarity_boost = ELEVENLABS_SIMILARITY;
-    }
-  }
-
-  const response = await axios.post(endpoint, body, {
-    headers: {
-      'xi-api-key': ELEVENLABS_API_KEY,
-      'Content-Type': 'application/json',
-      Accept: 'audio/mpeg'
-    },
-    responseType: 'arraybuffer',
-    timeout: ELEVENLABS_TIMEOUT_MS
-  });
-
-  return {
-    audio: Buffer.from(response.data),
-    format: 'audio/mpeg'
-  };
-}
 
 /**
  * Create a per-room TTS queue that synthesizes audio for final patches.
@@ -475,57 +406,22 @@ function createTtsQueue({
     updateQueueBacklog(lang);
     try {
       const voiceName = ensureVoice(lang, item.voice, state);
-      if (isElevenLabsVoice(voiceName)) {
-        try {
-          const voiceId = elevenLabsVoiceId(voiceName);
-          const { audio, format } = await synthesizeWithElevenLabs(item.text, voiceId);
-          if (!item.cancelled) {
-            metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
-            emitter.emit('audio', {
-              roomId,
-              lang,
-              unitId: item.unitId,
-              rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
-              text: item.text,
-              audio,
-              format,
-              voice: voiceName,
-              sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
-            });
-          } else {
-            emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
-          }
-        } catch (elevenErr) {
-          metrics?.recordTtsEvent?.(roomId, lang, 'error');
-          logger.error(
-            { component: 'tts', roomId, lang, err: elevenErr?.message },
-            'ElevenLabs synthesis error.'
-          );
-          emitter.emit('error', {
-            roomId,
-            lang,
-            unitId: item.unitId,
-            err: elevenErr
-          });
-        }
+      const audioBuffer = await synthesize(state, item, voiceName);
+      if (!item.cancelled) {
+        metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
+        emitter.emit('audio', {
+          roomId,
+          lang,
+          unitId: item.unitId,
+          rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
+          text: item.text,
+          audio: audioBuffer,
+          format: inferMimeType(state.audioFormat),
+          voice: voiceName,
+          sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+        });
       } else {
-        const audioBuffer = await synthesize(state, item, voiceName);
-        if (!item.cancelled) {
-          metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
-          emitter.emit('audio', {
-            roomId,
-            lang,
-            unitId: item.unitId,
-            rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
-            text: item.text,
-            audio: audioBuffer,
-            format: inferMimeType(state.audioFormat),
-            voice: voiceName,
-            sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
-          });
-        } else {
-          emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
-        }
+        emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
       }
     } catch (err) {
       metrics?.recordTtsEvent?.(roomId, lang, 'error');
