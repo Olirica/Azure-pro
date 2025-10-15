@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Azure Polyglot RT · Listener</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        background: #020617;
+        color: #e2e8f0;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+      }
+      section {
+        background: rgba(2, 6, 23, 0.75);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: 0 20px 35px -30px rgba(2, 132, 199, 0.8);
+      }
+      h1,
+      h2 {
+        margin-top: 0;
+      }
+      label {
+        display: block;
+        margin-top: 0.75rem;
+        font-weight: 600;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 0.65rem 0.8rem;
+        margin-top: 0.35rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        background: rgba(2, 6, 23, 0.45);
+        color: inherit;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.65rem 1.1rem;
+        border-radius: 8px;
+        border: none;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 1rem;
+        background: #38bdf8;
+        color: #0f172a;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+      }
+      button[disabled] {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      button:hover:not([disabled]) {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 18px -12px rgba(56, 189, 248, 0.9);
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      li {
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.55rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(15, 23, 42, 0.45);
+        transition: background 180ms ease, border-color 180ms ease;
+      }
+      li[data-stage="soft"] {
+        border-color: rgba(94, 234, 212, 0.25);
+        background: rgba(22, 78, 99, 0.35);
+      }
+      li[data-stage="hard"] {
+        border-color: rgba(147, 197, 253, 0.5);
+        background: rgba(59, 130, 246, 0.18);
+      }
+      .stack {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+      }
+      .stack > div {
+        min-width: 200px;
+        flex: 1 1 220px;
+      }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.95rem;
+      }
+      .badge {
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        background: rgba(56, 189, 248, 0.2);
+        border: 1px solid rgba(56, 189, 248, 0.4);
+      }
+      .controls {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-top: 1.25rem;
+      }
+      label.checkbox {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      label.checkbox input {
+        width: auto;
+        margin: 0;
+      }
+      small {
+        color: rgba(148, 163, 184, 0.75);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>Listener Console</h1>
+        <p>
+          Connects to the Node server via WebSocket, replaces each sentence in-place, and optionally
+          plays Text-to-Speech for hard finals.
+        </p>
+        <div class="stack">
+          <div>
+            <label for="roomId">Room ID</label>
+            <input id="roomId" type="text" value="demo-room" />
+          </div>
+          <div>
+            <label for="targetLang">Language</label>
+            <select id="targetLang">
+              <option value="fr-CA" selected>French (Canada)</option>
+              <option value="fr-FR">French (France)</option>
+              <option value="en-US">English (US)</option>
+              <option value="en-CA">English (Canada)</option>
+              <option value="es-ES">Spanish (Spain)</option>
+              <option value="es-MX">Spanish (Mexico)</option>
+            </select>
+          </div>
+        </div>
+        <div class="controls">
+          <div class="status">
+            <span class="badge" id="connectionStatus">Disconnected</span>
+            <span id="queueStats">—</span>
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" id="ttsToggle" checked />
+            Enable TTS
+          </label>
+          <button id="connectBtn">Connect</button>
+          <button id="disconnectBtn" disabled>Disconnect</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Transcript</h2>
+        <ul id="transcript"></ul>
+      </section>
+
+      <section>
+        <h2>Now Playing</h2>
+        <p id="nowPlaying">Nothing queued.</p>
+        <small>Audio plays only for hard (final) patches.</small>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const transcriptEl = document.getElementById('transcript');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const queueStats = document.getElementById('queueStats');
+        const nowPlayingEl = document.getElementById('nowPlaying');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const ttsToggle = document.getElementById('ttsToggle');
+
+        const WS_READY = 1;
+
+        const state = {
+          ws: null,
+          roomId: 'demo-room',
+          lang: 'fr-FR',
+          wantsTts: true,
+          itemsByUnit: new Map(),
+          queue: [],
+          playing: null,
+          shouldReconnect: false,
+          reconnectDelay: 2000,
+          reconnectTimer: null
+        };
+
+        function parseInputs() {
+          state.roomId = document.getElementById('roomId').value.trim() || 'demo-room';
+        state.lang = document.getElementById('targetLang').value.trim() || 'fr-CA';
+          state.wantsTts = ttsToggle.checked;
+        }
+
+        function setStatus(text) {
+          connectionStatus.textContent = text;
+        }
+
+        function setQueueStats(text) {
+          queueStats.textContent = text;
+        }
+
+        function renderPatch(patch) {
+          if (!patch || !patch.unitId) {
+            return;
+          }
+          if (patch.stage !== 'hard') {
+            console.debug('Soft patch (hidden)', {
+              unitId: patch.unitId,
+              text: patch.text,
+              version: patch.version
+            });
+            return;
+          }
+          const key = patch.unitId;
+          const version = patch.version ?? 0;
+          const existing = state.itemsByUnit.get(key);
+          if (existing && version <= existing.version) {
+            return;
+          }
+          let item = existing?.element;
+          if (!item) {
+            item = document.createElement('li');
+            transcriptEl.appendChild(item);
+          }
+          item.dataset.stage = patch.stage;
+          item.textContent = patch.text;
+          state.itemsByUnit.set(key, { version, element: item });
+        }
+
+        function dropQueuedUnit(unitId, rootUnitId) {
+          state.queue = state.queue.filter(
+            (item) =>
+              item.unitId !== unitId &&
+              (!rootUnitId || (item.rootUnitId && item.rootUnitId !== rootUnitId))
+          );
+          if (
+            state.playing &&
+            (state.playing.unitId === unitId || state.playing.rootUnitId === rootUnitId)
+          ) {
+            state.playing.audio.pause();
+            state.playing = null;
+            nowPlayingEl.textContent = 'Interrupted.';
+          }
+        }
+
+        function enqueueTts(payload) {
+          if (!state.wantsTts) {
+            return;
+          }
+          const { unitId, rootUnitId, audio, text } = payload;
+          if (!unitId || !audio) {
+            return;
+          }
+
+          dropQueuedUnit(unitId, rootUnitId);
+
+          const audioUrl = `data:${payload.format || 'audio/wav'};base64,${audio}`;
+          state.queue.push({
+            unitId,
+            rootUnitId: rootUnitId || unitId.split('#')[0],
+            audioUrl,
+            text: text || ''
+          });
+          setQueueStats(`${state.queue.length + (state.playing ? 1 : 0)} item(s) queued`);
+          if (!state.playing) {
+            playNext();
+          }
+        }
+
+        function playNext() {
+          if (!state.queue.length) {
+            state.playing = null;
+            nowPlayingEl.textContent = 'Nothing queued.';
+            setQueueStats('Queue empty');
+            return;
+          }
+          const next = state.queue.shift();
+          const audio = new Audio(next.audioUrl);
+          state.playing = {
+            unitId: next.unitId,
+            rootUnitId: next.rootUnitId || next.unitId.split('#')[0],
+            audio
+          };
+          nowPlayingEl.textContent = `Playing #${next.unitId.split('|').pop()}: ${next.text}`;
+
+          audio.onended = () => {
+            state.playing = null;
+            playNext();
+          };
+          audio.onerror = () => {
+            state.playing = null;
+            nowPlayingEl.textContent = 'Playback error.';
+            playNext();
+          };
+          audio.play().catch((err) => {
+            console.warn('Playback failed', err);
+            state.playing = null;
+            nowPlayingEl.textContent = 'Playback blocked (user gesture required).';
+          });
+          setQueueStats(`${state.queue.length + 1} item(s) queued`);
+        }
+
+        function scheduleReconnect() {
+          if (!state.shouldReconnect) {
+            return;
+          }
+          if (state.reconnectTimer) {
+            return;
+          }
+          setStatus('Reconnecting…');
+          state.reconnectTimer = setTimeout(() => {
+            state.reconnectTimer = null;
+            connect(true);
+          }, state.reconnectDelay);
+        }
+
+        function connect(isRetry = false) {
+          parseInputs();
+          if (state.ws && state.ws.readyState === WS_READY) {
+            state.ws.close();
+          }
+          state.shouldReconnect = true;
+          if (state.reconnectTimer) {
+            clearTimeout(state.reconnectTimer);
+            state.reconnectTimer = null;
+          }
+          if (!isRetry) {
+            transcriptEl.innerHTML = '';
+            state.itemsByUnit.clear();
+            state.queue = [];
+            state.playing = null;
+            nowPlayingEl.textContent = 'Nothing queued.';
+            setQueueStats('—');
+          }
+          setStatus('Connecting…');
+
+          const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+          const wsUrl = `${protocol}://${location.host}/ws?room=${encodeURIComponent(
+            state.roomId
+          )}&role=listener&lang=${encodeURIComponent(state.lang)}&tts=${state.wantsTts}`;
+          const socket = new WebSocket(wsUrl);
+
+          socket.onopen = () => {
+            setStatus('Connected');
+            const queued = state.queue.length + (state.playing ? 1 : 0);
+            setQueueStats(queued ? `${queued} item(s) queued` : 'Queue empty');
+            if (state.reconnectTimer) {
+              clearTimeout(state.reconnectTimer);
+              state.reconnectTimer = null;
+            }
+            if (state.itemsByUnit.size) {
+              const versions = {};
+              state.itemsByUnit.forEach((value, key) => {
+                versions[key] = value.version;
+              });
+              try {
+                socket.send(
+                  JSON.stringify({ type: 'resume', payload: { versions, lang: state.lang } })
+                );
+              } catch (err) {
+                console.warn('Failed to send resume payload', err);
+              }
+            }
+          };
+          socket.onclose = () => {
+            state.ws = null;
+            if (state.shouldReconnect) {
+              setQueueStats('Reconnecting…');
+              scheduleReconnect();
+            } else {
+              setQueueStats('—');
+              setStatus('Disconnected');
+            }
+          };
+          socket.onerror = () => {
+            setStatus('Error');
+            scheduleReconnect();
+          };
+          socket.onmessage = (event) => {
+            try {
+              const message = JSON.parse(event.data);
+              if (message.type === 'patch') {
+                renderPatch(message.payload);
+              } else if (message.type === 'tts') {
+                enqueueTts(message.payload);
+              } else if (message.type === 'hello') {
+                console.debug('Hello', message.payload);
+              }
+            } catch (err) {
+              console.warn('Failed to parse message', err);
+            }
+          };
+
+          state.ws = socket;
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+        }
+
+        function disconnect() {
+          state.shouldReconnect = false;
+          if (state.reconnectTimer) {
+            clearTimeout(state.reconnectTimer);
+            state.reconnectTimer = null;
+          }
+          if (state.ws) {
+            state.ws.close(1000, 'Client disconnect');
+            state.ws = null;
+          }
+          state.queue = [];
+          state.playing = null;
+          setQueueStats('—');
+          nowPlayingEl.textContent = 'Nothing queued.';
+          setStatus('Disconnected');
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+        }
+
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', disconnect);
+        ttsToggle.addEventListener('change', () => {
+          state.wantsTts = ttsToggle.checked;
+          if (!state.wantsTts) {
+            state.queue = [];
+            if (state.playing) {
+              state.playing.audio.pause();
+              state.playing = null;
+            }
+            setQueueStats('TTS disabled');
+            nowPlayingEl.textContent = 'TTS disabled.';
+          }
+        });
+
+        window.addEventListener('beforeunload', disconnect);
+      })();
+    </script>
+  </body>
+</html>

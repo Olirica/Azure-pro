@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Azure Polyglot RT · Speaker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        background: #0f172a;
+        color: #f1f5f9;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+      }
+      section {
+        background: rgba(15, 23, 42, 0.6);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 25px 30px -24px rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+      h1,
+      h2 {
+        margin-top: 0;
+      }
+      label {
+        display: block;
+        margin-top: 0.75rem;
+        font-weight: 600;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 0.6rem 0.8rem;
+        margin-top: 0.35rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        background: rgba(15, 23, 42, 0.35);
+        color: inherit;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.6rem 1rem;
+        border-radius: 8px;
+        border: none;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 1rem;
+        background: #38bdf8;
+        color: #0f172a;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+      }
+      button[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button:hover:not([disabled]) {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 18px -10px rgba(56, 189, 248, 0.9);
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      li {
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(15, 23, 42, 0.3);
+      }
+      li[data-stage="soft"] {
+        border-color: rgba(94, 234, 212, 0.2);
+      }
+      li[data-stage="hard"] {
+        border-color: rgba(186, 230, 253, 0.45);
+        background: rgba(14, 116, 144, 0.2);
+      }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.95rem;
+        margin-right: 1.25rem;
+      }
+      .badge {
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        background: rgba(56, 189, 248, 0.2);
+        border: 1px solid rgba(56, 189, 248, 0.4);
+      }
+      .stack {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+      }
+      .stack input {
+        max-width: 220px;
+      }
+      .stack label {
+        margin-top: 0;
+      }
+      pre {
+        background: rgba(15, 23, 42, 0.6);
+        padding: 1rem;
+        border-radius: 8px;
+        overflow-x: auto;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      small {
+        color: rgba(148, 163, 184, 0.8);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>Speaker Console</h1>
+        <p>
+          Streams microphone audio to Azure Speech, emits replace-in-place patches to the Node
+          server, and mirrors the live transcript below.
+        </p>
+        <div class="stack">
+          <div>
+            <label for="roomId">Room ID</label>
+            <input id="roomId" type="text" value="demo-room" />
+          </div>
+          <div>
+            <label for="sourceLang">Source language (BCP-47)</label>
+            <input id="sourceLang" type="text" value="en-CA" />
+          </div>
+          <div>
+            <label for="targetLangs">Target languages (comma separated)</label>
+            <input id="targetLangs" type="text" value="fr-CA" />
+          </div>
+        </div>
+        <div class="stack" style="margin-top: 1.25rem">
+          <div class="status">
+            <span class="badge" id="recognitionStatus">Idle</span>
+            <span id="telemetry">—</span>
+          </div>
+          <button id="startBtn">Start capture</button>
+          <button id="stopBtn" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Live transcript</h2>
+        <ul id="transcript"></ul>
+      </section>
+
+      <section>
+        <h2>Debug</h2>
+        <pre id="debugLog">Waiting…</pre>
+        <small>Token acquisition, SDK events, and merge decisions appear here.</small>
+      </section>
+    </main>
+
+    <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+    <script>
+      (() => {
+        const logArea = document.getElementById('debugLog');
+        const transcriptList = document.getElementById('transcript');
+        const recognitionStatus = document.getElementById('recognitionStatus');
+        const telemetry = document.getElementById('telemetry');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+
+        const state = {
+          recognizer: null,
+          ws: null,
+          sessionId: null,
+          unitIndex: 0,
+          version: 0,
+          lastEmitAt: 0,
+          lastSoftText: '',
+          roomId: null,
+          sourceLang: null,
+          targetLangs: [],
+          heartbeatTimer: null,
+          heartbeatIntervalMs: 2500,
+          itemsByUnit: new Map(),
+          config: null,
+          tokenTimer: null,
+          tokenRegion: null,
+          finalTimer: null,
+          phraseList: null,
+          phraseHints: [],
+          autoDetectLangs: [],
+          patchSourceLang: null
+        };
+
+        const DEFAULT_CONFIG = {
+          stablePartials: 3,
+          segmentationSilenceMs: 800,
+          initialSilenceMs: 5000,
+          endSilenceMs: 500,
+          softThrottleMs: 1000,
+          softMinDeltaChars: 18,
+          speechTokenRefreshMs: 540000,
+          wsPingIntervalMs: 30000,
+          ttsMaxBacklogSec: 10,
+          ttsResumeBacklogSec: 5,
+          finalDebounceMs: 180,
+          phraseHints: [],
+          autoDetectLangs: []
+        };
+
+        async function loadConfig() {
+          if (state.config) {
+            return state.config;
+          }
+          try {
+            const res = await fetch('/api/config', { cache: 'no-store' });
+            if (!res.ok) {
+              throw new Error(`Config request failed (${res.status})`);
+            }
+            const data = await res.json();
+            state.config = { ...DEFAULT_CONFIG, ...data };
+            state.phraseHints = Array.isArray(state.config.phraseHints)
+              ? state.config.phraseHints
+              : [];
+            state.autoDetectLangs = Array.isArray(state.config.autoDetectLangs)
+              ? state.config.autoDetectLangs
+              : [];
+            log('Runtime config loaded', state.config);
+          } catch (err) {
+            state.config = { ...DEFAULT_CONFIG };
+            log('Failed to load config, falling back to defaults.', { error: err?.message });
+          }
+          const heartbeat = state.config.wsPingIntervalMs || DEFAULT_CONFIG.wsPingIntervalMs;
+          state.heartbeatIntervalMs = Math.max(Math.floor(heartbeat / 3), 2000);
+          return state.config;
+        }
+
+        function log(message, context = {}) {
+          const timestamp = new Date().toISOString();
+          const entry = `[${timestamp}] ${message}${
+            Object.keys(context).length ? ` ${JSON.stringify(context)}` : ''
+          }`;
+          if (logArea.textContent === 'Waiting…') {
+            logArea.textContent = entry;
+          } else {
+            logArea.textContent += `\n${entry}`;
+          }
+          logArea.scrollTop = logArea.scrollHeight;
+          console.debug('[speaker]', message, context);
+        }
+
+        function setStatus(text) {
+          recognitionStatus.textContent = text;
+        }
+
+        function setTelemetry(text) {
+          telemetry.textContent = text;
+        }
+
+        function normalize(text) {
+          return (text || '')
+            .toLowerCase()
+            .replace(/[“”"']/g, '')
+            .replace(/[\p{P}\p{S}]+/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        }
+
+        function dedupeContinuation(previous, incoming) {
+          const next = (incoming || '').trim();
+          if (!previous) {
+            return next;
+          }
+          const prev = previous.trim();
+          if (!prev) {
+            return next;
+          }
+          if (next.startsWith(prev)) {
+            return next;
+          }
+          const normPrev = normalize(prev);
+          const normNext = normalize(next);
+          if (!normPrev || !normNext) {
+            return next;
+          }
+          let i = 0;
+          while (i < normPrev.length && i < normNext.length && normPrev[i] === normNext[i]) {
+            i += 1;
+          }
+          const overlapRatio = i / Math.max(normPrev.length, 1);
+          if (overlapRatio >= 0.8) {
+            return `${prev}${next.slice(i)}`;
+          }
+          return next;
+        }
+
+        function parseTargetLangs(value) {
+          return value
+            .split(',')
+            .map((lang) => lang.trim())
+            .filter(Boolean);
+        }
+
+        function splitSentences(text) {
+          if (!text) {
+            return [];
+          }
+          const matches = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g);
+          if (!matches) {
+            return [text.trim()];
+          }
+          return matches.map((segment) => segment.trim()).filter(Boolean);
+        }
+
+        function computeTimestamps(result) {
+          if (!result) return undefined;
+          const offsetMs = Math.floor(result.offset / 10000);
+          const durationMs = Math.floor(result.duration / 10000);
+          return { t0: offsetMs, t1: offsetMs + durationMs };
+        }
+
+        function buildUnitId() {
+          return `${state.sessionId}|${state.sourceLang}|${state.unitIndex}`;
+        }
+
+        async function postPatch(text, stage, result) {
+          if (!text) {
+            return;
+          }
+          state.version += 1;
+          const unitId = buildUnitId();
+          const payload = {
+            roomId: state.roomId,
+            targets: state.targetLangs,
+          patch: {
+            unitId,
+            stage,
+            op: 'replace',
+            version: state.version,
+            text,
+            srcLang: state.patchSourceLang ?? state.sourceLang,
+            ts: computeTimestamps(result)
+          }
+        };
+          try {
+            const res = await fetch('/api/segments', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              log('Patch POST failed', { status: res.status, body });
+            }
+          } catch (err) {
+            log('Patch POST error', { error: err?.message });
+          }
+        }
+
+        function renderPatch(patch) {
+          if (!patch || !patch.unitId) {
+            return;
+          }
+          if (patch.stage !== 'hard') {
+            log('Soft patch (hidden)', {
+              unitId: patch.unitId,
+              text: patch.text,
+              version: patch.version
+            });
+            return;
+          }
+          let item = state.itemsByUnit.get(patch.unitId);
+          if (!item) {
+            item = document.createElement('li');
+            item.dataset.unitId = patch.unitId;
+            transcriptList.appendChild(item);
+            state.itemsByUnit.set(patch.unitId, item);
+          }
+          item.dataset.stage = patch.stage;
+          item.textContent = patch.text;
+        }
+
+        function attachWebSocket() {
+          if (state.ws) {
+            state.ws.close();
+          }
+          const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?room=${
+            state.roomId
+          }&role=speaker&lang=source`;
+          const socket = new WebSocket(wsUrl);
+          socket.onopen = () => log('Speaker WS connected');
+          socket.onclose = () => log('Speaker WS closed');
+          socket.onerror = (event) => log('Speaker WS error', { event });
+          socket.onmessage = (event) => {
+            try {
+              const message = JSON.parse(event.data);
+              if (message.type === 'patch') {
+                renderPatch(message.payload);
+              } else if (message.type === 'watchdog') {
+                log('Watchdog ping', message.payload);
+              }
+            } catch (err) {
+              log('WS message parse failed', { error: err?.message });
+            }
+          };
+          state.ws = socket;
+        }
+
+        function startHeartbeat() {
+          stopHeartbeat();
+          const interval = state.heartbeatIntervalMs || 2500;
+          state.heartbeatTimer = setInterval(() => {
+            if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+              state.ws.send(JSON.stringify({ type: 'heartbeat', payload: { pcm: true } }));
+            }
+          }, interval);
+        }
+
+        function stopHeartbeat() {
+          if (state.heartbeatTimer) {
+            clearInterval(state.heartbeatTimer);
+            state.heartbeatTimer = null;
+          }
+        }
+
+        function clearTokenRefresh() {
+          if (state.tokenTimer) {
+            clearInterval(state.tokenTimer);
+            state.tokenTimer = null;
+          }
+        }
+
+        function scheduleTokenRefresh() {
+          clearTokenRefresh();
+          const config = state.config || DEFAULT_CONFIG;
+          const refreshWindow = config.speechTokenRefreshMs || DEFAULT_CONFIG.speechTokenRefreshMs;
+          const interval = Math.max(refreshWindow - 10000, 60000);
+          state.tokenTimer = setInterval(async () => {
+            if (!state.recognizer) {
+              return;
+            }
+            try {
+              const { token } = await acquireToken({ quiet: true });
+              if (token) {
+                state.recognizer.authorizationToken = token;
+              }
+            } catch (err) {
+              log('Token refresh failed', { error: err?.message });
+            }
+          }, interval);
+        }
+
+        async function acquireToken({ quiet = false } = {}) {
+          const res = await fetch('/api/speech/token', { method: 'POST' });
+          if (!res.ok) {
+            throw new Error(`Token request failed with status ${res.status}`);
+          }
+          const body = await res.json();
+          if (!body?.token || !body?.region) {
+            throw new Error('Token response missing token/region.');
+          }
+          if (!quiet) {
+            log('Token acquired', { region: body.region, expiresIn: body.expiresInSeconds });
+          }
+          return body;
+        }
+
+        async function start() {
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          state.roomId = document.getElementById('roomId').value.trim() || 'demo-room';
+          const inputSourceLang = document.getElementById('sourceLang').value.trim() || 'en-US';
+          state.sourceLang = inputSourceLang;
+          state.patchSourceLang = inputSourceLang;
+          state.targetLangs = parseTargetLangs(document.getElementById('targetLangs').value);
+          state.sessionId = crypto.randomUUID();
+          state.unitIndex = 0;
+          state.version = 0;
+          state.lastEmitAt = 0;
+          state.lastSoftText = '';
+          state.itemsByUnit.clear();
+          transcriptList.innerHTML = '';
+
+          try {
+            const config = await loadConfig();
+            setStatus('Authorising…');
+            const { token, region } = await acquireToken();
+            state.tokenRegion = region;
+
+            const speechConfig = SpeechSDK.SpeechConfig.fromAuthorizationToken(token, region);
+            const useAutoDetect =
+              inputSourceLang.toLowerCase() === 'auto' && state.autoDetectLangs.length >= 2;
+            if (useAutoDetect) {
+              state.sourceLang = state.autoDetectLangs[0] || 'en-US';
+              state.patchSourceLang = undefined;
+            } else {
+              state.sourceLang = inputSourceLang;
+              state.patchSourceLang = state.sourceLang;
+            }
+            if (!useAutoDetect) {
+              speechConfig.speechRecognitionLanguage = state.sourceLang;
+            }
+            speechConfig.outputFormat = SpeechSDK.OutputFormat.Detailed;
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,
+              String(config.stablePartials ?? DEFAULT_CONFIG.stablePartials)
+            );
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.Speech_SegmentationSilenceTimeoutMs,
+              String(config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs)
+            );
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
+              String(config.initialSilenceMs ?? DEFAULT_CONFIG.initialSilenceMs)
+            );
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
+              String(config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs)
+            );
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceResponse_RequestSentenceBoundary,
+              'true'
+            );
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceResponse_RequestWordBoundary,
+              'true'
+            );
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceResponse_RequestPunctuationBoundary,
+              'true'
+            );
+
+            const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+            let recognizer;
+            if (useAutoDetect) {
+              const candidates = state.autoDetectLangs.slice(0, 4);
+              const autoDetectConfig = SpeechSDK.AutoDetectSourceLanguageConfig.fromLanguages(
+                candidates
+              );
+              recognizer =
+                typeof SpeechSDK.SpeechRecognizer.FromConfig === 'function'
+                  ? SpeechSDK.SpeechRecognizer.FromConfig(
+                      speechConfig,
+                      autoDetectConfig,
+                      audioConfig
+                    )
+                  : new SpeechSDK.SpeechRecognizer(speechConfig, autoDetectConfig, audioConfig);
+            } else {
+              recognizer = new SpeechSDK.SpeechRecognizer(speechConfig, audioConfig);
+            }
+            state.recognizer = recognizer;
+            if (state.phraseList && typeof state.phraseList.clear === 'function') {
+              state.phraseList.clear();
+            }
+            if (Array.isArray(state.phraseHints) && state.phraseHints.length) {
+              try {
+                const phraseList = SpeechSDK.PhraseListGrammar.fromRecognizer(recognizer);
+                state.phraseHints.slice(0, 200).forEach((hint) => phraseList.addPhrase(hint));
+                state.phraseList = phraseList;
+              } catch (err) {
+                log('Failed to apply phrase hints', { error: err?.message });
+              }
+            }
+
+            attachWebSocket();
+            startHeartbeat();
+
+            recognizer.recognizing = (_, event) => {
+              if (!event || !event.result || !event.result.text) {
+                return;
+              }
+              const rawText = event.result.text.trim();
+              if (!rawText) {
+                return;
+              }
+              const merged = dedupeContinuation(state.lastSoftText, rawText);
+              const now = performance.now();
+              const activeConfig = state.config || DEFAULT_CONFIG;
+              const punctuationTrigger = /[.?!]\s*$/.test(merged);
+              const delta = merged.length - state.lastSoftText.length;
+              const minDelta = activeConfig.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
+              const throttleMs = activeConfig.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
+              const charTrigger = delta >= minDelta;
+              const timeTrigger = now - state.lastEmitAt > throttleMs;
+              if ((punctuationTrigger || charTrigger) && timeTrigger) {
+                state.lastEmitAt = now;
+                state.lastSoftText = merged;
+                postPatch(merged, 'soft', event.result);
+              }
+              setTelemetry(`Soft v${state.version + 1} · ${merged.length} chars`);
+            };
+
+            recognizer.recognized = (_, event) => {
+              if (!event || !event.result) {
+                return;
+              }
+              if (event.result.reason === SpeechSDK.ResultReason.RecognizedSpeech) {
+                const finalText = event.result.text.trim();
+                if (!finalText) {
+                  return;
+                }
+                const activeConfig = state.config || DEFAULT_CONFIG;
+                const delay = Math.max(
+                  Number(activeConfig.finalDebounceMs ?? DEFAULT_CONFIG.finalDebounceMs) || 0,
+                  0
+                );
+                const sentences = splitSentences(finalText);
+                const segments = sentences.length ? sentences : [finalText];
+                clearTimeout(state.finalTimer);
+                state.finalTimer = null;
+
+                const emitFinalSegments = () => {
+                  state.version = 0;
+                  let isFirst = true;
+                  for (const sentence of segments) {
+                    if (!sentence) {
+                      continue;
+                    }
+                    if (!isFirst) {
+                      state.unitIndex += 1;
+                      state.version = 0;
+                    }
+                    state.lastSoftText = sentence;
+                    state.lastEmitAt = performance.now();
+                    state.version = 0;
+                    postPatch(sentence, 'hard', event.result);
+                    isFirst = false;
+                  }
+                  if (segments.length) {
+                    state.unitIndex += 1;
+                  }
+                  state.version = 0;
+                  state.lastSoftText = '';
+                  state.lastEmitAt = 0;
+                  state.finalTimer = null;
+                  setTelemetry(
+                    `Hard ✔︎ · ${segments.length} segment${segments.length > 1 ? 's' : ''}`
+                  );
+                };
+
+                if (delay > 0) {
+                  state.finalTimer = setTimeout(() => {
+                    state.finalTimer = null;
+                    emitFinalSegments();
+                  }, delay);
+                } else {
+                  emitFinalSegments();
+                }
+              } else if (event.result.reason === SpeechSDK.ResultReason.NoMatch) {
+                log('No speech match', { reason: event.result.noMatchDetails });
+              }
+            };
+
+            recognizer.canceled = (_, event) => {
+              setStatus('Canceled');
+              log('Recognition canceled', { reason: event.reason, error: event.errorDetails });
+            };
+
+            recognizer.sessionStarted = () => {
+              setStatus('Listening');
+              log('Session started');
+            };
+
+            recognizer.sessionStopped = () => {
+              setStatus('Stopped');
+              log('Session stopped');
+              stop();
+            };
+
+            recognizer.startContinuousRecognitionAsync(
+              () => {
+                setStatus('Listening');
+                log('Recognition started');
+                scheduleTokenRefresh();
+              },
+              (err) => {
+                log('Failed to start recognition', { error: err?.message });
+                stop();
+              }
+            );
+          } catch (err) {
+            log('Start failed', { error: err?.message });
+            stop();
+          }
+        }
+
+        function stop() {
+          clearTokenRefresh();
+          stopHeartbeat();
+          clearTimeout(state.finalTimer);
+          state.finalTimer = null;
+          if (state.recognizer) {
+            try {
+              state.recognizer.stopContinuousRecognitionAsync(() => {
+                log('Recognition stopped');
+              });
+            } catch (err) {
+              log('Error stopping recognizer', { error: err?.message });
+            }
+            state.recognizer = null;
+          }
+          if (state.ws) {
+            state.ws.close(1000, 'Stopping');
+            state.ws = null;
+          }
+          if (state.phraseList && typeof state.phraseList.clear === 'function') {
+            state.phraseList.clear();
+          }
+          state.phraseList = null;
+          state.patchSourceLang = null;
+          state.tokenRegion = null;
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+          setStatus('Idle');
+          setTelemetry('—');
+        }
+
+        loadConfig().catch((err) => log('Config bootstrap failed', { error: err?.message }));
+
+        startBtn.addEventListener('click', () => {
+          start();
+        });
+        stopBtn.addEventListener('click', () => {
+          stop();
+        });
+
+        window.addEventListener('beforeunload', stop);
+      })();
+    </script>
+  </body>
+</html>

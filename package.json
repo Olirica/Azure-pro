@@ -1,0 +1,27 @@
+{
+  "name": "azure-pro",
+  "version": "1.0.0",
+  "description": "End-to-end Azure speech pipeline with ASR, translation, and TTS.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "NODE_ENV=development node server/index.js",
+    "lint": "node scripts/patch-fuzzer.js --lint-check",
+    "test": "node scripts/wav-harness.js --self-test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "compromise": "^14.14.4",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "ioredis": "^5.8.1",
+    "microsoft-cognitiveservices-speech-sdk": "^1.46.0",
+    "pino": "^10.0.0",
+    "prom-client": "^15.1.3",
+    "ws": "^8.18.3"
+  }
+}

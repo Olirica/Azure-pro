@@ -1,0 +1,651 @@
+const { EventEmitter } = require('events');
+const sdk = require('microsoft-cognitiveservices-speech-sdk');
+const axios = require('axios');
+const { segmentText } = require('../scripts/segment-text');
+
+const DEFAULT_VOICE = 'en-US-JennyNeural';
+const WORDS_PER_MINUTE = 160;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
+const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
+const ELEVENLABS_TTS_ENDPOINT =
+  process.env.ELEVENLABS_TTS_ENDPOINT || 'https://api.elevenlabs.io/v1/text-to-speech';
+const ELEVENLABS_TIMEOUT_MS = Number(process.env.ELEVENLABS_TIMEOUT_MS || 15000);
+const ELEVENLABS_STABILITY =
+  process.env.ELEVENLABS_STABILITY !== undefined
+    ? Number(process.env.ELEVENLABS_STABILITY)
+    : undefined;
+const ELEVENLABS_SIMILARITY =
+  process.env.ELEVENLABS_SIMILARITY !== undefined
+    ? Number(process.env.ELEVENLABS_SIMILARITY)
+    : undefined;
+
+const DEFAULT_ELEVENLABS_FR_CA = process.env.ELEVENLABS_VOICE_FR_CA || 'NsFK0aDGLbVusA7tQfOB';
+
+const LANGUAGE_VOICE_DEFAULTS = {
+  'en-US': 'en-US-GuyNeural',
+  'en-CA': 'en-CA-ClaraNeural',
+  'en-GB': 'en-GB-RyanNeural',
+  'fr-CA': ELEVENLABS_API_KEY ? `elevenlabs:${DEFAULT_ELEVENLABS_FR_CA}` : 'fr-CA-SylvieNeural',
+  'fr-FR': 'fr-FR-DeniseNeural',
+  'es-ES': 'es-ES-AlvaroNeural',
+  'es-MX': 'es-MX-JorgeNeural'
+};
+const THROTTLE_RATE =
+  Number(process.env.TTS_THROTTLE_RATE_MULTIPLIER || process.env.TTS_RATE_MULTIPLIER || 1.25);
+
+const FORMAT_MIME = {
+  [sdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm]: 'audio/wav',
+  [sdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm]: 'audio/wav',
+  [sdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3]: 'audio/mpeg',
+  [sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3]: 'audio/mpeg'
+};
+
+function inferMimeType(formatEnum) {
+  return FORMAT_MIME[formatEnum] || 'audio/wav';
+}
+
+function estimateSeconds(text) {
+  const words = (text || '')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean).length;
+  if (!words) {
+    return 0;
+  }
+  return Math.max((words / WORDS_PER_MINUTE) * 60, 1.5);
+}
+
+function createStubQueue({ roomId, logger, metrics }) {
+  const stub = new EventEmitter();
+  stub.enqueue = (lang, unitId, text, _options = {}) => {
+    logger.debug(
+      { component: 'tts', lang, unitId, text },
+      'TTS disabled (no credentials); skipping enqueue.'
+    );
+    metrics?.recordTtsEvent?.(roomId, lang, 'skipped_stub');
+    stub.emit('skipped', { lang, unitId, text, reason: 'credentials_missing' });
+  };
+  stub.cancel = () => {};
+  stub.shutdown = () => {};
+  stub.getBacklogSeconds = () => 0;
+  return stub;
+}
+
+function normalizeLengths(lengths) {
+  if (!Array.isArray(lengths)) {
+    return null;
+  }
+  const normalized = lengths
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return normalized.length ? normalized : null;
+}
+
+function splitByCharLengths(text, lengths) {
+  const normalized = normalizeLengths(lengths);
+  const clean = (text || '').trim();
+  if (!clean || !normalized) {
+    return null;
+  }
+  const segments = [];
+  let cursor = 0;
+  for (const length of normalized) {
+    if (cursor >= clean.length) {
+      break;
+    }
+    const slice = clean.slice(cursor, cursor + length);
+    if (slice.trim()) {
+      segments.push(slice.trim());
+    }
+    cursor += length;
+  }
+  if (cursor < clean.length) {
+    const tail = clean.slice(cursor).trim();
+    if (tail) {
+      segments.push(tail);
+    }
+  }
+  return segments.length ? segments : null;
+}
+
+function isElevenLabsVoice(voiceName) {
+  return typeof voiceName === 'string' && voiceName.toLowerCase().startsWith('elevenlabs:');
+}
+
+function elevenLabsVoiceId(voiceName) {
+  if (!isElevenLabsVoice(voiceName)) {
+    return null;
+  }
+  const parts = voiceName.split(':');
+  return parts.length >= 2 && parts[1] ? parts[1] : null;
+}
+
+async function synthesizeWithElevenLabs(text, voiceId) {
+  if (!ELEVENLABS_API_KEY) {
+    throw new Error('ElevenLabs API key not configured');
+  }
+  if (!voiceId) {
+    throw new Error('ElevenLabs voice ID missing');
+  }
+  const endpoint = ELEVENLABS_TTS_ENDPOINT.replace(/\/$/, '') + '/' + voiceId;
+  const body = {
+    model_id: ELEVENLABS_MODEL_ID,
+    text
+  };
+  if (
+    ELEVENLABS_STABILITY !== undefined ||
+    ELEVENLABS_SIMILARITY !== undefined
+  ) {
+    body.voice_settings = {};
+    if (!Number.isNaN(ELEVENLABS_STABILITY) && ELEVENLABS_STABILITY !== undefined) {
+      body.voice_settings.stability = ELEVENLABS_STABILITY;
+    }
+    if (!Number.isNaN(ELEVENLABS_SIMILARITY) && ELEVENLABS_SIMILARITY !== undefined) {
+      body.voice_settings.similarity_boost = ELEVENLABS_SIMILARITY;
+    }
+  }
+
+  const response = await axios.post(endpoint, body, {
+    headers: {
+      'xi-api-key': ELEVENLABS_API_KEY,
+      'Content-Type': 'application/json',
+      Accept: 'audio/mpeg'
+    },
+    responseType: 'arraybuffer',
+    timeout: ELEVENLABS_TIMEOUT_MS
+  });
+
+  return {
+    audio: Buffer.from(response.data),
+    format: 'audio/mpeg'
+  };
+}
+
+/**
+ * Create a per-room TTS queue that synthesizes audio for final patches.
+ * @param {Object} deps
+ * @param {string} deps.roomId
+ * @param {import('pino').Logger} deps.logger
+ * @param {Object} deps.metrics
+ * @param {(roomId: string, lang: string, seconds: number) => void} deps.updateBacklog
+ * @param {number} [deps.backlogLimitSeconds]
+ * @param {number} [deps.backlogResumeSeconds]
+ * @param {string} [deps.fallbackVoice]
+ * @param {{ saveTtsQueue?: Function, loadTtsQueue?: Function, clearTtsQueue?: Function }} [deps.store]
+ * @returns {EventEmitter & { enqueue(lang: string, unitId: string, text: string, options?: { voice?: string }), cancel(lang: string, unitId: string): void, shutdown(): void, getBacklogSeconds(lang?: string): number }}
+ */
+function createTtsQueue({
+  roomId,
+  logger,
+  metrics,
+  updateBacklog,
+  backlogLimitSeconds,
+  backlogResumeSeconds,
+  fallbackVoice,
+  store,
+  audioFormat
+}) {
+  const speechKey = process.env.SPEECH_KEY;
+  const speechRegion = process.env.SPEECH_REGION;
+
+  if (!speechKey || !speechRegion) {
+    logger.warn(
+      { component: 'tts', roomId },
+      'SPEECH_KEY or SPEECH_REGION missing – TTS queue running in stub mode.'
+    );
+    return createStubQueue({ roomId, logger, metrics });
+  }
+
+  const queueByLang = new Map();
+  let disposed = false;
+
+  const emitter = new EventEmitter();
+  const resolvedAudioFormat =
+    audioFormat && sdk.SpeechSynthesisOutputFormat[audioFormat]
+      ? sdk.SpeechSynthesisOutputFormat[audioFormat]
+      : sdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm;
+
+
+
+  function serializeQueue(state) {
+    return state.queue.map((item) => ({
+      unitId: item.unitId,
+      rootUnitId: item.rootUnitId,
+      text: item.text,
+      voice: item.voice,
+      duration: item.duration,
+      createdAt: item.createdAt,
+      sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+    }));
+  }
+
+  function persistQueueState(lang) {
+    if (!store || typeof store.saveTtsQueue !== 'function') {
+      return;
+    }
+    const state = queueByLang.get(lang);
+    if (!state) {
+      return;
+    }
+    const payload = serializeQueue(state);
+    let op;
+    if (payload.length) {
+      op = store.saveTtsQueue(roomId, lang, payload);
+    } else if (typeof store.clearTtsQueue === 'function') {
+      op = store.clearTtsQueue(roomId, lang);
+    }
+    if (op && typeof op.then === 'function') {
+      op.catch((err) => {
+        logger.warn(
+          { component: 'tts', roomId, lang, err: err?.message },
+          'Failed to persist TTS queue state.'
+        );
+      });
+    }
+  }
+
+  function ensureVoice(lang, overrideVoice, state) {
+    if (state?.voiceOverride) {
+      return state.voiceOverride;
+    }
+    if (overrideVoice) {
+      return overrideVoice;
+    }
+    const envKey = `DEFAULT_TTS_VOICE_${lang.toUpperCase().replace(/-/g, '_')}`;
+    return (
+      process.env[envKey] ||
+      LANGUAGE_VOICE_DEFAULTS[lang] ||
+      process.env.DEFAULT_TTS_VOICE ||
+      DEFAULT_VOICE
+    );
+  }
+
+  const backlogLimit = typeof backlogLimitSeconds === 'number' ? backlogLimitSeconds : null;
+  const resumeThreshold =
+    typeof backlogResumeSeconds === 'number'
+      ? backlogResumeSeconds
+      : backlogLimit
+      ? Math.max(backlogLimit / 2, 2)
+      : null;
+
+  function maybeToggleThrottle(state, lang, backlog) {
+    if (!state) {
+      return;
+    }
+    if (!backlogLimit) {
+      return;
+    }
+    if (!state.isThrottled && backlog > backlogLimit) {
+      state.isThrottled = true;
+      if (fallbackVoice) {
+        state.voiceOverride = fallbackVoice;
+      }
+      state.rateMultiplier = Math.max(THROTTLE_RATE, 1.05);
+      metrics?.recordTtsEvent?.(roomId, lang, 'throttle_start');
+      emitter.emit('throttle', { roomId, lang, backlog });
+    } else if (state.isThrottled && resumeThreshold && backlog <= resumeThreshold) {
+      state.isThrottled = false;
+      state.voiceOverride = null;
+      state.rateMultiplier = 1;
+      metrics?.recordTtsEvent?.(roomId, lang, 'throttle_end');
+      emitter.emit('resume', { roomId, lang, backlog });
+    }
+  }
+
+  function updateQueueBacklog(lang) {
+    const backlog = getBacklogSeconds(lang);
+    if (typeof updateBacklog === 'function') {
+      updateBacklog(roomId, lang, backlog);
+    } else if (metrics?.setTtsBacklog) {
+      metrics.setTtsBacklog(roomId, lang, backlog);
+    }
+    const state = queueByLang.get(lang);
+    maybeToggleThrottle(state, lang, backlog);
+  }
+
+  function getBacklogSeconds(lang) {
+    if (!lang) {
+      let total = 0;
+      for (const [, state] of queueByLang.entries()) {
+        total += state.queue.reduce((sum, item) => sum + (item.duration || 0), 0);
+        if (state.playing && !state.playing.cancelled) {
+          total += Math.max(state.playing.duration || 0, 0);
+        }
+      }
+      return total;
+    }
+
+    const state = queueByLang.get(lang);
+    if (!state) {
+      return 0;
+    }
+    let total = state.queue.reduce((sum, item) => sum + (item.duration || 0), 0);
+    if (state.playing && !state.playing.cancelled) {
+      total += Math.max(state.playing.duration || 0, 0);
+    }
+    return total;
+  }
+
+  function ensureLangState(lang) {
+    if (queueByLang.has(lang)) {
+      return queueByLang.get(lang);
+    }
+
+    const speechConfig = sdk.SpeechConfig.fromSubscription(speechKey, speechRegion);
+    speechConfig.speechSynthesisVoiceName = ensureVoice(lang);
+    speechConfig.speechSynthesisOutputFormat = resolvedAudioFormat;
+
+    const state = {
+      speechConfig,
+      synthesizer: null,
+      queue: [],
+      playing: null,
+      processing: false,
+      voiceOverride: null,
+      isThrottled: false,
+      rateMultiplier: 1,
+      hydrated: false,
+      audioFormat: resolvedAudioFormat
+    };
+
+    queueByLang.set(lang, state);
+
+    if (store && typeof store.loadTtsQueue === 'function') {
+      store
+        .loadTtsQueue(roomId, lang)
+        .then((items) => {
+          if (!Array.isArray(items)) {
+            return;
+          }
+          for (const item of items) {
+            if (!item || !item.unitId || !item.text) {
+              continue;
+            }
+            const duration =
+              typeof item.duration === 'number' ? item.duration : estimateSeconds(item.text);
+            state.queue.push({
+              lang,
+              unitId: item.unitId,
+              rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
+              text: item.text,
+              voice: item.voice,
+              duration,
+              createdAt: item.createdAt || Date.now(),
+              sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+            });
+          }
+          updateQueueBacklog(lang);
+          if (state.queue.length) {
+            setImmediate(() => processQueueForLang(lang));
+          }
+        })
+        .catch((err) => {
+          logger.warn(
+            { component: 'tts', roomId, lang, err: err?.message },
+            'Failed to hydrate TTS queue from store.'
+         );
+        })
+        .finally(() => {
+          state.hydrated = true;
+        });
+    } else {
+      state.hydrated = true;
+    }
+
+    return state;
+  }
+
+  function cleanupSynthesizer(state) {
+    if (state.synthesizer) {
+      try {
+        state.synthesizer.close();
+      } catch (err) {
+        logger.warn(
+          { component: 'tts', roomId, err: err?.message },
+          'Failed to close synthesizer cleanly.'
+        );
+      }
+      state.synthesizer = null;
+    }
+  }
+
+  function escapeXml(str) {
+    return (str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  function buildSsml(text, lang, voiceName, rate) {
+    const safeText = escapeXml(text);
+    const clampedRate = Math.min(Math.max(rate || 1, 0.5), 2);
+    const rateAttr = clampedRate !== 1 ? ` rate="${clampedRate.toFixed(2)}"` : '';
+    return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">
+  <voice name="${voiceName}"><prosody${rateAttr}>${safeText}</prosody></voice>
+</speak>`;
+  }
+
+  async function synthesize(state, item, voiceName) {
+    const speechConfig = state.speechConfig;
+    speechConfig.speechSynthesisVoiceName = voiceName;
+    const synthesizer = new sdk.SpeechSynthesizer(speechConfig);
+    state.synthesizer = synthesizer;
+
+    const useSsml = state.isThrottled && state.rateMultiplier && state.rateMultiplier !== 1;
+    const payload = useSsml
+      ? buildSsml(item.text, item.lang, voiceName, state.rateMultiplier)
+      : item.text;
+
+    return new Promise((resolve, reject) => {
+      const onSuccess = (result) => {
+        cleanupSynthesizer(state);
+        if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+          resolve(Buffer.from(result.audioData));
+        } else {
+          reject(new Error(`Speech synthesis failed: ${result.errorDetails || result.reason}`));
+        }
+      };
+      const onError = (err) => {
+        cleanupSynthesizer(state);
+        reject(err);
+      };
+
+      if (useSsml) {
+        synthesizer.speakSsmlAsync(payload, onSuccess, onError);
+      } else {
+        synthesizer.speakTextAsync(payload, onSuccess, onError);
+      }
+    });
+  }
+
+  async function processQueueForLang(lang) {
+    if (disposed) {
+      return;
+    }
+    const state = ensureLangState(lang);
+    if (state.processing || !state.queue.length) {
+      updateQueueBacklog(lang);
+      return;
+    }
+    const item = state.queue.shift();
+    state.playing = item;
+    state.processing = true;
+    updateQueueBacklog(lang);
+    try {
+      const voiceName = ensureVoice(lang, item.voice, state);
+      if (isElevenLabsVoice(voiceName)) {
+        try {
+          const voiceId = elevenLabsVoiceId(voiceName);
+          const { audio, format } = await synthesizeWithElevenLabs(item.text, voiceId);
+          if (!item.cancelled) {
+            metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
+            emitter.emit('audio', {
+              roomId,
+              lang,
+              unitId: item.unitId,
+              rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
+              text: item.text,
+              audio,
+              format,
+              voice: voiceName,
+              sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+            });
+          } else {
+            emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
+          }
+        } catch (elevenErr) {
+          metrics?.recordTtsEvent?.(roomId, lang, 'error');
+          logger.error(
+            { component: 'tts', roomId, lang, err: elevenErr?.message },
+            'ElevenLabs synthesis error.'
+          );
+          emitter.emit('error', {
+            roomId,
+            lang,
+            unitId: item.unitId,
+            err: elevenErr
+          });
+        }
+      } else {
+        const audioBuffer = await synthesize(state, item, voiceName);
+        if (!item.cancelled) {
+          metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
+          emitter.emit('audio', {
+            roomId,
+            lang,
+            unitId: item.unitId,
+            rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
+            text: item.text,
+            audio: audioBuffer,
+            format: inferMimeType(state.audioFormat),
+            voice: voiceName,
+            sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+          });
+        } else {
+          emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
+        }
+      }
+    } catch (err) {
+      metrics?.recordTtsEvent?.(roomId, lang, 'error');
+      emitter.emit('error', { roomId, lang, unitId: item.unitId, err });
+      logger.error(
+        { component: 'tts', roomId, lang, err: err?.message },
+        'TTS synthesis error.'
+      );
+    } finally {
+      state.playing = null;
+      state.processing = false;
+      updateQueueBacklog(lang);
+      if (state.queue.length) {
+        setImmediate(() => processQueueForLang(lang));
+      }
+      persistQueueState(lang);
+    }
+  }
+
+  function enqueue(lang, unitId, text, options = {}) {
+    if (disposed) {
+      logger.warn(
+        { component: 'tts', roomId, lang, unitId },
+        'Attempted to enqueue after queue was disposed.'
+      );
+      return;
+    }
+
+    const trimmed = (text || '').trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const state = ensureLangState(lang);
+
+    state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
+    if (state.playing && (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)) {
+      state.playing.cancelled = true;
+      cleanupSynthesizer(state);
+      metrics?.recordTtsEvent?.(roomId, lang, 'cancelled');
+    }
+
+    const lengths = normalizeLengths(options.sentLen);
+    const segmentsFromLengths = splitByCharLengths(trimmed, lengths);
+    const segments = (segmentsFromLengths && segmentsFromLengths.length
+      ? segmentsFromLengths
+      : segmentText(trimmed)) || [trimmed];
+    const rateBoost = state.isThrottled && state.rateMultiplier ? state.rateMultiplier : 1;
+    const makeDuration = (input) => estimateSeconds(input) / rateBoost;
+    segments.forEach((segment, index) => {
+      const segmentId = `${unitId}#${index}`;
+      state.queue.push({
+        lang,
+        unitId: segmentId,
+        rootUnitId: unitId,
+        text: segment,
+        voice: options.voice,
+        duration: makeDuration(segment),
+        createdAt: Date.now(),
+        sentLen: lengths ? lengths[index] || null : null
+      });
+    });
+
+    metrics?.recordTtsEvent?.(roomId, lang, 'enqueued');
+
+    updateQueueBacklog(lang);
+    setImmediate(() => processQueueForLang(lang));
+    persistQueueState(lang);
+  }
+
+  function cancel(lang, unitId) {
+    const state = queueByLang.get(lang);
+    if (!state) {
+      return;
+    }
+    state.queue = state.queue.filter(
+      (item) => item.unitId !== unitId && item.rootUnitId !== unitId
+    );
+    if (
+      state.playing &&
+      (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)
+    ) {
+      state.playing.cancelled = true;
+      cleanupSynthesizer(state);
+      metrics?.recordTtsEvent?.(roomId, lang, 'cancelled');
+    }
+    updateQueueBacklog(lang);
+    persistQueueState(lang);
+  }
+
+  function shutdown() {
+    disposed = true;
+    for (const [lang, state] of queueByLang.entries()) {
+      cleanupSynthesizer(state);
+      state.queue = [];
+      state.playing = null;
+      state.processing = false;
+      persistQueueState(lang);
+      if (store && typeof store.clearTtsQueue === 'function') {
+        store
+          .clearTtsQueue(roomId, lang)
+          .catch((err) =>
+            logger.warn(
+              { component: 'tts', roomId, lang, err: err?.message },
+              'Failed to clear TTS queue state from store.'
+            )
+          );
+      }
+    }
+    queueByLang.clear();
+  }
+
+  emitter.enqueue = enqueue;
+  emitter.cancel = cancel;
+  emitter.shutdown = shutdown;
+  emitter.getBacklogSeconds = getBacklogSeconds;
+
+  return emitter;
+}
+
+module.exports = {
+  createTtsQueue
+};
