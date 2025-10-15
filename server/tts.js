@@ -13,8 +13,7 @@ const LANGUAGE_VOICE_DEFAULTS = {
   'es-ES': 'es-ES-AlvaroNeural',
   'es-MX': 'es-MX-JorgeNeural'
 };
-const THROTTLE_RATE =
-  Number(process.env.TTS_THROTTLE_RATE_MULTIPLIER || process.env.TTS_RATE_MULTIPLIER || 1.25);
+const DEFAULT_RATE_BOOST_PERCENT = 10;
 
 const FORMAT_MIME = {
   [sdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm]: 'audio/wav',
@@ -112,6 +111,7 @@ function createTtsQueue({
   updateBacklog,
   backlogLimitSeconds,
   backlogResumeSeconds,
+  rateBoostPercent,
   fallbackVoice,
   store,
   audioFormat
@@ -129,6 +129,12 @@ function createTtsQueue({
 
   const queueByLang = new Map();
   let disposed = false;
+
+  const configuredRateBoost =
+    typeof rateBoostPercent === 'number' && !Number.isNaN(rateBoostPercent)
+      ? rateBoostPercent
+      : DEFAULT_RATE_BOOST_PERCENT;
+  const rateBoostMultiplier = configuredRateBoost > 0 ? 1 + configuredRateBoost / 100 : 1;
 
   const emitter = new EventEmitter();
   const resolvedAudioFormat =
@@ -211,7 +217,7 @@ function createTtsQueue({
       if (fallbackVoice) {
         state.voiceOverride = fallbackVoice;
       }
-      state.rateMultiplier = Math.max(THROTTLE_RATE, 1.05);
+      state.rateMultiplier = rateBoostMultiplier > 1 ? rateBoostMultiplier : 1;
       metrics?.recordTtsEvent?.(roomId, lang, 'throttle_start');
       emitter.emit('throttle', { roomId, lang, backlog });
     } else if (state.isThrottled && resumeThreshold && backlog <= resumeThreshold) {
@@ -276,7 +282,8 @@ function createTtsQueue({
       isThrottled: false,
       rateMultiplier: 1,
       hydrated: false,
-      audioFormat: resolvedAudioFormat
+      audioFormat: resolvedAudioFormat,
+      prefetch: new Map()
     };
 
     queueByLang.set(lang, state);
@@ -358,11 +365,16 @@ function createTtsQueue({
 </speak>`;
   }
 
-  async function synthesize(state, item, voiceName) {
-    const speechConfig = state.speechConfig;
+  async function synthesize(state, item, voiceName, { trackSynth = false } = {}) {
+    const speechConfig = trackSynth
+      ? state.speechConfig
+      : sdk.SpeechConfig.fromSubscription(speechKey, speechRegion);
     speechConfig.speechSynthesisVoiceName = voiceName;
+    speechConfig.speechSynthesisOutputFormat = state.audioFormat;
     const synthesizer = new sdk.SpeechSynthesizer(speechConfig);
-    state.synthesizer = synthesizer;
+    if (trackSynth) {
+      state.synthesizer = synthesizer;
+    }
 
     const useSsml = state.isThrottled && state.rateMultiplier && state.rateMultiplier !== 1;
     const payload = useSsml
@@ -370,8 +382,21 @@ function createTtsQueue({
       : item.text;
 
     return new Promise((resolve, reject) => {
+      const finalize = () => {
+        try {
+          synthesizer.close();
+        } catch (err) {
+          logger.warn(
+            { component: 'tts', roomId, lang: item.lang, err: err?.message },
+            'Failed to close synthesizer cleanly.'
+          );
+        }
+        if (trackSynth && state.synthesizer === synthesizer) {
+          state.synthesizer = null;
+        }
+      };
       const onSuccess = (result) => {
-        cleanupSynthesizer(state);
+        finalize();
         if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
           resolve(Buffer.from(result.audioData));
         } else {
@@ -379,7 +404,7 @@ function createTtsQueue({
         }
       };
       const onError = (err) => {
-        cleanupSynthesizer(state);
+        finalize();
         reject(err);
       };
 
@@ -391,6 +416,36 @@ function createTtsQueue({
     });
   }
 
+  function ensurePrefetchForItem(state, lang, item, { trackSynth = false } = {}) {
+    if (!item) {
+      return null;
+    }
+    if (state.prefetch.has(item.unitId)) {
+      return state.prefetch.get(item.unitId);
+    }
+    const voiceName = ensureVoice(lang, item.voice, state);
+    const promise = synthesize(state, item, voiceName, { trackSynth })
+      .then((audioBuffer) => ({ audioBuffer, voiceName }))
+      .catch((err) => {
+        state.prefetch.delete(item.unitId);
+        throw err;
+      });
+    state.prefetch.set(item.unitId, promise);
+    return promise;
+  }
+
+  function clearPrefetchForUnit(state, rootUnitId) {
+    if (!state || !state.prefetch) {
+      return;
+    }
+    const prefix = `${rootUnitId}#`;
+    for (const key of Array.from(state.prefetch.keys())) {
+      if (key === rootUnitId || key.startsWith(prefix)) {
+        state.prefetch.delete(key);
+      }
+    }
+  }
+
   async function processQueueForLang(lang) {
     if (disposed) {
       return;
@@ -400,13 +455,17 @@ function createTtsQueue({
       updateQueueBacklog(lang);
       return;
     }
-    const item = state.queue.shift();
+    const item = state.queue[0];
     state.playing = item;
     state.processing = true;
     updateQueueBacklog(lang);
     try {
-      const voiceName = ensureVoice(lang, item.voice, state);
-      const audioBuffer = await synthesize(state, item, voiceName);
+      const current = ensurePrefetchForItem(state, lang, item, { trackSynth: true });
+      const nextItem = state.queue[1];
+      if (nextItem) {
+        ensurePrefetchForItem(state, lang, nextItem, { trackSynth: false });
+      }
+      const { audioBuffer, voiceName } = await current;
       if (!item.cancelled) {
         metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
         emitter.emit('audio', {
@@ -431,6 +490,13 @@ function createTtsQueue({
         'TTS synthesis error.'
       );
     } finally {
+      state.prefetch.delete(item.unitId);
+      if (state.queue[0] && state.queue[0].unitId === item.unitId) {
+        state.queue.shift();
+      } else {
+        state.queue = state.queue.filter((entry) => entry.unitId !== item.unitId);
+      }
+      cleanupSynthesizer(state);
       state.playing = null;
       state.processing = false;
       updateQueueBacklog(lang);
@@ -458,6 +524,7 @@ function createTtsQueue({
     const state = ensureLangState(lang);
 
     state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
+    clearPrefetchForUnit(state, unitId);
     if (state.playing && (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)) {
       state.playing.cancelled = true;
       cleanupSynthesizer(state);
@@ -508,6 +575,7 @@ function createTtsQueue({
       cleanupSynthesizer(state);
       metrics?.recordTtsEvent?.(roomId, lang, 'cancelled');
     }
+    clearPrefetchForUnit(state, unitId);
     updateQueueBacklog(lang);
     persistQueueState(lang);
   }
@@ -519,6 +587,9 @@ function createTtsQueue({
       state.queue = [];
       state.playing = null;
       state.processing = false;
+      if (state.prefetch) {
+        state.prefetch.clear();
+      }
       persistQueueState(lang);
       if (store && typeof store.clearTtsQueue === 'function') {
         store
@@ -544,6 +615,9 @@ function createTtsQueue({
       state.queue = [];
       state.playing = null;
       state.processing = false;
+      if (state.prefetch) {
+        state.prefetch.clear();
+      }
       updateQueueBacklog(lang);
       persistQueueState(lang);
     }

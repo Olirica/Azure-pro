@@ -185,8 +185,11 @@
           sessionId: null,
           unitIndex: 0,
           version: 0,
-          lastEmitAt: 0,
+          lastSoftEmitAt: 0,
           lastSoftText: '',
+          lastPartialFull: '',
+          prefix: createPrefixState(),
+          fastFinals: null,
           roomId: null,
           sourceLang: null,
           targetLangs: [],
@@ -203,20 +206,30 @@
           patchSourceLang: null
         };
 
+        const DEFAULT_FAST_FINALS = Object.freeze({
+          stableK: 3,
+          minStableMs: 600,
+          minChars: 28,
+          minWords: 6,
+          emitThrottleMs: 700
+        });
+
         const DEFAULT_CONFIG = {
-          stablePartials: 3,
-          segmentationSilenceMs: 800,
-          initialSilenceMs: 5000,
-          endSilenceMs: 500,
+          stablePartials: 4,
+          segmentationSilenceMs: 500,
+          initialSilenceMs: 3000,
+          endSilenceMs: 350,
           softThrottleMs: 1000,
           softMinDeltaChars: 18,
           speechTokenRefreshMs: 540000,
           wsPingIntervalMs: 30000,
-          ttsMaxBacklogSec: 10,
-          ttsResumeBacklogSec: 5,
+          ttsMaxBacklogSec: 8,
+          ttsResumeBacklogSec: 4,
+          ttsRateBoostPercent: 10,
           finalDebounceMs: 180,
           phraseHints: [],
-          autoDetectLangs: []
+          autoDetectLangs: [],
+          fastFinals: { ...DEFAULT_FAST_FINALS }
         };
 
         async function loadConfig() {
@@ -229,16 +242,73 @@
               throw new Error(`Config request failed (${res.status})`);
             }
             const data = await res.json();
-            state.config = { ...DEFAULT_CONFIG, ...data };
+            const speechTunables =
+              data && typeof data.speechTunables === 'object' && data.speechTunables
+                ? data.speechTunables
+                : {};
+            const mergedConfig = { ...DEFAULT_CONFIG, ...data };
+            const coerce = (value, fallback) => {
+              const num = Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            mergedConfig.stablePartials = coerce(
+              data.stablePartials ?? speechTunables.stablePartials,
+              DEFAULT_CONFIG.stablePartials
+            );
+            mergedConfig.segmentationSilenceMs = coerce(
+              data.segmentationSilenceMs ?? speechTunables.segmentationSilenceMs,
+              DEFAULT_CONFIG.segmentationSilenceMs
+            );
+            mergedConfig.initialSilenceMs = coerce(
+              data.initialSilenceMs ?? speechTunables.initialSilenceMs,
+              DEFAULT_CONFIG.initialSilenceMs
+            );
+            mergedConfig.endSilenceMs = coerce(
+              data.endSilenceMs ?? speechTunables.endSilenceMs,
+              DEFAULT_CONFIG.endSilenceMs
+            );
+            mergedConfig.ttsMaxBacklogSec = coerce(
+              data.ttsMaxBacklogSec,
+              DEFAULT_CONFIG.ttsMaxBacklogSec
+            );
+            mergedConfig.ttsResumeBacklogSec = coerce(
+              data.ttsResumeBacklogSec,
+              DEFAULT_CONFIG.ttsResumeBacklogSec
+            );
+            mergedConfig.ttsRateBoostPercent = coerce(
+              data.ttsRateBoostPercent,
+              DEFAULT_CONFIG.ttsRateBoostPercent
+            );
+            const incomingFastFinals =
+              data && typeof data.fastFinals === 'object' && data.fastFinals ? data.fastFinals : {};
+            const fastFinals = {
+              stableK: coerce(incomingFastFinals.stableK, DEFAULT_FAST_FINALS.stableK),
+              minStableMs: coerce(incomingFastFinals.minStableMs, DEFAULT_FAST_FINALS.minStableMs),
+              minChars: coerce(incomingFastFinals.minChars, DEFAULT_FAST_FINALS.minChars),
+              minWords: coerce(incomingFastFinals.minWords, DEFAULT_FAST_FINALS.minWords),
+              emitThrottleMs: coerce(
+                incomingFastFinals.emitThrottleMs,
+                DEFAULT_FAST_FINALS.emitThrottleMs
+              )
+            };
+            mergedConfig.fastFinals = { ...fastFinals };
+            state.config = mergedConfig;
+            state.fastFinals = fastFinals;
             state.phraseHints = Array.isArray(state.config.phraseHints)
               ? state.config.phraseHints
               : [];
+            if (!state.phraseHints.some((hint) => hint.trim().toLowerCase() === 'session')) {
+              state.phraseHints.push('session');
+            }
             state.autoDetectLangs = Array.isArray(state.config.autoDetectLangs)
               ? state.config.autoDetectLangs
               : [];
             log('Runtime config loaded', state.config);
           } catch (err) {
-            state.config = { ...DEFAULT_CONFIG };
+            state.config = { ...DEFAULT_CONFIG, fastFinals: { ...DEFAULT_FAST_FINALS } };
+            state.fastFinals = { ...DEFAULT_FAST_FINALS };
+            state.phraseHints = [];
+            state.autoDetectLangs = [];
             log('Failed to load config, falling back to defaults.', { error: err?.message });
           }
           const heartbeat = state.config.wsPingIntervalMs || DEFAULT_CONFIG.wsPingIntervalMs;
@@ -334,25 +404,166 @@
           return `${state.sessionId}|${state.sourceLang}|${state.unitIndex}`;
         }
 
-        async function postPatch(text, stage, result) {
+        function createPrefixState() {
+          return {
+            ring: [],
+            committedChars: 0,
+            committedRaw: '',
+            lastStableLen: 0,
+            lastStableAt: 0,
+            lastEmitAt: 0
+          };
+        }
+
+        function getFastFinalsConfig() {
+          const cfg = state.fastFinals || DEFAULT_FAST_FINALS;
+          const coerce = (value, fallback, min = 0) => {
+            const num = Number(value);
+            if (!Number.isFinite(num)) {
+              return fallback;
+            }
+            return Math.max(num, min);
+          };
+          return {
+            stableK: coerce(cfg.stableK, DEFAULT_FAST_FINALS.stableK, 1),
+            minStableMs: coerce(cfg.minStableMs, DEFAULT_FAST_FINALS.minStableMs, 0),
+            minChars: coerce(cfg.minChars, DEFAULT_FAST_FINALS.minChars, 1),
+            minWords: coerce(cfg.minWords, DEFAULT_FAST_FINALS.minWords, 1),
+            emitThrottleMs: coerce(cfg.emitThrottleMs, DEFAULT_FAST_FINALS.emitThrottleMs, 0)
+          };
+        }
+
+        function resetPrefixState() {
+          state.prefix = createPrefixState();
+        }
+
+        function updatePrefixRingSnapshot(snapshot) {
+          const ring = state.prefix.ring;
+          ring.push(snapshot);
+          const { stableK } = getFastFinalsConfig();
+          while (ring.length > stableK) {
+            ring.shift();
+          }
+        }
+
+        function stablePrefixLength() {
+          const ring = state.prefix.ring;
+          if (!ring.length) {
+            return 0;
+          }
+          let prefix = ring[0] || '';
+          for (let i = 1; i < ring.length && prefix; i += 1) {
+            const candidate = ring[i] || '';
+            let j = 0;
+            const max = Math.min(prefix.length, candidate.length);
+            while (j < max && prefix[j] === candidate[j]) {
+              j += 1;
+            }
+            prefix = prefix.slice(0, j);
+          }
+          return prefix.length;
+        }
+
+        function lastBoundaryBefore(text, idx) {
+          const slice = text.slice(0, idx);
+          const terminal = Math.max(slice.lastIndexOf('.'), slice.lastIndexOf('!'), slice.lastIndexOf('?'));
+          if (terminal >= 0) {
+            return terminal + 1;
+          }
+          const secondary = Math.max(slice.lastIndexOf(':'), slice.lastIndexOf(';'));
+          if (secondary >= 0) {
+            return secondary + 1;
+          }
+          return -1;
+        }
+
+        function countWords(text) {
           if (!text) {
-            return;
+            return 0;
+          }
+          const tokens = text.trim().match(/\S+/g);
+          return tokens ? tokens.length : 0;
+        }
+
+        function computeFinalRemainder(finalText) {
+          if (!finalText) {
+            return '';
+          }
+          const prefixState = state.prefix;
+          const rawCommitted = prefixState.committedRaw || '';
+          if (rawCommitted && finalText.startsWith(rawCommitted)) {
+            return finalText.slice(rawCommitted.length).trim();
+          }
+          if (prefixState.committedChars) {
+            return finalText.slice(prefixState.committedChars).trim();
+          }
+          return finalText.trim();
+        }
+
+        async function emitHardSegment(text, result, options = {}) {
+          const cleaned = (text || '').trim();
+          if (!cleaned) {
+            return null;
+          }
+          state.version = 0;
+          const unitId = await postPatch(cleaned, 'hard', result, {
+            meta: options.meta,
+            targets: options.targets,
+            srcLang: options.srcLang
+          });
+          if (!unitId) {
+            return null;
+          }
+          state.unitIndex += 1;
+          state.version = 0;
+          state.lastSoftText = '';
+          state.lastSoftEmitAt = 0;
+          if (options.isPrefix) {
+            const prefixState = state.prefix;
+            const nowTs = typeof options.now === 'number' ? options.now : performance.now();
+            if (typeof options.commitEnd === 'number') {
+              prefixState.committedChars = options.commitEnd;
+              prefixState.lastStableLen = options.commitEnd;
+            }
+            if (options.rawSlice) {
+              prefixState.committedRaw += options.rawSlice;
+            }
+            prefixState.lastEmitAt = nowTs;
+            prefixState.lastStableAt = nowTs;
+            log('Prefix committed', {
+              unitId,
+              length: cleaned.length,
+              committedChars: prefixState.committedChars
+            });
+          }
+          return unitId;
+        }
+
+        async function postPatch(text, stage, result, options = {}) {
+          if (!text) {
+            return null;
           }
           state.version += 1;
-          const unitId = buildUnitId();
-          const payload = {
-            roomId: state.roomId,
-            targets: state.targetLangs,
-          patch: {
+          const unitId = options.unitId || buildUnitId();
+          const targets = Array.isArray(options.targets) ? options.targets : state.targetLangs;
+          const patch = {
             unitId,
             stage,
             op: 'replace',
             version: state.version,
             text,
-            srcLang: state.patchSourceLang ?? state.sourceLang,
+            srcLang:
+              options.srcLang ?? state.patchSourceLang ?? state.sourceLang,
             ts: computeTimestamps(result)
+          };
+          if (options.meta && typeof options.meta === 'object') {
+            patch.meta = options.meta;
           }
-        };
+          const payload = {
+            roomId: state.roomId,
+            targets,
+            patch
+          };
           try {
             const res = await fetch('/api/segments', {
               method: 'POST',
@@ -363,9 +574,11 @@
               const body = await res.json().catch(() => ({}));
               log('Patch POST failed', { status: res.status, body });
             }
+            return unitId;
           } catch (err) {
             log('Patch POST error', { error: err?.message });
           }
+          return null;
         }
 
         function renderPatch(patch) {
@@ -491,8 +704,10 @@
           state.sessionId = crypto.randomUUID();
           state.unitIndex = 0;
           state.version = 0;
-          state.lastEmitAt = 0;
+          state.lastSoftEmitAt = 0;
           state.lastSoftText = '';
+          state.lastPartialFull = '';
+          resetPrefixState();
           state.itemsByUnit.clear();
           transcriptList.innerHTML = '';
 
@@ -581,28 +796,66 @@
             startHeartbeat();
 
             recognizer.recognizing = (_, event) => {
-              if (!event || !event.result || !event.result.text) {
+              const partial = event?.result?.text || '';
+              const trimmed = partial.trim();
+              if (!trimmed) {
                 return;
               }
-              const rawText = event.result.text.trim();
-              if (!rawText) {
+              const previous = state.lastPartialFull || '';
+              const merged = dedupeContinuation(previous, trimmed);
+              if (!merged) {
                 return;
               }
-              const merged = dedupeContinuation(state.lastSoftText, rawText);
+              state.lastPartialFull = merged;
+              updatePrefixRingSnapshot(merged);
+
               const now = performance.now();
-              const activeConfig = state.config || DEFAULT_CONFIG;
-              const punctuationTrigger = /[.?!]\s*$/.test(merged);
-              const delta = merged.length - state.lastSoftText.length;
-              const minDelta = activeConfig.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
-              const throttleMs = activeConfig.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
-              const charTrigger = delta >= minDelta;
-              const timeTrigger = now - state.lastEmitAt > throttleMs;
-              if ((punctuationTrigger || charTrigger) && timeTrigger) {
-                state.lastEmitAt = now;
-                state.lastSoftText = merged;
-                postPatch(merged, 'soft', event.result);
+              const prefixState = state.prefix;
+              const fastConfig = getFastFinalsConfig();
+              const stableLen = stablePrefixLength();
+              if (stableLen !== prefixState.lastStableLen) {
+                prefixState.lastStableLen = stableLen;
+                prefixState.lastStableAt = now;
               }
-              setTelemetry(`Soft v${state.version + 1} · ${merged.length} chars`);
+              if (stableLen > prefixState.committedChars) {
+                const boundary = lastBoundaryBefore(merged, stableLen);
+                const commitEnd = boundary >= 0 ? boundary : stableLen;
+                const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
+                const segment = rawSlice.trim();
+                const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
+                const stableOk = now - prefixState.lastStableAt >= fastConfig.minStableMs;
+                const lengthOk =
+                  boundary >= 0 ||
+                  (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
+                if (segment && throttleOk && stableOk && lengthOk) {
+                  emitHardSegment(segment, event.result, {
+                    isPrefix: true,
+                    rawSlice,
+                    commitEnd,
+                    now
+                  });
+                }
+              }
+
+              const tail = merged.slice(prefixState.committedChars).trim();
+              const config = state.config || DEFAULT_CONFIG;
+              const softThrottle =
+                config.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
+              const minDelta =
+                config.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
+              const delta = tail.length - state.lastSoftText.length;
+              const charTrigger = delta >= minDelta;
+              const punctuationTrigger = /[.?!]\s*$/.test(tail);
+              const timeTrigger = now - state.lastSoftEmitAt > softThrottle;
+              if (tail && (charTrigger || punctuationTrigger || !state.lastSoftText) && timeTrigger) {
+                state.lastSoftEmitAt = now;
+                state.lastSoftText = tail;
+                postPatch(tail, 'soft', event.result);
+              } else if (!tail) {
+                state.lastSoftText = '';
+              }
+
+              setTelemetry(`Soft v${state.version + 1} · tail ${tail.length} chars`);
             };
 
             recognizer.recognized = (_, event) => {
@@ -610,46 +863,48 @@
                 return;
               }
               if (event.result.reason === SpeechSDK.ResultReason.RecognizedSpeech) {
-                const finalText = event.result.text.trim();
+                const finalText = (event.result.text || '').trim();
                 if (!finalText) {
+                  resetPrefixState();
+                  state.lastPartialFull = '';
+                  state.lastSoftText = '';
+                  state.lastSoftEmitAt = 0;
                   return;
                 }
+                state.lastPartialFull = finalText;
                 const activeConfig = state.config || DEFAULT_CONFIG;
                 const delay = Math.max(
                   Number(activeConfig.finalDebounceMs ?? DEFAULT_CONFIG.finalDebounceMs) || 0,
                   0
                 );
-                const sentences = splitSentences(finalText);
-                const segments = sentences.length ? sentences : [finalText];
+                const remainder = computeFinalRemainder(finalText);
+                const trimmedRemainder = remainder.trim();
+                const split = trimmedRemainder ? splitSentences(trimmedRemainder) : [];
+                const segments = split.length
+                  ? split
+                  : trimmedRemainder
+                  ? [trimmedRemainder]
+                  : [];
                 clearTimeout(state.finalTimer);
                 state.finalTimer = null;
 
                 const emitFinalSegments = () => {
-                  state.version = 0;
-                  let isFirst = true;
+                  let emitted = 0;
                   for (const sentence of segments) {
-                    if (!sentence) {
-                      continue;
+                    if (sentence) {
+                      emitHardSegment(sentence, event.result);
+                      emitted += 1;
                     }
-                    if (!isFirst) {
-                      state.unitIndex += 1;
-                      state.version = 0;
-                    }
-                    state.lastSoftText = sentence;
-                    state.lastEmitAt = performance.now();
-                    state.version = 0;
-                    postPatch(sentence, 'hard', event.result);
-                    isFirst = false;
                   }
-                  if (segments.length) {
-                    state.unitIndex += 1;
-                  }
-                  state.version = 0;
                   state.lastSoftText = '';
-                  state.lastEmitAt = 0;
+                  state.lastSoftEmitAt = 0;
+                  state.lastPartialFull = '';
+                  resetPrefixState();
                   state.finalTimer = null;
                   setTelemetry(
-                    `Hard ✔︎ · ${segments.length} segment${segments.length > 1 ? 's' : ''}`
+                    emitted
+                      ? `Hard ✔︎ · ${emitted} segment${emitted > 1 ? 's' : ''}`
+                      : 'Hard ✔︎ · prefix only'
                   );
                 };
 
@@ -704,6 +959,10 @@
           stopHeartbeat();
           clearTimeout(state.finalTimer);
           state.finalTimer = null;
+          state.lastSoftEmitAt = 0;
+          state.lastSoftText = '';
+          state.lastPartialFull = '';
+          resetPrefixState();
           if (state.recognizer) {
             try {
               state.recognizer.stopContinuousRecognitionAsync(() => {
