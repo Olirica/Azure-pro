@@ -411,6 +411,8 @@
             committedRaw: '',
             lastStableLen: 0,
             lastStableAt: 0,
+            lastCandidateEnd: 0,
+            candidateStableAt: 0,
             lastEmitAt: 0
           };
         }
@@ -524,12 +526,14 @@
             if (typeof options.commitEnd === 'number') {
               prefixState.committedChars = options.commitEnd;
               prefixState.lastStableLen = options.commitEnd;
+              prefixState.lastCandidateEnd = options.commitEnd;
             }
             if (options.rawSlice) {
               prefixState.committedRaw += options.rawSlice;
             }
             prefixState.lastEmitAt = nowTs;
             prefixState.lastStableAt = nowTs;
+            prefixState.candidateStableAt = nowTs;
             log('Prefix committed', {
               unitId,
               length: cleaned.length,
@@ -817,23 +821,38 @@
                 prefixState.lastStableLen = stableLen;
                 prefixState.lastStableAt = now;
               }
+              const boundary =
+                stableLen > prefixState.committedChars
+                  ? lastBoundaryBefore(merged, stableLen)
+                  : -1;
+              const candidateEnd = boundary >= 0 ? boundary : stableLen;
+              if (candidateEnd !== prefixState.lastCandidateEnd) {
+                prefixState.lastCandidateEnd = candidateEnd;
+                prefixState.candidateStableAt = now;
+              }
               if (stableLen > prefixState.committedChars) {
-                const boundary = lastBoundaryBefore(merged, stableLen);
-                const commitEnd = boundary >= 0 ? boundary : stableLen;
-                const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
-                const segment = rawSlice.trim();
-                const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
-                const stableOk = now - prefixState.lastStableAt >= fastConfig.minStableMs;
-                const lengthOk =
-                  boundary >= 0 ||
-                  (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
-                if (segment && throttleOk && stableOk && lengthOk) {
-                  emitHardSegment(segment, event.result, {
-                    isPrefix: true,
-                    rawSlice,
-                    commitEnd,
-                    now
-                  });
+                const commitEnd = candidateEnd;
+                if (commitEnd > prefixState.committedChars) {
+                  const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
+                  const segment = rawSlice.trim();
+                  const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
+                  const neededStable =
+                    boundary >= 0
+                      ? Math.min(fastConfig.minStableMs, 350)
+                      : fastConfig.minStableMs;
+                  const stableOk =
+                    now - (prefixState.candidateStableAt || 0) >= neededStable;
+                  const lengthOk =
+                    boundary >= 0 ||
+                    (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
+                  if (segment && throttleOk && stableOk && lengthOk) {
+                    emitHardSegment(segment, event.result, {
+                      isPrefix: true,
+                      rawSlice,
+                      commitEnd,
+                      now
+                    });
+                  }
                 }
               }
 
