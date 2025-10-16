@@ -1,6 +1,6 @@
-# Polyglot RT (Azure Speech Pipeline)
+# Simo by Canoë
 
-End-to-end, replace-in-place captioning stack built on Azure Speech + Translator + TTS. A speaker device pushes microphone audio into the Speech SDK, the Node server merges interim segments, fans out translated patches to listeners, and queues Text-to-Speech per language.
+Real-time multilingual speech translation platform built on Azure Speech + Translator + TTS. A speaker device pushes microphone audio into the Speech SDK, the Node server merges interim segments, fans out translated patches to listeners, and queues Text-to-Speech per language.
 
 ## Features
 
@@ -84,11 +84,11 @@ Speaker clients send `{type:"heartbeat", payload:{pcm:true}}` over the WebSocket
 
 | Metric | Labels | Meaning |
 | ------ | ------ | ------- |
-| `polyglot_rt_patch_total` | room, stage, status | Accepted vs stale soft/hard patches |
-| `polyglot_rt_translation_latency_seconds` | room, lang | Translator REST latency |
-| `polyglot_rt_tts_backlog_seconds` | room, lang | Estimated queued speech duration |
-| `polyglot_rt_ws_clients` | room, role | Active WebSocket clients |
-| `polyglot_rt_http_duration_seconds` | method, route, status | Express latency histogram |
+| `simo_patch_total` | room, stage, status | Accepted vs stale soft/hard patches |
+| `simo_translation_latency_seconds` | room, lang | Translator REST latency |
+| `simo_tts_backlog_seconds` | room, lang | Estimated queued speech duration |
+| `simo_ws_clients` | room, role | Active WebSocket clients |
+| `simo_http_duration_seconds` | method, route, status | Express latency histogram |
 
 ## Development tips
 
