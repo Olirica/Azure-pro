@@ -288,15 +288,20 @@ class SegmentProcessor {
       throw new Error('Patch payload missing or invalid.');
     }
 
-    const { unitId, stage, version, text, srcLang, ts } = patch;
+    // Support both old unitId and new utteranceId formats
+    const unitId = patch.utteranceId || patch.unitId;
+    const rev = patch.rev ?? patch.version;
+    const { stage, text, srcLang, ts, isFinal } = patch;
+
     if (!unitId || typeof unitId !== 'string') {
-      throw new Error('Patch unitId is required.');
+      throw new Error('Patch unitId/utteranceId is required.');
     }
-    if (!['soft', 'hard'].includes(stage)) {
+
+    // Map isFinal to stage if not provided
+    const finalStage = isFinal != null ? (isFinal ? 'hard' : 'soft') : stage;
+    const version = typeof rev === 'number' ? rev : 0;
+    if (!['soft', 'hard'].includes(finalStage)) {
       throw new Error('Patch stage must be "soft" or "hard".');
-    }
-    if (typeof version !== 'number') {
-      throw new Error('Patch version must be a number.');
     }
 
     const root = rootFromUnitId(unitId);
@@ -320,12 +325,12 @@ class SegmentProcessor {
     }
 
     const mergedText =
-      stage === 'soft' && existing ? dedupeContinuation(existing.text, incomingText) : incomingText;
+      finalStage === 'soft' && existing ? dedupeContinuation(existing.text, incomingText) : incomingText;
 
     const updatedUnit = {
       unitId,
       root,
-      stage,
+      stage: finalStage,
       version,
       text: mergedText,
       srcLang: srcLang || existing?.srcLang,
@@ -337,7 +342,7 @@ class SegmentProcessor {
       this.units.delete(root);
     }
     this.units.set(root, updatedUnit);
-    this.metrics?.observePatch?.(this.roomId, stage, 'accepted');
+    this.metrics?.observePatch?.(this.roomId, finalStage, 'accepted');
     const evicted = this.enforceUnitLimit();
 
     if (this.store) {
@@ -365,11 +370,14 @@ class SegmentProcessor {
 
     const sourcePatch = {
       unitId,
-      stage,
+      utteranceId: unitId, // Include both for compatibility
+      stage: finalStage,
       op: 'replace',
       version,
+      rev: version, // Include both for compatibility
       text: mergedText,
       srcLang: updatedUnit.srcLang,
+      isFinal: finalStage === 'hard',
       ts
     };
 
@@ -380,7 +388,7 @@ class SegmentProcessor {
       {
         component: 'segment-processor',
         unitId,
-        stage,
+        stage: finalStage,
         targetLangs,
         uniqueTargets,
         roomId: this.roomId
@@ -397,12 +405,15 @@ class SegmentProcessor {
         if (cached) {
           translatedPatches.push({
             unitId,
-            stage,
+            utteranceId: unitId,
+            stage: finalStage,
             op: 'replace',
             version,
+            rev: version,
             text: cached.text,
             srcLang: updatedUnit.srcLang,
             targetLang: lang,
+            isFinal: finalStage === 'hard',
             sentLen: {
               src: cached.srcSentLen,
               tgt: cached.transSentLen
@@ -434,12 +445,15 @@ class SegmentProcessor {
           for (const translation of translations) {
             const payload = {
               unitId,
-              stage,
+              utteranceId: unitId,
+              stage: finalStage,
               op: 'replace',
               version,
+              rev: version,
               text: translation.text,
               srcLang: updatedUnit.srcLang,
               targetLang: translation.lang,
+              isFinal: finalStage === 'hard',
               sentLen: {
                 src: translation.srcSentLen,
                 tgt: translation.transSentLen

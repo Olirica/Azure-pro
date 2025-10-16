@@ -146,6 +146,12 @@
             <label for="targetLangs">Target languages (comma separated)</label>
             <input id="targetLangs" type="text" value="fr-CA" />
           </div>
+          <div>
+            <label for="micSelect">Microphone</label>
+            <select id="micSelect" style="width: 100%; padding: 0.6rem 0.8rem; margin-top: 0.35rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.35); color: inherit;">
+              <option value="">Default microphone</option>
+            </select>
+          </div>
         </div>
         <div class="stack" style="margin-top: 1.25rem">
           <div class="status">
@@ -164,6 +170,9 @@
 
       <section>
         <h2>Debug</h2>
+        <button id="copyDebugBtn" style="margin-bottom: 1rem; background: rgba(148, 163, 184, 0.2); color: inherit;">
+          Copy debug log
+        </button>
         <pre id="debugLog">Waiting…</pre>
         <small>Token acquisition, SDK events, and merge decisions appear here.</small>
       </section>
@@ -178,13 +187,14 @@
         const telemetry = document.getElementById('telemetry');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const copyDebugBtn = document.getElementById('copyDebugBtn');
 
         const state = {
           recognizer: null,
           ws: null,
           sessionId: null,
-          unitIndex: 0,
-          version: 0,
+          currentUtteranceId: null,  // Stable ID for current utterance
+          rev: 0,  // Revision counter (increments within same utteranceId)
           lastSoftEmitAt: 0,
           lastSoftText: '',
           lastPartialFull: '',
@@ -333,7 +343,9 @@
         }
 
         function log(message, context = {}) {
-          const timestamp = new Date().toISOString();
+          // Compact timestamp: HH:MM:SS.mmm
+          const now = new Date();
+          const timestamp = now.toTimeString().slice(0, 8) + '.' + now.getMilliseconds().toString().padStart(3, '0');
           const entry = `[${timestamp}] ${message}${
             Object.keys(context).length ? ` ${JSON.stringify(context)}` : ''
           }`;
@@ -406,7 +418,34 @@
           if (!matches) {
             return [text.trim()];
           }
-          return matches.map((segment) => segment.trim()).filter(Boolean);
+
+          // Filter out fragments (lowercase start suggesting continuation)
+          const sentences = matches.map((s) => s.trim()).filter(Boolean);
+          const filtered = [];
+
+          for (let i = 0; i < sentences.length; i++) {
+            const sentence = sentences[i];
+            const startsWithLowercase = /^[a-z]/.test(sentence);
+
+            // If it starts with lowercase and isn't the first sentence,
+            // merge it with the next sentence (or previous if it's last)
+            if (startsWithLowercase && sentences.length > 1) {
+              // Try to merge with next sentence if available
+              if (i + 1 < sentences.length) {
+                sentences[i + 1] = sentence + ' ' + sentences[i + 1];
+                continue; // Skip adding this fragment
+              }
+              // Otherwise merge with previous
+              else if (filtered.length > 0) {
+                filtered[filtered.length - 1] += ' ' + sentence;
+                continue;
+              }
+            }
+
+            filtered.push(sentence);
+          }
+
+          return filtered;
         }
 
         function computeTimestamps(result) {
@@ -416,8 +455,11 @@
           return { t0: offsetMs, t1: offsetMs + durationMs };
         }
 
-        function buildUnitId() {
-          return `${state.sessionId}|${state.sourceLang}|${state.unitIndex}`;
+        // Generate ULID-style utteranceId (timestamp + random)
+        function generateUtteranceId() {
+          const timestamp = Date.now().toString(36).toUpperCase();
+          const random = Math.random().toString(36).substring(2, 10).toUpperCase();
+          return `U${timestamp}${random}`;
         }
 
         function createPrefixState() {
@@ -429,7 +471,8 @@
             lastStableAt: 0,
             lastCandidateEnd: 0,
             candidateStableAt: 0,
-            lastEmitAt: 0
+            lastEmitAt: 0,
+            lastEmittedText: '' // Track last emitted text to prevent duplicates
           };
         }
 
@@ -561,24 +604,30 @@
           if (!cleaned) {
             return null;
           }
-          const prevVersion = state.version;
-          state.version = 0;
-          const unitIdHint = options.unitId || buildUnitId();
-          const unitId = await postPatch(cleaned, 'hard', result, {
+
+          // Each hard segment gets its own unique utteranceId
+          // (Don't reuse currentUtteranceId - that's for partials only)
+          const newUtteranceId = generateUtteranceId();
+
+          const utteranceId = await postPatch(cleaned, 'hard', result, {
             meta: options.meta,
             targets: options.targets,
             srcLang: options.srcLang,
-            unitId: unitIdHint
+            utteranceId: newUtteranceId
           });
-          if (!unitId) {
-            state.version = prevVersion;
-            log('Prefix commit aborted', { length: cleaned.length });
+
+          if (!utteranceId) {
+            log('Hard segment POST failed', { length: cleaned.length });
             return null;
           }
-          state.unitIndex += 1;
-          state.version = 0;
+
+          // Always reset utteranceId after emitting a hard segment
+          // (Next partial will start a new utterance)
+          state.currentUtteranceId = null;
+          state.rev = 0;
           state.lastSoftText = '';
           state.lastSoftEmitAt = 0;
+
           if (options.isPrefix) {
             const prefixState = state.prefix;
             const nowTs = typeof options.now === 'number' ? options.now : performance.now();
@@ -594,84 +643,122 @@
             prefixState.lastStableAt = nowTs;
             prefixState.candidateStableAt = nowTs;
             log('Prefix committed', {
-              unitId,
+              utteranceId,
               length: cleaned.length,
               committedChars: prefixState.committedChars
             });
           }
-          return unitId;
+
+          return utteranceId;
         }
 
         async function postPatch(text, stage, result, options = {}) {
           if (!text) {
             return null;
           }
-          const nextVersion = state.version + 1;
-          const unitId = options.unitId || buildUnitId();
+
+          // If caller provided explicit utteranceId (e.g., for hard finals), use rev: 0
+          // Otherwise, use/create currentUtteranceId and increment rev
+          let utteranceId, rev;
+
+          if (options.utteranceId) {
+            // Explicit utteranceId provided (hard segment) - start fresh at rev: 0
+            utteranceId = options.utteranceId;
+            rev = 0;
+          } else {
+            // No explicit utteranceId (soft patch) - use/create current and increment
+            if (!state.currentUtteranceId) {
+              state.currentUtteranceId = generateUtteranceId();
+              state.rev = 0;
+            }
+            utteranceId = state.currentUtteranceId;
+            rev = state.rev;
+          }
+
           const targets = Array.isArray(options.targets) ? options.targets : state.targetLangs;
+
           const patch = {
-            unitId,
+            utteranceId,
             stage,
             op: 'replace',
-            version: nextVersion,
+            rev,
             text,
-            srcLang:
-              options.srcLang ?? state.patchSourceLang ?? state.sourceLang,
+            srcLang: options.srcLang ?? state.patchSourceLang ?? state.sourceLang,
+            isFinal: stage === 'hard',
             ts: computeTimestamps(result)
           };
+
           if (options.meta && typeof options.meta === 'object') {
             patch.meta = options.meta;
           }
+
           const payload = {
             roomId: state.roomId,
             targets,
             patch
           };
+
           try {
             const res = await fetch('/api/segments', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!res.ok) {
-            let body = null;
-            try {
-              body = await res.json();
-            } catch (parseErr) {
-              body = await res.text().catch(() => null);
+              body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+              let body = null;
+              try {
+                body = await res.json();
+              } catch (parseErr) {
+                body = await res.text().catch(() => null);
+              }
+              log('Patch POST failed', { status: res.status, body });
+              return null;
             }
-            log('Patch POST failed', { status: res.status, body });
-            return null;
+
+            // Only increment revision if we're using currentUtteranceId (soft patches)
+            // Hard segments get new utteranceId each time
+            if (!options.utteranceId) {
+              state.rev++;
+            }
+
+            return utteranceId;
+          } catch (err) {
+            log('Patch POST error', { error: err?.message });
           }
-          state.version = nextVersion;
-          return unitId;
-        } catch (err) {
-          log('Patch POST error', { error: err?.message });
+          return null;
         }
-        return null;
-      }
 
         function renderPatch(patch) {
-          if (!patch || !patch.unitId) {
+          const utterId = patch.utteranceId || patch.unitId;
+          if (!utterId) {
             return;
           }
+
           if (patch.stage !== 'hard') {
             log('Soft patch (hidden)', {
-              unitId: patch.unitId,
-              text: patch.text,
-              version: patch.version
+              utteranceId: utterId,
+              text: patch.text?.substring(0, 40),
+              rev: patch.rev ?? patch.version
             });
             return;
           }
-          let item = state.itemsByUnit.get(patch.unitId);
+
+          let item = state.itemsByUnit.get(utterId);
           if (!item) {
             item = document.createElement('li');
-            item.dataset.unitId = patch.unitId;
+            item.dataset.utteranceId = utterId;
             transcriptList.appendChild(item);
-            state.itemsByUnit.set(patch.unitId, item);
+            state.itemsByUnit.set(utterId, item);
           }
           item.dataset.stage = patch.stage;
           item.textContent = patch.text;
+
+          log('Hard patch rendered', {
+            utteranceId: utterId,
+            text: patch.text?.substring(0, 50),
+            rev: patch.rev ?? patch.version
+          });
         }
 
         function attachWebSocket() {
@@ -772,8 +859,8 @@
           state.patchSourceLang = inputSourceLang;
           state.targetLangs = parseTargetLangs(document.getElementById('targetLangs').value);
           state.sessionId = crypto.randomUUID();
-          state.unitIndex = 0;
-          state.version = 0;
+          state.currentUtteranceId = null;
+          state.rev = 0;
           state.lastSoftEmitAt = 0;
           state.lastSoftText = '';
           state.lastPartialFull = '';
@@ -830,7 +917,10 @@
               'true'
             );
 
+            // TEMPORARY: Revert to original simple audio config to test if device selection broke it
+            log('Creating audio config from default microphone (original method)');
             const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+
             let recognizer;
             if (useAutoDetect) {
               const candidates = state.autoDetectLangs.slice(0, 4);
@@ -871,6 +961,11 @@
               if (!trimmed) {
                 return;
               }
+
+              // Log partials occasionally (not every single one to avoid spam)
+              if (Math.random() < 0.1) {
+                log('Recognizing (partial)', { text: trimmed.substring(0, 40) + '...' });
+              }
               const previous = state.lastPartialFull || '';
               const merged = dedupeContinuation(previous, trimmed);
               if (!merged) {
@@ -883,6 +978,17 @@
               const prefixState = state.prefix;
               const fastConfig = getFastFinalsConfig();
               const stableLen = stablePrefixLength();
+
+              // Debug: Log ring buffer state occasionally
+              if (Math.random() < 0.05) {
+                log('Prefix ring state', {
+                  ringSize: prefixState.ring.length,
+                  stableLen,
+                  committedChars: prefixState.committedChars,
+                  merged: merged.substring(0, 40)
+                });
+              }
+
               if (stableLen !== prefixState.lastStableLen) {
                 prefixState.lastStableLen = stableLen;
                 prefixState.lastStableAt = now;
@@ -922,13 +1028,35 @@
                   const lengthOk =
                     boundary >= 0 ||
                     (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
-                  if (segment && throttleOk && stableOk && lengthOk) {
+
+                  // Debug fast-finals decision occasionally
+                  if (Math.random() < 0.05) {
+                    log('Fast-finals check', {
+                      segment: segment.substring(0, 30),
+                      throttleOk,
+                      stableOk,
+                      lengthOk,
+                      isPunct: boundary >= 0
+                    });
+                  }
+
+                  // Prevent duplicate emissions of the exact same text
+                  const isDuplicate = segment === prefixState.lastEmittedText;
+
+                  if (segment && throttleOk && stableOk && lengthOk && !isDuplicate) {
+                    log('🚀 FAST-FINAL (prefix commit)', { segment: segment.substring(0, 50) });
+
+                    // Update lastEmittedText IMMEDIATELY (before async call)
+                    prefixState.lastEmittedText = segment;
+
                     emitHardSegment(segment, event.result, {
                       isPrefix: true,
                       rawSlice,
                       commitEnd,
                       now
                     });
+                  } else if (isDuplicate) {
+                    log('Skipping duplicate fast-final', { segment: segment.substring(0, 30) });
                   }
                 }
               }
@@ -955,6 +1083,25 @@
             };
 
             recognizer.recognized = (_, event) => {
+              // Map reason code to text (NoMatch=0, RecognizedSpeech=3, Canceled=2)
+              const reasonText = event?.result?.reason === 0
+                ? 'NoMatch'
+                : event?.result?.reason === 3
+                ? 'RecognizedSpeech'
+                : event?.result?.reason === 2
+                ? 'Canceled'
+                : `Unknown(${event?.result?.reason})`;
+
+              log('Recognized (final) event', {
+                reason: reasonText,
+                text: event?.result?.text?.substring(0, 50) || '(empty)'
+              });
+
+              // Log NoMatch only if it's unexpected (not just silence)
+              if (event?.result?.reason === 0 && event?.result?.text !== '') {
+                log('⚠️ NoMatch', { lang: state.sourceLang });
+              }
+
               if (!event || !event.result) {
                 return;
               }
@@ -1033,10 +1180,21 @@
               stop();
             };
 
+            recognizer.speechStartDetected = (_, event) => {
+              log('Speech start detected!', { offset: event?.offset });
+            };
+
+            recognizer.speechEndDetected = (_, event) => {
+              log('Speech end detected', { offset: event?.offset });
+            };
+
             recognizer.startContinuousRecognitionAsync(
               () => {
                 setStatus('Listening');
-                log('Recognition started');
+                log('Recognition started', {
+                  lang: state.sourceLang,
+                  targets: state.targetLangs
+                });
                 scheduleTokenRefresh();
               },
               (err) => {
@@ -1085,6 +1243,38 @@
           setTelemetry('—');
         }
 
+        // Enumerate and populate microphone devices
+        async function populateMicrophoneList() {
+          try {
+            const micSelect = document.getElementById('micSelect');
+
+            // Request microphone permission first to get device labels
+            await navigator.mediaDevices.getUserMedia({ audio: true })
+              .then(stream => stream.getTracks().forEach(track => track.stop()));
+
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+            // Clear existing options except the default
+            micSelect.innerHTML = '<option value="">Default microphone</option>';
+
+            // Add each microphone as an option
+            audioInputs.forEach(device => {
+              const option = document.createElement('option');
+              option.value = device.deviceId;
+              option.textContent = device.label || `Microphone ${device.deviceId.substring(0, 8)}`;
+              micSelect.appendChild(option);
+            });
+
+            log('Microphone devices enumerated', { count: audioInputs.length });
+          } catch (err) {
+            log('Failed to enumerate microphones', { error: err?.message });
+          }
+        }
+
+        // Populate microphones on page load
+        populateMicrophoneList();
+
         loadConfig().catch((err) => log('Config bootstrap failed', { error: err?.message }));
 
         startBtn.addEventListener('click', () => {
@@ -1092,6 +1282,19 @@
         });
         stopBtn.addEventListener('click', () => {
           stop();
+        });
+
+        copyDebugBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(logArea.textContent);
+            const originalText = copyDebugBtn.textContent;
+            copyDebugBtn.textContent = 'Copied!';
+            setTimeout(() => {
+              copyDebugBtn.textContent = originalText;
+            }, 2000);
+          } catch (err) {
+            alert('Failed to copy: ' + err.message);
+          }
         });
 
         window.addEventListener('beforeunload', stop);
