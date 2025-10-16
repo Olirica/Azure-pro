@@ -197,35 +197,93 @@ function createTtsQueue({
     );
   }
 
-  const backlogLimit = typeof backlogLimitSeconds === 'number' ? backlogLimitSeconds : null;
-  const resumeThreshold =
-    typeof backlogResumeSeconds === 'number'
-      ? backlogResumeSeconds
-      : backlogLimit
-      ? Math.max(backlogLimit / 2, 2)
-      : null;
+  // Smooth TTS speed curve configuration
+  const BASE_SPEED = parseFloat(process.env.TTS_BASE_SPEED) || 1.05;
+  const RAMP_START_SEC = parseFloat(process.env.TTS_BACKLOG_RAMP_START_SEC) || 5;
+  const RAMP_END_SEC = parseFloat(process.env.TTS_BACKLOG_RAMP_END_SEC) || 20;
+  const MAX_SPEED = parseFloat(process.env.TTS_MAX_SPEED) || 1.35;
+  const MAX_SPEED_CHANGE_PERCENT = parseFloat(process.env.TTS_MAX_SPEED_CHANGE_PERCENT) || 25;
 
-  function maybeToggleThrottle(state, lang, backlog) {
+  /**
+   * Calculate smooth speed multiplier based on backlog using piecewise linear interpolation.
+   * @param {number} backlogSeconds - Current TTS queue backlog in seconds
+   * @returns {number} Speed multiplier (1.05 to 1.35)
+   */
+  function calculateSpeedMultiplier(backlogSeconds) {
+    // Below ramp start: constant base speed
+    if (backlogSeconds < RAMP_START_SEC) {
+      return BASE_SPEED;
+    }
+
+    // Above ramp end: constant max speed
+    if (backlogSeconds >= RAMP_END_SEC) {
+      return MAX_SPEED;
+    }
+
+    // Between ramp start and end: linear interpolation
+    const progress = (backlogSeconds - RAMP_START_SEC) / (RAMP_END_SEC - RAMP_START_SEC);
+    const speed = BASE_SPEED + (MAX_SPEED - BASE_SPEED) * progress;
+
+    return speed;
+  }
+
+  /**
+   * Apply smooth speed transitions with maximum change limit to prevent jarring jumps.
+   * @param {number} currentSpeed - Current speed multiplier
+   * @param {number} targetSpeed - Target speed multiplier from curve
+   * @returns {number} Clamped speed multiplier
+   */
+  function smoothSpeedTransition(currentSpeed, targetSpeed) {
+    const maxChange = MAX_SPEED_CHANGE_PERCENT / 100;
+    const maxIncrease = currentSpeed * (1 + maxChange);
+    const maxDecrease = currentSpeed * (1 - maxChange);
+
+    if (targetSpeed > maxIncrease) {
+      return maxIncrease;
+    }
+    if (targetSpeed < maxDecrease) {
+      return maxDecrease;
+    }
+
+    return targetSpeed;
+  }
+
+  /**
+   * Update TTS speed based on current backlog using smooth curve.
+   * Replaces old binary on/off throttle with gradual acceleration.
+   */
+  function updateTtsSpeed(state, lang, backlog) {
     if (!state) {
       return;
     }
-    if (!backlogLimit) {
-      return;
-    }
-    if (!state.isThrottled && backlog > backlogLimit) {
-      state.isThrottled = true;
-      if (fallbackVoice) {
-        state.voiceOverride = fallbackVoice;
+
+    const targetSpeed = calculateSpeedMultiplier(backlog);
+    const currentSpeed = state.rateMultiplier || BASE_SPEED;
+    const newSpeed = smoothSpeedTransition(currentSpeed, targetSpeed);
+
+    // Only update if speed actually changed
+    if (Math.abs(newSpeed - currentSpeed) > 0.001) {
+      const wasAccelerated = currentSpeed > BASE_SPEED + 0.001;
+      const isAccelerating = newSpeed > BASE_SPEED + 0.001;
+
+      state.rateMultiplier = newSpeed;
+
+      // Emit events for significant transitions
+      if (!wasAccelerated && isAccelerating) {
+        metrics?.recordTtsEvent?.(roomId, lang, 'speed_ramp_start');
+        emitter.emit('speed_ramp_start', { roomId, lang, backlog, speed: newSpeed });
+        logger.debug(
+          { component: 'tts', roomId, lang, backlog, speed: newSpeed.toFixed(3) },
+          'TTS speed ramp started'
+        );
+      } else if (wasAccelerated && !isAccelerating) {
+        metrics?.recordTtsEvent?.(roomId, lang, 'speed_ramp_end');
+        emitter.emit('speed_ramp_end', { roomId, lang, backlog, speed: newSpeed });
+        logger.debug(
+          { component: 'tts', roomId, lang, backlog, speed: newSpeed.toFixed(3) },
+          'TTS speed returned to base'
+        );
       }
-      state.rateMultiplier = rateBoostMultiplier > 1 ? rateBoostMultiplier : 1;
-      metrics?.recordTtsEvent?.(roomId, lang, 'throttle_start');
-      emitter.emit('throttle', { roomId, lang, backlog });
-    } else if (state.isThrottled && resumeThreshold && backlog <= resumeThreshold) {
-      state.isThrottled = false;
-      state.voiceOverride = null;
-      state.rateMultiplier = 1;
-      metrics?.recordTtsEvent?.(roomId, lang, 'throttle_end');
-      emitter.emit('resume', { roomId, lang, backlog });
     }
   }
 
@@ -237,7 +295,7 @@ function createTtsQueue({
       metrics.setTtsBacklog(roomId, lang, backlog);
     }
     const state = queueByLang.get(lang);
-    maybeToggleThrottle(state, lang, backlog);
+    updateTtsSpeed(state, lang, backlog);
   }
 
   function getBacklogSeconds(lang) {
@@ -280,7 +338,7 @@ function createTtsQueue({
       processing: false,
       voiceOverride: null,
       isThrottled: false,
-      rateMultiplier: 1,
+      rateMultiplier: BASE_SPEED, // Start at base speed (1.05x)
       hydrated: false,
       audioFormat: resolvedAudioFormat,
       prefetch: new Map()
@@ -376,10 +434,9 @@ function createTtsQueue({
       state.synthesizer = synthesizer;
     }
 
-    const useSsml = state.isThrottled && state.rateMultiplier && state.rateMultiplier !== 1;
-    const payload = useSsml
-      ? buildSsml(item.text, item.lang, voiceName, state.rateMultiplier)
-      : item.text;
+    // Always use SSML with rate control (base speed is 1.05x, not 1.0x)
+    const rateMultiplier = state.rateMultiplier || BASE_SPEED;
+    const payload = buildSsml(item.text, item.lang, voiceName, rateMultiplier);
 
     return new Promise((resolve, reject) => {
       const finalize = () => {
@@ -408,11 +465,8 @@ function createTtsQueue({
         reject(err);
       };
 
-      if (useSsml) {
-        synthesizer.speakSsmlAsync(payload, onSuccess, onError);
-      } else {
-        synthesizer.speakTextAsync(payload, onSuccess, onError);
-      }
+      // Always use SSML (we always have rate control now)
+      synthesizer.speakSsmlAsync(payload, onSuccess, onError);
     });
   }
 
@@ -536,8 +590,9 @@ function createTtsQueue({
     const segments = (segmentsFromLengths && segmentsFromLengths.length
       ? segmentsFromLengths
       : segmentText(trimmed)) || [trimmed];
-    const rateBoost = state.isThrottled && state.rateMultiplier ? state.rateMultiplier : 1;
-    const makeDuration = (input) => estimateSeconds(input) / rateBoost;
+    // Duration accounts for current playback speed
+    const currentRate = state.rateMultiplier || BASE_SPEED;
+    const makeDuration = (input) => estimateSeconds(input) / currentRate;
     segments.forEach((segment, index) => {
       const segmentId = `${unitId}#${index}`;
       state.queue.push({
