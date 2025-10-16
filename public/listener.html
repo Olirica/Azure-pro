@@ -249,39 +249,61 @@
             return;
           }
 
-          // Upsert logic: update existing row or create new one
-          const existing = state.itemsByUnit.get(utterId);
-
-          // Drop stale revisions
-          if (existing && existing.rev != null && rev <= existing.rev) {
-            console.debug('[listener] Skipping stale revision', {
-              utteranceId: utterId,
-              currentRev: existing.rev,
-              incomingRev: rev
-            });
-            return;
+          // Check if we've already rendered this utterance (prevent duplicates)
+          if (state.itemsByUnit.has(utterId)) {
+            const existing = state.itemsByUnit.get(utterId);
+            if (existing.rev != null && rev <= existing.rev) {
+              console.debug('[listener] Skipping stale/duplicate revision', {
+                utteranceId: utterId,
+                currentRev: existing.rev,
+                incomingRev: rev
+              });
+              return;
+            }
           }
 
-          let item = existing?.element;
-          if (!item) {
-            item = document.createElement('li');
-            transcriptEl.appendChild(item);
+          // Get or create the current paragraph
+          let currentParagraph = transcriptEl.lastElementChild;
+
+          // Create new paragraph if none exists or if this is a new speaking session
+          // (detect pause by checking if last update was > 5 seconds ago)
+          const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
+          const timeSinceLastUpdate = now - lastUpdate;
+
+          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+            currentParagraph = document.createElement('li');
+            currentParagraph.dataset.lastUpdate = now;
+            currentParagraph.dataset.stage = 'hard';
+            transcriptEl.appendChild(currentParagraph);
+          } else {
+            currentParagraph.dataset.lastUpdate = now;
           }
 
-          item.dataset.stage = isFinal ? 'hard' : 'soft';
-          item.dataset.utteranceId = utterId;
-          item.textContent = patch.text;
+          // Append text with space separator
+          const currentText = currentParagraph.textContent;
+          let textToAppend = patch.text;
 
+          // Capitalize first letter if this is the start of a paragraph
+          if (!currentText && textToAppend) {
+            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          }
+
+          currentParagraph.textContent = currentText
+            ? `${currentText} ${textToAppend}`
+            : textToAppend;
+
+          // Track this utterance to prevent duplicates
           state.itemsByUnit.set(utterId, {
             rev,
-            element: item,
+            element: currentParagraph,
             receivedAt,
             isFinal
           });
 
-          console.debug('[listener] Patch rendered', {
+          console.debug('[listener] Patch appended to paragraph', {
             utteranceId: utterId,
             text: patch.text?.substring(0, 50),
+            paragraphLength: currentParagraph.textContent.length,
             rev,
             isFinal,
             receivedAt

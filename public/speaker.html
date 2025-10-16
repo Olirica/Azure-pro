@@ -744,19 +744,45 @@
             return;
           }
 
-          let item = state.itemsByUnit.get(utterId);
-          if (!item) {
-            item = document.createElement('li');
-            item.dataset.utteranceId = utterId;
-            transcriptList.appendChild(item);
-            state.itemsByUnit.set(utterId, item);
-          }
-          item.dataset.stage = patch.stage;
-          item.textContent = patch.text;
+          // Get or create the current paragraph
+          let currentParagraph = transcriptList.lastElementChild;
 
-          log('Hard patch rendered', {
+          // Create new paragraph if none exists or if this is a new speaking session
+          // (detect pause by checking if last update was > 5 seconds ago)
+          const now = Date.now();
+          const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
+          const timeSinceLastUpdate = now - lastUpdate;
+
+          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+            currentParagraph = document.createElement('li');
+            currentParagraph.dataset.lastUpdate = now;
+            transcriptList.appendChild(currentParagraph);
+          } else {
+            currentParagraph.dataset.lastUpdate = now;
+          }
+
+          // Append text with space separator
+          const currentText = currentParagraph.textContent;
+          let textToAppend = patch.text;
+
+          // Capitalize first letter if this is the start of a paragraph
+          if (!currentText && textToAppend) {
+            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          }
+
+          currentParagraph.textContent = currentText
+            ? `${currentText} ${textToAppend}`
+            : textToAppend;
+
+          currentParagraph.dataset.stage = patch.stage;
+
+          // Track this utterance
+          state.itemsByUnit.set(utterId, currentParagraph);
+
+          log('Hard patch appended to paragraph', {
             utteranceId: utterId,
             text: patch.text?.substring(0, 50),
+            paragraphLength: currentParagraph.textContent.length,
             rev: patch.rev ?? patch.version
           });
         }
