@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { TranslationBuffer } = require('./translation-buffer');
 
 function normalizeForOverlap(text) {
   return (text || '')
@@ -119,18 +120,36 @@ class SegmentProcessor {
    * @param {Object} deps.metrics
    * @param {number} [deps.maxUnits=500]
    * @param {{ saveUnit?: Function, removeUnit?: Function }} [deps.store]
+   * @param {Function} [deps.onTranslationReady] - Callback when translations are ready
   */
-  constructor({ roomId, logger, translator, metrics, maxUnits = 500, store }) {
+  constructor({ roomId, logger, translator, metrics, maxUnits = 500, store, onTranslationReady }) {
     this.roomId = roomId;
     this.logger = logger;
     this.translator = translator;
     this.metrics = metrics;
     this.maxUnits = maxUnits;
     this.store = store;
+    this.onTranslationReady = onTranslationReady; // Callback for async translations
 
     this.units = new Map(); // root -> unit state
     this.translationCache = new Map(); // cache key -> result
     this.translationIndex = new Map(); // root -> Set(cacheKey)
+
+    // Initialize translation buffer for intelligent segment merging
+    const bufferEnabled = process.env.TRANSLATION_MERGE_ENABLED !== 'false';
+    const mergeWindowMs = parseInt(process.env.TRANSLATION_MERGE_WINDOW_MS, 10) || 1500;
+    const minMergeChars = parseInt(process.env.TRANSLATION_MIN_MERGE_CHARS, 10) || 50;
+    const maxMergeCount = parseInt(process.env.TRANSLATION_MAX_MERGE_COUNT, 10) || 3;
+
+    this.translationBuffer = new TranslationBuffer({
+      roomId,
+      logger,
+      onTranslate: this.executeTranslation.bind(this),
+      mergeWindowMs,
+      minMergeChars,
+      maxMergeCount,
+      enabled: bufferEnabled
+    });
   }
 
   /**
@@ -214,6 +233,110 @@ class SegmentProcessor {
     }
     this.units.set(root, unit);
     this.enforceUnitLimit('hydrate_evict');
+  }
+
+  /**
+   * Execute translation for a segment (called by TranslationBuffer).
+   * This is the core translation logic extracted for buffering.
+   * @param {Object} segment - Segment with unitId, text, srcLang, etc.
+   * @param {string[]} targetLangs - Target languages
+   * @returns {Promise<Object[]>} Array of translated patches
+   */
+  async executeTranslation(segment, targetLangs) {
+    const { unitId, text, srcLang, stage, version, ts } = segment;
+    const uniqueTargets = Array.from(
+      new Set(targetLangs.filter((lang) => lang && lang !== srcLang))
+    );
+
+    if (!uniqueTargets.length) {
+      return [];
+    }
+
+    const translatedPatches = [];
+
+    // Check cache first
+    const misses = [];
+    for (const lang of uniqueTargets) {
+      const cached = this.getCachedTranslation(unitId, version, lang);
+      if (cached) {
+        translatedPatches.push({
+          unitId,
+          utteranceId: unitId,
+          stage: stage || 'hard',
+          op: 'replace',
+          version,
+          rev: version,
+          text: cached.text,
+          srcLang,
+          targetLang: lang,
+          isFinal: stage === 'hard',
+          sentLen: {
+            src: cached.srcSentLen,
+            tgt: cached.transSentLen
+          },
+          ts,
+          mergedFrom: segment.mergedFrom // Preserve merge metadata
+        });
+      } else {
+        misses.push(lang);
+      }
+    }
+
+    // Translate cache misses
+    if (misses.length) {
+      try {
+        const translations = await this.translator.translate(
+          this.roomId,
+          text,
+          srcLang,
+          misses
+        );
+        this.logger.debug(
+          {
+            component: 'segment-processor',
+            unitId,
+            translations,
+            misses,
+            mergedFrom: segment.mergedFrom
+          },
+          'Translator response.'
+        );
+        for (const translation of translations) {
+          const payload = {
+            unitId,
+            utteranceId: unitId,
+            stage: stage || 'hard',
+            op: 'replace',
+            version,
+            rev: version,
+            text: translation.text,
+            srcLang,
+            targetLang: translation.lang,
+            isFinal: stage === 'hard',
+            sentLen: {
+              src: translation.srcSentLen,
+              tgt: translation.transSentLen
+            },
+            ts,
+            mergedFrom: segment.mergedFrom
+          };
+          this.cacheTranslation(unitId, version, translation.lang, translation);
+          translatedPatches.push(payload);
+        }
+      } catch (err) {
+        this.logger.error(
+          { component: 'segment-processor', roomId: this.roomId, err: err?.message },
+          'Translation failed.'
+        );
+      }
+    }
+
+    // Emit translations via callback if we have patches
+    if (translatedPatches.length && this.onTranslationReady) {
+      this.onTranslationReady(translatedPatches);
+    }
+
+    return translatedPatches;
   }
 
   /**
@@ -396,86 +519,26 @@ class SegmentProcessor {
       'Processing patch targets.'
     );
 
-    const translatedPatches = [];
-
+    // Route translation through buffer for intelligent merging
     if (uniqueTargets.length) {
-      const misses = [];
-      for (const lang of uniqueTargets) {
-        const cached = this.getCachedTranslation(unitId, version, lang);
-        if (cached) {
-          translatedPatches.push({
-            unitId,
-            utteranceId: unitId,
-            stage: finalStage,
-            op: 'replace',
-            version,
-            rev: version,
-            text: cached.text,
-            srcLang: updatedUnit.srcLang,
-            targetLang: lang,
-            isFinal: finalStage === 'hard',
-            sentLen: {
-              src: cached.srcSentLen,
-              tgt: cached.transSentLen
-            },
-            ts
-          });
-        } else {
-          misses.push(lang);
-        }
-      }
+      const segmentForTranslation = {
+        unitId,
+        text: mergedText,
+        srcLang: updatedUnit.srcLang,
+        stage: finalStage,
+        version,
+        ts
+      };
 
-      if (misses.length) {
-        try {
-          const translations = await this.translator.translate(
-            this.roomId,
-            mergedText,
-            updatedUnit.srcLang,
-            misses
-          );
-          this.logger.debug(
-            {
-              component: 'segment-processor',
-              unitId,
-              translations,
-              misses
-            },
-            'Translator response.'
-          );
-          for (const translation of translations) {
-            const payload = {
-              unitId,
-              utteranceId: unitId,
-              stage: finalStage,
-              op: 'replace',
-              version,
-              rev: version,
-              text: translation.text,
-              srcLang: updatedUnit.srcLang,
-              targetLang: translation.lang,
-              isFinal: finalStage === 'hard',
-              sentLen: {
-                src: translation.srcSentLen,
-                tgt: translation.transSentLen
-              },
-              ts
-            };
-            this.cacheTranslation(unitId, version, translation.lang, translation);
-            translatedPatches.push(payload);
-          }
-        } catch (err) {
-          this.logger.error(
-            { component: 'segment-processor', roomId: this.roomId, err: err?.message },
-            'Translation failed.'
-          );
-        }
-      }
+      // Add to buffer (translation happens asynchronously)
+      await this.translationBuffer.add(segmentForTranslation, uniqueTargets);
     }
 
+    // Return immediately (translations will be emitted asynchronously)
     return {
       stale: false,
       sourcePatch,
-      translatedPatches
+      translatedPatches: [] // Empty - translations happen in buffer
     };
   }
 
