@@ -785,6 +785,25 @@
             paragraphLength: currentParagraph.textContent.length,
             rev: patch.rev ?? patch.version
           });
+
+          // Cleanup old paragraphs to prevent browser slowdown
+          cleanupOldParagraphs();
+        }
+
+        function cleanupOldParagraphs() {
+          const MAX_PARAGRAPHS = 20; // Keep last 20 paragraphs (live streaming focus)
+          const paragraphs = transcriptList.querySelectorAll('li');
+
+          if (paragraphs.length > MAX_PARAGRAPHS) {
+            const removeCount = paragraphs.length - MAX_PARAGRAPHS;
+            for (let i = 0; i < removeCount; i++) {
+              paragraphs[i].remove();
+            }
+            log('Cleaned up old paragraphs', {
+              removed: removeCount,
+              remaining: MAX_PARAGRAPHS
+            });
+          }
         }
 
         function attachWebSocket() {
