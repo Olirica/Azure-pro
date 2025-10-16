@@ -148,6 +148,10 @@ function ensureRoom(roomId) {
   }
 
   const roomLogger = logger.child({ roomId });
+
+  // Forward declaration - will be set after room is created
+  let roomRef = null;
+
   const processor = new SegmentProcessor({
     roomId,
     logger: roomLogger.child({ component: 'segment-processor' }),
@@ -157,7 +161,19 @@ function ensureRoom(roomId) {
       dropPatch: metrics.dropPatch
     },
     maxUnits: PATCH_LRU_PER_ROOM,
-    store: stateStore
+    store: stateStore,
+    // Callback for async translations from buffer
+    onTranslationReady: (translatedPatches) => {
+      if (!roomRef) {
+        return;
+      }
+      // Broadcast translations when buffer flushes
+      broadcastPatch(roomRef, {
+        stale: false,
+        sourcePatch: null,
+        translatedPatches
+      });
+    }
   });
 
   const ttsQueues = new Map();
@@ -225,6 +241,9 @@ function ensureRoom(roomId) {
     }),
     ready: null
   };
+
+  // Set reference for callback
+  roomRef = room;
 
   rooms.set(roomId, room);
 
