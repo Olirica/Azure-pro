@@ -19,6 +19,20 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
+function getNumberEnv(keys, fallback) {
+  const list = Array.isArray(keys) ? keys : [keys];
+  for (const key of list) {
+    const raw = process.env[key];
+    if (raw !== undefined && raw !== '') {
+      const value = Number(raw);
+      if (!Number.isNaN(value)) {
+        return value;
+      }
+    }
+  }
+  return fallback;
+}
+
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   base: null
@@ -34,23 +48,35 @@ const server = http.createServer(app);
 server.keepAliveTimeout = 61000;
 server.headersTimeout = 65000;
 
-const STABLE_PARTIALS = Number(process.env.STABLE_PARTIALS || 3);
-const SEG_SILENCE_MS = Number(process.env.SEG_SILENCE_MS || 800);
-const INITIAL_SILENCE_MS = Number(process.env.INITIAL_SILENCE_MS || 5000);
-const END_SILENCE_MS = Number(process.env.END_SILENCE_MS || 500);
-const SOFT_THROTTLE_MS = Number(process.env.SOFT_THROTTLE_MS || 1000);
-const SOFT_MIN_DELTA_CHARS = Number(process.env.SOFT_MIN_DELTA_CHARS || 18);
-const SPEECH_TOKEN_REFRESH_MS = Number(process.env.SPEECH_TOKEN_REFRESH_MS || 9 * 60 * 1000);
-const WS_PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS || 30000);
-const PATCH_LRU_PER_ROOM = Number(process.env.PATCH_LRU_PER_ROOM || 500);
-const TTS_MAX_BACKLOG_SEC =
-  process.env.TTS_MAX_BACKLOG_SEC !== undefined ? Number(process.env.TTS_MAX_BACKLOG_SEC) : 10;
-const TTS_RESUME_BACKLOG_SEC =
-  process.env.TTS_RESUME_BACKLOG_SEC !== undefined
-    ? Number(process.env.TTS_RESUME_BACKLOG_SEC)
-    : TTS_MAX_BACKLOG_SEC > 0
-    ? Math.max(Math.floor(TTS_MAX_BACKLOG_SEC / 2), 2)
-    : 5;
+const STABLE_PARTIALS = getNumberEnv(
+  ['SPEECH_STABLE_PARTIALS', 'STABLE_PARTIALS'],
+  4
+);
+const SEG_SILENCE_MS = getNumberEnv(
+  ['SPEECH_SEGMENTATION_SILENCE_MS', 'SEG_SILENCE_MS'],
+  500
+);
+const INITIAL_SILENCE_MS = getNumberEnv(
+  ['SPEECH_INITIAL_SILENCE_MS', 'INITIAL_SILENCE_MS'],
+  3000
+);
+const END_SILENCE_MS = getNumberEnv(
+  ['SPEECH_END_SILENCE_MS', 'END_SILENCE_MS'],
+  350
+);
+const SOFT_THROTTLE_MS = getNumberEnv('SOFT_THROTTLE_MS', 1000);
+const SOFT_MIN_DELTA_CHARS = getNumberEnv('SOFT_MIN_DELTA_CHARS', 18);
+const SPEECH_TOKEN_REFRESH_MS = getNumberEnv(
+  'SPEECH_TOKEN_REFRESH_MS',
+  9 * 60 * 1000
+);
+const WS_PING_INTERVAL_MS = getNumberEnv('WS_PING_INTERVAL_MS', 30000);
+const PATCH_LRU_PER_ROOM = getNumberEnv('PATCH_LRU_PER_ROOM', 500);
+const TTS_MAX_BACKLOG_SEC = getNumberEnv('TTS_MAX_BACKLOG_SEC', 8);
+const TTS_RESUME_BACKLOG_SEC = getNumberEnv(
+  'TTS_RESUME_BACKLOG_SEC',
+  TTS_MAX_BACKLOG_SEC > 0 ? Math.max(Math.floor(TTS_MAX_BACKLOG_SEC / 2), 2) : 4
+);
 const TTS_BACKLOG_FALLBACK_VOICE =
   process.env.TTS_BACKLOG_FALLBACK_VOICE !== undefined
     ? process.env.TTS_BACKLOG_FALLBACK_VOICE || null
@@ -58,6 +84,15 @@ const TTS_BACKLOG_FALLBACK_VOICE =
 const FINAL_DEBOUNCE_MS = Number(process.env.FINAL_DEBOUNCE_MS || 180);
 const WATCHDOG_EVENT_IDLE_MS = Number(process.env.WATCHDOG_EVENT_IDLE_MS || 12000);
 const WATCHDOG_PCM_IDLE_MS = Number(process.env.WATCHDOG_PCM_IDLE_MS || 7000);
+const TTS_RATE_BOOST_PERCENT = getNumberEnv('TTS_RATE_BOOST_PERCENT', 10);
+const FASTFINALS_STABLE_K = getNumberEnv('FASTFINALS_STABLE_K', 3);
+const FASTFINALS_MIN_STABLE_MS = getNumberEnv('FASTFINALS_MIN_STABLE_MS', 600);
+const FASTFINALS_MIN_CHARS = getNumberEnv('FASTFINALS_MIN_CHARS', 28);
+const FASTFINALS_MIN_WORDS = getNumberEnv('FASTFINALS_MIN_WORDS', 6);
+const FASTFINALS_EMIT_THROTTLE_MS = getNumberEnv('FASTFINALS_EMIT_THROTTLE_MS', 700);
+const FASTFINALS_PUNCT_STABLE_MS = getNumberEnv('FASTFINALS_PUNCT_STABLE_MS', 350);
+const FASTFINALS_TAIL_GUARD_CHARS = getNumberEnv('FASTFINALS_TAIL_GUARD_CHARS', 12);
+const FASTFINALS_TAIL_GUARD_WORDS = getNumberEnv('FASTFINALS_TAIL_GUARD_WORDS', 2);
 const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
@@ -74,6 +109,26 @@ const stateStore = createStateStore({
   maxUnits: PATCH_LRU_PER_ROOM,
   maxPatches: PATCH_LRU_PER_ROOM
 });
+
+const WS_VERBOSE =
+  process.env.WS_VERBOSE_LOG === 'true' ||
+  process.env.WS_VERBOSE_LOG === '1' ||
+  process.env.DEBUG_WS === 'true';
+
+function wsVerbose(roomId, tag, details) {
+  if (!WS_VERBOSE) {
+    return;
+  }
+  logger.debug(
+    {
+      component: 'ws-verbose',
+      roomId,
+      tag,
+      ...details
+    },
+    'WS event.'
+  );
+}
 
 const rooms = new Map();
 
@@ -119,6 +174,7 @@ function ensureRoom(roomId) {
         updateBacklog: metrics.setTtsBacklog,
         backlogLimitSeconds: TTS_MAX_BACKLOG_SEC,
         backlogResumeSeconds: TTS_RESUME_BACKLOG_SEC,
+        rateBoostPercent: TTS_RATE_BOOST_PERCENT,
         fallbackVoice: TTS_BACKLOG_FALLBACK_VOICE,
         store: stateStore,
         audioFormat: SPEECH_TTS_FORMAT
@@ -382,11 +438,28 @@ app.get('/api/config', (_req, res) => {
     wsPingIntervalMs: WS_PING_INTERVAL_MS,
     ttsMaxBacklogSec: TTS_MAX_BACKLOG_SEC,
     ttsResumeBacklogSec: TTS_RESUME_BACKLOG_SEC,
+    ttsRateBoostPercent: TTS_RATE_BOOST_PERCENT,
     patchLruPerRoom: PATCH_LRU_PER_ROOM,
     finalDebounceMs: FINAL_DEBOUNCE_MS,
     phraseHints: PHRASE_HINTS,
     autoDetectLangs: AUTO_DETECT_LANGS,
-    ttsFormat: SPEECH_TTS_FORMAT || undefined
+    ttsFormat: SPEECH_TTS_FORMAT || undefined,
+    speechTunables: {
+      segmentationSilenceMs: SEG_SILENCE_MS,
+      endSilenceMs: END_SILENCE_MS,
+      initialSilenceMs: INITIAL_SILENCE_MS,
+      stablePartials: STABLE_PARTIALS
+    },
+    fastFinals: {
+      stableK: FASTFINALS_STABLE_K,
+      minStableMs: FASTFINALS_MIN_STABLE_MS,
+      minChars: FASTFINALS_MIN_CHARS,
+      minWords: FASTFINALS_MIN_WORDS,
+      emitThrottleMs: FASTFINALS_EMIT_THROTTLE_MS,
+      punctStableMs: FASTFINALS_PUNCT_STABLE_MS,
+      tailGuardChars: FASTFINALS_TAIL_GUARD_CHARS,
+      tailGuardWords: FASTFINALS_TAIL_GUARD_WORDS
+    }
   });
 });
 
@@ -523,19 +596,40 @@ wsServer.on('connection', async (socket, request) => {
       if (role === 'speaker') {
         room.watchdog.markEvent();
       }
-      // Speakers can push PCM heartbeat events to keep the watchdog alive.
+      let parsed = null;
+      let raw = '';
       try {
-        const parsed = JSON.parse(data);
-        if (parsed?.type === 'heartbeat' && parsed?.payload?.pcm === true) {
-          room.watchdog.markPcm();
-          return;
-        }
-        if (parsed?.type === 'resume' && parsed?.payload?.versions) {
-          client.lastSeen = parsed.payload.versions || {};
-          return;
-        }
+        raw = typeof data === 'string' ? data : data?.toString?.() || '';
+        parsed = JSON.parse(raw);
       } catch (err) {
+        wsVerbose(roomId, 'bad-json', { role, error: err?.message, raw: raw.slice(0, 160) });
         room.logger.debug({ component: 'ws', err: err?.message }, 'Failed to parse WS message.');
+        return;
+      }
+
+      const payloadInfo = {};
+      if (parsed?.unitId) {
+        payloadInfo.unitId = parsed.unitId;
+      }
+      if (typeof parsed?.text === 'string') {
+        payloadInfo.len = parsed.text.length;
+      }
+      if (typeof parsed?.seq === 'number') {
+        payloadInfo.seq = parsed.seq;
+      }
+      if (typeof parsed?.srcStart === 'number' || typeof parsed?.srcEnd === 'number') {
+        payloadInfo.srcStart = parsed.srcStart;
+        payloadInfo.srcEnd = parsed.srcEnd;
+      }
+      wsVerbose(roomId, parsed?.type || 'unknown', { role, ...payloadInfo });
+
+      if (parsed?.type === 'heartbeat' && parsed?.payload?.pcm === true) {
+        room.watchdog.markPcm();
+        return;
+      }
+      if (parsed?.type === 'resume' && parsed?.payload?.versions) {
+        client.lastSeen = parsed.payload.versions || {};
+        return;
       }
     });
 

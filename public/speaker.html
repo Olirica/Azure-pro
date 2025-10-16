@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Canoë Simo · Speaker</title>
+    <title>Simo by Canoë · Speaker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       :root {
@@ -146,6 +146,12 @@
             <label for="targetLangs">Target languages (comma separated)</label>
             <input id="targetLangs" type="text" value="fr-CA" />
           </div>
+          <div>
+            <label for="micSelect">Microphone</label>
+            <select id="micSelect" style="width: 100%; padding: 0.6rem 0.8rem; margin-top: 0.35rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.35); color: inherit;">
+              <option value="">Default microphone</option>
+            </select>
+          </div>
         </div>
         <div class="stack" style="margin-top: 1.25rem">
           <div class="status">
@@ -164,6 +170,9 @@
 
       <section>
         <h2>Debug</h2>
+        <button id="copyDebugBtn" style="margin-bottom: 1rem; background: rgba(148, 163, 184, 0.2); color: inherit;">
+          Copy debug log
+        </button>
         <pre id="debugLog">Waiting…</pre>
         <small>Token acquisition, SDK events, and merge decisions appear here.</small>
       </section>
@@ -178,15 +187,19 @@
         const telemetry = document.getElementById('telemetry');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const copyDebugBtn = document.getElementById('copyDebugBtn');
 
         const state = {
           recognizer: null,
           ws: null,
           sessionId: null,
-          unitIndex: 0,
-          version: 0,
-          lastEmitAt: 0,
+          currentUtteranceId: null,  // Stable ID for current utterance
+          rev: 0,  // Revision counter (increments within same utteranceId)
+          lastSoftEmitAt: 0,
           lastSoftText: '',
+          lastPartialFull: '',
+          prefix: createPrefixState(),
+          fastFinals: null,
           roomId: null,
           sourceLang: null,
           targetLangs: [],
@@ -203,20 +216,31 @@
           patchSourceLang: null
         };
 
+        const DEFAULT_FAST_FINALS = Object.freeze({
+          stableK: 3,
+          minStableMs: 600,
+          minChars: 28,
+          minWords: 6,
+          emitThrottleMs: 700,
+          punctStableMs: 350
+        });
+
         const DEFAULT_CONFIG = {
-          stablePartials: 3,
-          segmentationSilenceMs: 800,
-          initialSilenceMs: 5000,
-          endSilenceMs: 500,
+          stablePartials: 4,
+          segmentationSilenceMs: 500,
+          initialSilenceMs: 3000,
+          endSilenceMs: 350,
           softThrottleMs: 1000,
           softMinDeltaChars: 18,
           speechTokenRefreshMs: 540000,
           wsPingIntervalMs: 30000,
-          ttsMaxBacklogSec: 10,
-          ttsResumeBacklogSec: 5,
+          ttsMaxBacklogSec: 8,
+          ttsResumeBacklogSec: 4,
+          ttsRateBoostPercent: 10,
           finalDebounceMs: 180,
           phraseHints: [],
-          autoDetectLangs: []
+          autoDetectLangs: [],
+          fastFinals: { ...DEFAULT_FAST_FINALS }
         };
 
         async function loadConfig() {
@@ -229,16 +253,88 @@
               throw new Error(`Config request failed (${res.status})`);
             }
             const data = await res.json();
-            state.config = { ...DEFAULT_CONFIG, ...data };
+            const speechTunables =
+              data && typeof data.speechTunables === 'object' && data.speechTunables
+                ? data.speechTunables
+                : {};
+            const mergedConfig = { ...DEFAULT_CONFIG, ...data };
+            const coerce = (value, fallback) => {
+              const num = Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            mergedConfig.stablePartials = coerce(
+              data.stablePartials ?? speechTunables.stablePartials,
+              DEFAULT_CONFIG.stablePartials
+            );
+            mergedConfig.segmentationSilenceMs = coerce(
+              data.segmentationSilenceMs ?? speechTunables.segmentationSilenceMs,
+              DEFAULT_CONFIG.segmentationSilenceMs
+            );
+            mergedConfig.initialSilenceMs = coerce(
+              data.initialSilenceMs ?? speechTunables.initialSilenceMs,
+              DEFAULT_CONFIG.initialSilenceMs
+            );
+            mergedConfig.endSilenceMs = coerce(
+              data.endSilenceMs ?? speechTunables.endSilenceMs,
+              DEFAULT_CONFIG.endSilenceMs
+            );
+            mergedConfig.ttsMaxBacklogSec = coerce(
+              data.ttsMaxBacklogSec,
+              DEFAULT_CONFIG.ttsMaxBacklogSec
+            );
+            mergedConfig.ttsResumeBacklogSec = coerce(
+              data.ttsResumeBacklogSec,
+              DEFAULT_CONFIG.ttsResumeBacklogSec
+            );
+            mergedConfig.ttsRateBoostPercent = coerce(
+              data.ttsRateBoostPercent,
+              DEFAULT_CONFIG.ttsRateBoostPercent
+            );
+            const incomingFastFinals =
+              data && typeof data.fastFinals === 'object' && data.fastFinals ? data.fastFinals : {};
+            const fastFinals = {
+              stableK: coerce(incomingFastFinals.stableK, DEFAULT_FAST_FINALS.stableK),
+              minStableMs: coerce(incomingFastFinals.minStableMs, DEFAULT_FAST_FINALS.minStableMs),
+              minChars: coerce(incomingFastFinals.minChars, DEFAULT_FAST_FINALS.minChars),
+              minWords: coerce(incomingFastFinals.minWords, DEFAULT_FAST_FINALS.minWords),
+              emitThrottleMs: coerce(
+                incomingFastFinals.emitThrottleMs,
+                DEFAULT_FAST_FINALS.emitThrottleMs
+              ),
+              punctStableMs: coerce(
+                incomingFastFinals.punctStableMs,
+                DEFAULT_FAST_FINALS.punctStableMs,
+                0
+              ),
+              tailGuardChars: coerce(
+                incomingFastFinals.tailGuardChars,
+                DEFAULT_FAST_FINALS.tailGuardChars,
+                0
+              ),
+              tailGuardWords: coerce(
+                incomingFastFinals.tailGuardWords,
+                DEFAULT_FAST_FINALS.tailGuardWords,
+                0
+              )
+            };
+            mergedConfig.fastFinals = { ...fastFinals };
+            state.config = mergedConfig;
+            state.fastFinals = fastFinals;
             state.phraseHints = Array.isArray(state.config.phraseHints)
               ? state.config.phraseHints
               : [];
+            if (!state.phraseHints.some((hint) => hint.trim().toLowerCase() === 'session')) {
+              state.phraseHints.push('session');
+            }
             state.autoDetectLangs = Array.isArray(state.config.autoDetectLangs)
               ? state.config.autoDetectLangs
               : [];
             log('Runtime config loaded', state.config);
           } catch (err) {
-            state.config = { ...DEFAULT_CONFIG };
+            state.config = { ...DEFAULT_CONFIG, fastFinals: { ...DEFAULT_FAST_FINALS } };
+            state.fastFinals = { ...DEFAULT_FAST_FINALS };
+            state.phraseHints = [];
+            state.autoDetectLangs = [];
             log('Failed to load config, falling back to defaults.', { error: err?.message });
           }
           const heartbeat = state.config.wsPingIntervalMs || DEFAULT_CONFIG.wsPingIntervalMs;
@@ -247,7 +343,9 @@
         }
 
         function log(message, context = {}) {
-          const timestamp = new Date().toISOString();
+          // Compact timestamp: HH:MM:SS.mmm
+          const now = new Date();
+          const timestamp = now.toTimeString().slice(0, 8) + '.' + now.getMilliseconds().toString().padStart(3, '0');
           const entry = `[${timestamp}] ${message}${
             Object.keys(context).length ? ` ${JSON.stringify(context)}` : ''
           }`;
@@ -320,7 +418,34 @@
           if (!matches) {
             return [text.trim()];
           }
-          return matches.map((segment) => segment.trim()).filter(Boolean);
+
+          // Filter out fragments (lowercase start suggesting continuation)
+          const sentences = matches.map((s) => s.trim()).filter(Boolean);
+          const filtered = [];
+
+          for (let i = 0; i < sentences.length; i++) {
+            const sentence = sentences[i];
+            const startsWithLowercase = /^[a-z]/.test(sentence);
+
+            // If it starts with lowercase and isn't the first sentence,
+            // merge it with the next sentence (or previous if it's last)
+            if (startsWithLowercase && sentences.length > 1) {
+              // Try to merge with next sentence if available
+              if (i + 1 < sentences.length) {
+                sentences[i + 1] = sentence + ' ' + sentences[i + 1];
+                continue; // Skip adding this fragment
+              }
+              // Otherwise merge with previous
+              else if (filtered.length > 0) {
+                filtered[filtered.length - 1] += ' ' + sentence;
+                continue;
+              }
+            }
+
+            filtered.push(sentence);
+          }
+
+          return filtered;
         }
 
         function computeTimestamps(result) {
@@ -330,65 +455,355 @@
           return { t0: offsetMs, t1: offsetMs + durationMs };
         }
 
-        function buildUnitId() {
-          return `${state.sessionId}|${state.sourceLang}|${state.unitIndex}`;
+        // Generate ULID-style utteranceId (timestamp + random)
+        function generateUtteranceId() {
+          const timestamp = Date.now().toString(36).toUpperCase();
+          const random = Math.random().toString(36).substring(2, 10).toUpperCase();
+          return `U${timestamp}${random}`;
         }
 
-        async function postPatch(text, stage, result) {
-          if (!text) {
-            return;
+        function createPrefixState() {
+          return {
+            ring: [],
+            committedChars: 0,
+            committedRaw: '',
+            lastStableLen: 0,
+            lastStableAt: 0,
+            lastCandidateEnd: 0,
+            candidateStableAt: 0,
+            lastEmitAt: 0,
+            lastEmittedText: '' // Track last emitted text to prevent duplicates
+          };
+        }
+
+        function getFastFinalsConfig() {
+          const cfg = state.fastFinals || DEFAULT_FAST_FINALS;
+          const coerce = (value, fallback, min = 0) => {
+            const num = Number(value);
+            if (!Number.isFinite(num)) {
+              return fallback;
+            }
+            return Math.max(num, min);
+          };
+          return {
+            stableK: coerce(cfg.stableK, DEFAULT_FAST_FINALS.stableK, 1),
+            minStableMs: coerce(cfg.minStableMs, DEFAULT_FAST_FINALS.minStableMs, 0),
+            minChars: coerce(cfg.minChars, DEFAULT_FAST_FINALS.minChars, 1),
+            minWords: coerce(cfg.minWords, DEFAULT_FAST_FINALS.minWords, 1),
+            emitThrottleMs: coerce(cfg.emitThrottleMs, DEFAULT_FAST_FINALS.emitThrottleMs, 0),
+            punctStableMs: coerce(
+              cfg.punctStableMs,
+              DEFAULT_FAST_FINALS.punctStableMs,
+              0
+            ),
+            tailGuardChars: coerce(cfg.tailGuardChars, DEFAULT_FAST_FINALS.tailGuardChars, 0),
+            tailGuardWords: coerce(cfg.tailGuardWords, DEFAULT_FAST_FINALS.tailGuardWords, 0)
+          };
+        }
+
+        function resetPrefixState() {
+          state.prefix = createPrefixState();
+        }
+
+        function updatePrefixRingSnapshot(snapshot) {
+          const ring = state.prefix.ring;
+          ring.push(snapshot);
+          const { stableK } = getFastFinalsConfig();
+          while (ring.length > stableK) {
+            ring.shift();
           }
-          state.version += 1;
-          const unitId = buildUnitId();
-          const payload = {
-            roomId: state.roomId,
-            targets: state.targetLangs,
-          patch: {
-            unitId,
+        }
+
+        function stablePrefixLength() {
+          const ring = state.prefix.ring;
+          if (!ring.length) {
+            return 0;
+          }
+          let prefix = ring[0] || '';
+          for (let i = 1; i < ring.length && prefix; i += 1) {
+            const candidate = ring[i] || '';
+            let j = 0;
+            const max = Math.min(prefix.length, candidate.length);
+            while (j < max && prefix[j] === candidate[j]) {
+              j += 1;
+            }
+            prefix = prefix.slice(0, j);
+          }
+          return prefix.length;
+        }
+
+        function lastBoundaryBefore(text, idx) {
+          const slice = text.slice(0, idx);
+          const terminal = Math.max(slice.lastIndexOf('.'), slice.lastIndexOf('!'), slice.lastIndexOf('?'));
+          if (terminal >= 0) {
+            return terminal + 1;
+          }
+          const secondary = Math.max(slice.lastIndexOf(':'), slice.lastIndexOf(';'));
+          if (secondary >= 0) {
+            return secondary + 1;
+          }
+          return -1;
+        }
+
+        function countWords(text) {
+          if (!text) {
+            return 0;
+          }
+          const tokens = text.trim().match(/\S+/g);
+          return tokens ? tokens.length : 0;
+        }
+
+        function applyTailGuards(fullText, startIdx, endIdx, config) {
+          if (!fullText || endIdx <= startIdx) {
+            return startIdx;
+          }
+          let candidate = endIdx;
+          const guardChars = Math.max(Number(config.tailGuardChars || 0), 0);
+          if (guardChars > 0 && candidate - startIdx > guardChars) {
+            candidate = Math.max(startIdx, candidate - guardChars);
+          }
+          const guardWords = Math.max(Number(config.tailGuardWords || 0), 0);
+          if (guardWords > 0) {
+            const slice = fullText.slice(startIdx, candidate);
+            const words = slice.match(/\S+/g) || [];
+            if (words.length > guardWords) {
+              const keepCount = words.length - guardWords;
+              let keepEnd = startIdx;
+              const matcher = /\S+/g;
+              let match;
+              let seen = 0;
+              while (seen < keepCount && (match = matcher.exec(slice))) {
+                seen += 1;
+                keepEnd = startIdx + match.index + match[0].length;
+              }
+              candidate = Math.max(startIdx, Math.min(candidate, keepEnd));
+            } else {
+              candidate = startIdx;
+            }
+          }
+          return candidate;
+        }
+
+        function computeFinalRemainder(finalText) {
+          if (!finalText) {
+            return '';
+          }
+          const prefixState = state.prefix;
+          const rawCommitted = prefixState.committedRaw || '';
+          if (rawCommitted && finalText.startsWith(rawCommitted)) {
+            return finalText.slice(rawCommitted.length).trim();
+          }
+          if (prefixState.committedChars) {
+            return finalText.slice(prefixState.committedChars).trim();
+          }
+          return finalText.trim();
+        }
+
+        async function emitHardSegment(text, result, options = {}) {
+          const cleaned = (text || '').trim();
+          if (!cleaned) {
+            return null;
+          }
+
+          // Each hard segment gets its own unique utteranceId
+          // (Don't reuse currentUtteranceId - that's for partials only)
+          const newUtteranceId = generateUtteranceId();
+
+          const utteranceId = await postPatch(cleaned, 'hard', result, {
+            meta: options.meta,
+            targets: options.targets,
+            srcLang: options.srcLang,
+            utteranceId: newUtteranceId
+          });
+
+          if (!utteranceId) {
+            log('Hard segment POST failed', { length: cleaned.length });
+            return null;
+          }
+
+          // Always reset utteranceId after emitting a hard segment
+          // (Next partial will start a new utterance)
+          state.currentUtteranceId = null;
+          state.rev = 0;
+          state.lastSoftText = '';
+          state.lastSoftEmitAt = 0;
+
+          if (options.isPrefix) {
+            const prefixState = state.prefix;
+            const nowTs = typeof options.now === 'number' ? options.now : performance.now();
+            if (typeof options.commitEnd === 'number') {
+              prefixState.committedChars = options.commitEnd;
+              prefixState.lastStableLen = options.commitEnd;
+              prefixState.lastCandidateEnd = options.commitEnd;
+            }
+            if (options.rawSlice) {
+              prefixState.committedRaw += options.rawSlice;
+            }
+            prefixState.lastEmitAt = nowTs;
+            prefixState.lastStableAt = nowTs;
+            prefixState.candidateStableAt = nowTs;
+            log('Prefix committed', {
+              utteranceId,
+              length: cleaned.length,
+              committedChars: prefixState.committedChars
+            });
+          }
+
+          return utteranceId;
+        }
+
+        async function postPatch(text, stage, result, options = {}) {
+          if (!text) {
+            return null;
+          }
+
+          // If caller provided explicit utteranceId (e.g., for hard finals), use rev: 0
+          // Otherwise, use/create currentUtteranceId and increment rev
+          let utteranceId, rev;
+
+          if (options.utteranceId) {
+            // Explicit utteranceId provided (hard segment) - start fresh at rev: 0
+            utteranceId = options.utteranceId;
+            rev = 0;
+          } else {
+            // No explicit utteranceId (soft patch) - use/create current and increment
+            if (!state.currentUtteranceId) {
+              state.currentUtteranceId = generateUtteranceId();
+              state.rev = 0;
+            }
+            utteranceId = state.currentUtteranceId;
+            rev = state.rev;
+          }
+
+          const targets = Array.isArray(options.targets) ? options.targets : state.targetLangs;
+
+          const patch = {
+            utteranceId,
             stage,
             op: 'replace',
-            version: state.version,
+            rev,
             text,
-            srcLang: state.patchSourceLang ?? state.sourceLang,
+            srcLang: options.srcLang ?? state.patchSourceLang ?? state.sourceLang,
+            isFinal: stage === 'hard',
             ts: computeTimestamps(result)
+          };
+
+          if (options.meta && typeof options.meta === 'object') {
+            patch.meta = options.meta;
           }
-        };
+
+          const payload = {
+            roomId: state.roomId,
+            targets,
+            patch
+          };
+
           try {
             const res = await fetch('/api/segments', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
             });
+
             if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
+              let body = null;
+              try {
+                body = await res.json();
+              } catch (parseErr) {
+                body = await res.text().catch(() => null);
+              }
               log('Patch POST failed', { status: res.status, body });
+              return null;
             }
+
+            // Only increment revision if we're using currentUtteranceId (soft patches)
+            // Hard segments get new utteranceId each time
+            if (!options.utteranceId) {
+              state.rev++;
+            }
+
+            return utteranceId;
           } catch (err) {
             log('Patch POST error', { error: err?.message });
           }
+          return null;
         }
 
         function renderPatch(patch) {
-          if (!patch || !patch.unitId) {
+          const utterId = patch.utteranceId || patch.unitId;
+          if (!utterId) {
             return;
           }
+
           if (patch.stage !== 'hard') {
             log('Soft patch (hidden)', {
-              unitId: patch.unitId,
-              text: patch.text,
-              version: patch.version
+              utteranceId: utterId,
+              text: patch.text?.substring(0, 40),
+              rev: patch.rev ?? patch.version
             });
             return;
           }
-          let item = state.itemsByUnit.get(patch.unitId);
-          if (!item) {
-            item = document.createElement('li');
-            item.dataset.unitId = patch.unitId;
-            transcriptList.appendChild(item);
-            state.itemsByUnit.set(patch.unitId, item);
+
+          // Get or create the current paragraph
+          let currentParagraph = transcriptList.lastElementChild;
+
+          // Create new paragraph if none exists or if this is a new speaking session
+          // (detect pause by checking if last update was > 5 seconds ago)
+          const now = Date.now();
+          const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
+          const timeSinceLastUpdate = now - lastUpdate;
+
+          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+            currentParagraph = document.createElement('li');
+            currentParagraph.dataset.lastUpdate = now;
+            transcriptList.appendChild(currentParagraph);
+          } else {
+            currentParagraph.dataset.lastUpdate = now;
           }
-          item.dataset.stage = patch.stage;
-          item.textContent = patch.text;
+
+          // Append text with space separator
+          const currentText = currentParagraph.textContent;
+          let textToAppend = patch.text;
+
+          // Capitalize first letter if this is the start of a paragraph
+          if (!currentText && textToAppend) {
+            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          }
+
+          currentParagraph.textContent = currentText
+            ? `${currentText} ${textToAppend}`
+            : textToAppend;
+
+          currentParagraph.dataset.stage = patch.stage;
+
+          // Track this utterance
+          state.itemsByUnit.set(utterId, currentParagraph);
+
+          log('Hard patch appended to paragraph', {
+            utteranceId: utterId,
+            text: patch.text?.substring(0, 50),
+            paragraphLength: currentParagraph.textContent.length,
+            rev: patch.rev ?? patch.version
+          });
+
+          // Cleanup old paragraphs to prevent browser slowdown
+          cleanupOldParagraphs();
+        }
+
+        function cleanupOldParagraphs() {
+          const MAX_PARAGRAPHS = 20; // Keep last 20 paragraphs (live streaming focus)
+          const paragraphs = transcriptList.querySelectorAll('li');
+
+          if (paragraphs.length > MAX_PARAGRAPHS) {
+            const removeCount = paragraphs.length - MAX_PARAGRAPHS;
+            for (let i = 0; i < removeCount; i++) {
+              paragraphs[i].remove();
+            }
+            log('Cleaned up old paragraphs', {
+              removed: removeCount,
+              remaining: MAX_PARAGRAPHS
+            });
+          }
         }
 
         function attachWebSocket() {
@@ -489,10 +904,12 @@
           state.patchSourceLang = inputSourceLang;
           state.targetLangs = parseTargetLangs(document.getElementById('targetLangs').value);
           state.sessionId = crypto.randomUUID();
-          state.unitIndex = 0;
-          state.version = 0;
-          state.lastEmitAt = 0;
+          state.currentUtteranceId = null;
+          state.rev = 0;
+          state.lastSoftEmitAt = 0;
           state.lastSoftText = '';
+          state.lastPartialFull = '';
+          resetPrefixState();
           state.itemsByUnit.clear();
           transcriptList.innerHTML = '';
 
@@ -545,7 +962,10 @@
               'true'
             );
 
+            // TEMPORARY: Revert to original simple audio config to test if device selection broke it
+            log('Creating audio config from default microphone (original method)');
             const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+
             let recognizer;
             if (useAutoDetect) {
               const candidates = state.autoDetectLangs.slice(0, 4);
@@ -581,75 +1001,198 @@
             startHeartbeat();
 
             recognizer.recognizing = (_, event) => {
-              if (!event || !event.result || !event.result.text) {
+              const partial = event?.result?.text || '';
+              const trimmed = partial.trim();
+              if (!trimmed) {
                 return;
               }
-              const rawText = event.result.text.trim();
-              if (!rawText) {
+
+              // Log partials occasionally (not every single one to avoid spam)
+              if (Math.random() < 0.1) {
+                log('Recognizing (partial)', { text: trimmed.substring(0, 40) + '...' });
+              }
+              const previous = state.lastPartialFull || '';
+              const merged = dedupeContinuation(previous, trimmed);
+              if (!merged) {
                 return;
               }
-              const merged = dedupeContinuation(state.lastSoftText, rawText);
+              state.lastPartialFull = merged;
+              updatePrefixRingSnapshot(merged);
+
               const now = performance.now();
-              const activeConfig = state.config || DEFAULT_CONFIG;
-              const punctuationTrigger = /[.?!]\s*$/.test(merged);
-              const delta = merged.length - state.lastSoftText.length;
-              const minDelta = activeConfig.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
-              const throttleMs = activeConfig.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
-              const charTrigger = delta >= minDelta;
-              const timeTrigger = now - state.lastEmitAt > throttleMs;
-              if ((punctuationTrigger || charTrigger) && timeTrigger) {
-                state.lastEmitAt = now;
-                state.lastSoftText = merged;
-                postPatch(merged, 'soft', event.result);
+              const prefixState = state.prefix;
+              const fastConfig = getFastFinalsConfig();
+              const stableLen = stablePrefixLength();
+
+              // Debug: Log ring buffer state occasionally
+              if (Math.random() < 0.05) {
+                log('Prefix ring state', {
+                  ringSize: prefixState.ring.length,
+                  stableLen,
+                  committedChars: prefixState.committedChars,
+                  merged: merged.substring(0, 40)
+                });
               }
-              setTelemetry(`Soft v${state.version + 1} · ${merged.length} chars`);
+
+              if (stableLen !== prefixState.lastStableLen) {
+                prefixState.lastStableLen = stableLen;
+                prefixState.lastStableAt = now;
+              }
+              const boundary =
+                stableLen > prefixState.committedChars
+                  ? lastBoundaryBefore(merged, stableLen)
+                  : -1;
+              let candidateEnd = boundary >= 0 ? boundary : stableLen;
+              if (boundary < 0) {
+                candidateEnd = applyTailGuards(
+                  merged,
+                  prefixState.committedChars,
+                  candidateEnd,
+                  fastConfig
+                );
+              }
+              if (candidateEnd < prefixState.committedChars) {
+                candidateEnd = prefixState.committedChars;
+              }
+              if (candidateEnd !== prefixState.lastCandidateEnd) {
+                prefixState.lastCandidateEnd = candidateEnd;
+                prefixState.candidateStableAt = now;
+              }
+              if (stableLen > prefixState.committedChars) {
+                const commitEnd = candidateEnd;
+                if (commitEnd > prefixState.committedChars) {
+                  const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
+                  const segment = rawSlice.trim();
+                  const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
+                  const isPunctCut = boundary >= 0;
+                  const neededStable = isPunctCut
+                    ? fastConfig.punctStableMs
+                    : fastConfig.minStableMs;
+                  const stableOk =
+                    now - (prefixState.candidateStableAt || 0) >= neededStable;
+                  const lengthOk =
+                    boundary >= 0 ||
+                    (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
+
+                  // Debug fast-finals decision occasionally
+                  if (Math.random() < 0.05) {
+                    log('Fast-finals check', {
+                      segment: segment.substring(0, 30),
+                      throttleOk,
+                      stableOk,
+                      lengthOk,
+                      isPunct: boundary >= 0
+                    });
+                  }
+
+                  // Prevent duplicate emissions of the exact same text
+                  const isDuplicate = segment === prefixState.lastEmittedText;
+
+                  if (segment && throttleOk && stableOk && lengthOk && !isDuplicate) {
+                    log('🚀 FAST-FINAL (prefix commit)', { segment: segment.substring(0, 50) });
+
+                    // Update lastEmittedText IMMEDIATELY (before async call)
+                    prefixState.lastEmittedText = segment;
+
+                    emitHardSegment(segment, event.result, {
+                      isPrefix: true,
+                      rawSlice,
+                      commitEnd,
+                      now
+                    });
+                  } else if (isDuplicate) {
+                    log('Skipping duplicate fast-final', { segment: segment.substring(0, 30) });
+                  }
+                }
+              }
+
+              const tail = merged.slice(prefixState.committedChars).trim();
+              const config = state.config || DEFAULT_CONFIG;
+              const softThrottle =
+                config.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
+              const minDelta =
+                config.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
+              const delta = tail.length - state.lastSoftText.length;
+              const charTrigger = delta >= minDelta;
+              const punctuationTrigger = /[.?!]\s*$/.test(tail);
+              const timeTrigger = now - state.lastSoftEmitAt > softThrottle;
+              if (tail && (charTrigger || punctuationTrigger || !state.lastSoftText) && timeTrigger) {
+                state.lastSoftEmitAt = now;
+                state.lastSoftText = tail;
+                postPatch(tail, 'soft', event.result);
+              } else if (!tail) {
+                state.lastSoftText = '';
+              }
+
+              setTelemetry(`Soft v${state.version + 1} · tail ${tail.length} chars`);
             };
 
             recognizer.recognized = (_, event) => {
+              // Map reason code to text (NoMatch=0, RecognizedSpeech=3, Canceled=2)
+              const reasonText = event?.result?.reason === 0
+                ? 'NoMatch'
+                : event?.result?.reason === 3
+                ? 'RecognizedSpeech'
+                : event?.result?.reason === 2
+                ? 'Canceled'
+                : `Unknown(${event?.result?.reason})`;
+
+              log('Recognized (final) event', {
+                reason: reasonText,
+                text: event?.result?.text?.substring(0, 50) || '(empty)'
+              });
+
+              // Log NoMatch only if it's unexpected (not just silence)
+              if (event?.result?.reason === 0 && event?.result?.text !== '') {
+                log('⚠️ NoMatch', { lang: state.sourceLang });
+              }
+
               if (!event || !event.result) {
                 return;
               }
               if (event.result.reason === SpeechSDK.ResultReason.RecognizedSpeech) {
-                const finalText = event.result.text.trim();
+                const finalText = (event.result.text || '').trim();
                 if (!finalText) {
+                  resetPrefixState();
+                  state.lastPartialFull = '';
+                  state.lastSoftText = '';
+                  state.lastSoftEmitAt = 0;
                   return;
                 }
+                state.lastPartialFull = finalText;
                 const activeConfig = state.config || DEFAULT_CONFIG;
                 const delay = Math.max(
                   Number(activeConfig.finalDebounceMs ?? DEFAULT_CONFIG.finalDebounceMs) || 0,
                   0
                 );
-                const sentences = splitSentences(finalText);
-                const segments = sentences.length ? sentences : [finalText];
+                const remainder = computeFinalRemainder(finalText);
+                const trimmedRemainder = remainder.trim();
+                const split = trimmedRemainder ? splitSentences(trimmedRemainder) : [];
+                const segments = split.length
+                  ? split
+                  : trimmedRemainder
+                  ? [trimmedRemainder]
+                  : [];
                 clearTimeout(state.finalTimer);
                 state.finalTimer = null;
 
                 const emitFinalSegments = () => {
-                  state.version = 0;
-                  let isFirst = true;
+                  let emitted = 0;
                   for (const sentence of segments) {
-                    if (!sentence) {
-                      continue;
+                    if (sentence) {
+                      emitHardSegment(sentence, event.result);
+                      emitted += 1;
                     }
-                    if (!isFirst) {
-                      state.unitIndex += 1;
-                      state.version = 0;
-                    }
-                    state.lastSoftText = sentence;
-                    state.lastEmitAt = performance.now();
-                    state.version = 0;
-                    postPatch(sentence, 'hard', event.result);
-                    isFirst = false;
                   }
-                  if (segments.length) {
-                    state.unitIndex += 1;
-                  }
-                  state.version = 0;
                   state.lastSoftText = '';
-                  state.lastEmitAt = 0;
+                  state.lastSoftEmitAt = 0;
+                  state.lastPartialFull = '';
+                  resetPrefixState();
                   state.finalTimer = null;
                   setTelemetry(
-                    `Hard ✔︎ · ${segments.length} segment${segments.length > 1 ? 's' : ''}`
+                    emitted
+                      ? `Hard ✔︎ · ${emitted} segment${emitted > 1 ? 's' : ''}`
+                      : 'Hard ✔︎ · prefix only'
                   );
                 };
 
@@ -682,10 +1225,21 @@
               stop();
             };
 
+            recognizer.speechStartDetected = (_, event) => {
+              log('Speech start detected!', { offset: event?.offset });
+            };
+
+            recognizer.speechEndDetected = (_, event) => {
+              log('Speech end detected', { offset: event?.offset });
+            };
+
             recognizer.startContinuousRecognitionAsync(
               () => {
                 setStatus('Listening');
-                log('Recognition started');
+                log('Recognition started', {
+                  lang: state.sourceLang,
+                  targets: state.targetLangs
+                });
                 scheduleTokenRefresh();
               },
               (err) => {
@@ -704,6 +1258,10 @@
           stopHeartbeat();
           clearTimeout(state.finalTimer);
           state.finalTimer = null;
+          state.lastSoftEmitAt = 0;
+          state.lastSoftText = '';
+          state.lastPartialFull = '';
+          resetPrefixState();
           if (state.recognizer) {
             try {
               state.recognizer.stopContinuousRecognitionAsync(() => {
@@ -730,6 +1288,38 @@
           setTelemetry('—');
         }
 
+        // Enumerate and populate microphone devices
+        async function populateMicrophoneList() {
+          try {
+            const micSelect = document.getElementById('micSelect');
+
+            // Request microphone permission first to get device labels
+            await navigator.mediaDevices.getUserMedia({ audio: true })
+              .then(stream => stream.getTracks().forEach(track => track.stop()));
+
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+            // Clear existing options except the default
+            micSelect.innerHTML = '<option value="">Default microphone</option>';
+
+            // Add each microphone as an option
+            audioInputs.forEach(device => {
+              const option = document.createElement('option');
+              option.value = device.deviceId;
+              option.textContent = device.label || `Microphone ${device.deviceId.substring(0, 8)}`;
+              micSelect.appendChild(option);
+            });
+
+            log('Microphone devices enumerated', { count: audioInputs.length });
+          } catch (err) {
+            log('Failed to enumerate microphones', { error: err?.message });
+          }
+        }
+
+        // Populate microphones on page load
+        populateMicrophoneList();
+
         loadConfig().catch((err) => log('Config bootstrap failed', { error: err?.message }));
 
         startBtn.addEventListener('click', () => {
@@ -737,6 +1327,19 @@
         });
         stopBtn.addEventListener('click', () => {
           stop();
+        });
+
+        copyDebugBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(logArea.textContent);
+            const originalText = copyDebugBtn.textContent;
+            copyDebugBtn.textContent = 'Copied!';
+            setTimeout(() => {
+              copyDebugBtn.textContent = originalText;
+            }, 2000);
+          } catch (err) {
+            alert('Failed to copy: ' + err.message);
+          }
         });
 
         window.addEventListener('beforeunload', stop);

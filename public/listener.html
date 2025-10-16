@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Canoë Simo · Listener</title>
+    <title>Simo by Canoë · Listener</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       :root {
@@ -227,46 +227,105 @@
         }
 
         function renderPatch(patch) {
-          if (!patch || !patch.unitId) {
+          // Support both old unitId and new utteranceId formats
+          const utterId = patch.utteranceId || patch.unitId;
+          if (!utterId) {
             return;
           }
-          if (patch.stage !== 'hard') {
-            console.debug('Soft patch (hidden)', {
-              unitId: patch.unitId,
-              text: patch.text,
-              version: patch.version
+
+          const now = Date.now();
+          const receivedAt = now;
+          const rev = patch.rev ?? patch.version ?? 0;
+          const isFinal = patch.isFinal ?? (patch.stage === 'hard');
+
+          // Hide soft/partial patches (they'll update in-place when final arrives)
+          if (!isFinal) {
+            console.debug('[listener] Soft patch (hidden)', {
+              utteranceId: utterId,
+              text: patch.text?.substring(0, 40),
+              rev,
+              receivedAt
             });
             return;
           }
-          const key = patch.unitId;
-          const version = patch.version ?? 0;
-          const existing = state.itemsByUnit.get(key);
-          if (existing && version <= existing.version) {
-            return;
+
+          // Check if we've already rendered this utterance (prevent duplicates)
+          if (state.itemsByUnit.has(utterId)) {
+            const existing = state.itemsByUnit.get(utterId);
+            if (existing.rev != null && rev <= existing.rev) {
+              console.debug('[listener] Skipping stale/duplicate revision', {
+                utteranceId: utterId,
+                currentRev: existing.rev,
+                incomingRev: rev
+              });
+              return;
+            }
           }
-          let item = existing?.element;
-          if (!item) {
-            item = document.createElement('li');
-            transcriptEl.appendChild(item);
+
+          // Get or create the current paragraph
+          let currentParagraph = transcriptEl.lastElementChild;
+
+          // Create new paragraph if none exists or if this is a new speaking session
+          // (detect pause by checking if last update was > 5 seconds ago)
+          const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
+          const timeSinceLastUpdate = now - lastUpdate;
+
+          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+            currentParagraph = document.createElement('li');
+            currentParagraph.dataset.lastUpdate = now;
+            currentParagraph.dataset.stage = 'hard';
+            transcriptEl.appendChild(currentParagraph);
+          } else {
+            currentParagraph.dataset.lastUpdate = now;
           }
-          item.dataset.stage = patch.stage;
-          item.textContent = patch.text;
-          state.itemsByUnit.set(key, { version, element: item });
+
+          // Append text with space separator
+          const currentText = currentParagraph.textContent;
+          let textToAppend = patch.text;
+
+          // Capitalize first letter if this is the start of a paragraph
+          if (!currentText && textToAppend) {
+            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          }
+
+          currentParagraph.textContent = currentText
+            ? `${currentText} ${textToAppend}`
+            : textToAppend;
+
+          // Track this utterance to prevent duplicates
+          state.itemsByUnit.set(utterId, {
+            rev,
+            element: currentParagraph,
+            receivedAt,
+            isFinal
+          });
+
+          console.debug('[listener] Patch appended to paragraph', {
+            utteranceId: utterId,
+            text: patch.text?.substring(0, 50),
+            paragraphLength: currentParagraph.textContent.length,
+            rev,
+            isFinal,
+            receivedAt
+          });
+
+          // Cleanup old paragraphs to prevent browser slowdown
+          cleanupOldParagraphs();
         }
 
-        function dropQueuedUnit(unitId, rootUnitId) {
-          state.queue = state.queue.filter(
-            (item) =>
-              item.unitId !== unitId &&
-              (!rootUnitId || (item.rootUnitId && item.rootUnitId !== rootUnitId))
-          );
-          if (
-            state.playing &&
-            (state.playing.unitId === unitId || state.playing.rootUnitId === rootUnitId)
-          ) {
-            state.playing.audio.pause();
-            state.playing = null;
-            nowPlayingEl.textContent = 'Interrupted.';
+        function cleanupOldParagraphs() {
+          const MAX_PARAGRAPHS = 20; // Keep last 20 paragraphs (live streaming focus)
+          const paragraphs = transcriptEl.querySelectorAll('li');
+
+          if (paragraphs.length > MAX_PARAGRAPHS) {
+            const removeCount = paragraphs.length - MAX_PARAGRAPHS;
+            for (let i = 0; i < removeCount; i++) {
+              paragraphs[i].remove();
+            }
+            console.debug('[listener] Cleaned up old paragraphs', {
+              removed: removeCount,
+              remaining: MAX_PARAGRAPHS
+            });
           }
         }
 
@@ -279,16 +338,25 @@
             return;
           }
 
-          dropQueuedUnit(unitId, rootUnitId);
-
           const audioUrl = `data:${payload.format || 'audio/wav'};base64,${audio}`;
-          state.queue.push({
+          const queueItem = {
             unitId,
-            rootUnitId: rootUnitId || unitId.split('#')[0],
+            rootUnitId: rootUnitId || unitId.split('|').slice(0, -1).join('|'),
             audioUrl,
-            text: text || ''
+            text: text || '',
+            enqueuedAt: Date.now()
+          };
+
+          state.queue.push(queueItem);
+
+          const queueSize = state.queue.length + (state.playing ? 1 : 0);
+          setQueueStats(`${queueSize} item(s) queued`);
+          console.debug('[listener] TTS enqueued', {
+            unitId,
+            text: text?.substring(0, 40),
+            queueSize
           });
-          setQueueStats(`${state.queue.length + (state.playing ? 1 : 0)} item(s) queued`);
+
           if (!state.playing) {
             playNext();
           }
@@ -299,28 +367,54 @@
             state.playing = null;
             nowPlayingEl.textContent = 'Nothing queued.';
             setQueueStats('Queue empty');
+            console.debug('[listener] TTS queue empty');
             return;
           }
+
           const next = state.queue.shift();
+          const now = Date.now();
+          const queueLatency = now - next.enqueuedAt;
+
           const audio = new Audio(next.audioUrl);
           state.playing = {
             unitId: next.unitId,
-            rootUnitId: next.rootUnitId || next.unitId.split('#')[0],
-            audio
+            rootUnitId: next.rootUnitId || next.unitId.split('|').slice(0, -1).join('|'),
+            audio,
+            startedAt: now
           };
           nowPlayingEl.textContent = `Playing #${next.unitId.split('|').pop()}: ${next.text}`;
 
+          console.debug('[listener] TTS playback started', {
+            unitId: next.unitId,
+            text: next.text?.substring(0, 40),
+            queueLatencyMs: queueLatency,
+            remainingInQueue: state.queue.length
+          });
+
           audio.onended = () => {
+            const playDuration = Date.now() - state.playing.startedAt;
+            console.debug('[listener] TTS playback ended', {
+              unitId: next.unitId,
+              playDurationMs: playDuration,
+              remainingInQueue: state.queue.length
+            });
             state.playing = null;
             playNext();
           };
-          audio.onerror = () => {
+          audio.onerror = (err) => {
+            console.error('[listener] TTS playback error', {
+              unitId: next.unitId,
+              error: err
+            });
             state.playing = null;
             nowPlayingEl.textContent = 'Playback error.';
             playNext();
           };
           audio.play().catch((err) => {
-            console.warn('Playback failed', err);
+            console.warn('[listener] Playback blocked (autoplay policy)', {
+              unitId: next.unitId,
+              error: err.message
+            });
             state.playing = null;
             nowPlayingEl.textContent = 'Playback blocked (user gesture required).';
           });
