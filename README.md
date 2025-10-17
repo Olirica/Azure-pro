@@ -28,6 +28,25 @@ cp .env.example .env
 # populate SPEECH_KEY, SPEECH_REGION, TRANSLATOR_KEY, TRANSLATOR_REGION, DEFAULT_TTS_VOICE
 ```
 
+## Tuning Profiles
+
+Choose a performance profile based on your use case. See `.env.profiles` for complete settings.
+
+| Profile | Latency | Quality | Use Case |
+|---------|---------|---------|----------|
+| **SPEED** | ~2s ⚡⚡⚡ | ⭐ | Testing, demos |
+| **BALANCED** | ~3s ⚡⚡ | ⭐⭐⭐ | Most conferences (default) |
+| **ACCURATE** | ~4s ⚡ | ⭐⭐⭐⭐ | Critical presentations |
+| **ULTRA-ACCURATE** | ~6s 🐢 | ⭐⭐⭐⭐⭐ | Post-production, subtitles |
+
+**Current configuration**: ACCURATE (slow but accurate)
+
+To change profiles:
+1. Open `.env.profiles`
+2. Copy the variables from your desired profile section
+3. Paste into `.env` (local) or Railway dashboard (production)
+4. Restart server
+
 ## Run
 
 ```bash
