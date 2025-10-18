@@ -473,7 +473,8 @@
             lastCandidateEnd: 0,
             candidateStableAt: 0,
             lastEmitAt: 0,
-            lastEmittedText: '' // Track last emitted text to prevent duplicates
+            lastEmittedText: '', // Track last emitted text to prevent duplicates
+            utteranceStartedAt: 0 // Track when current utterance started (for max duration check)
           };
         }
 
@@ -582,6 +583,29 @@
               candidate = startIdx;
             }
           }
+
+          // Snap to word boundary: never cut mid-word
+          if (candidate > startIdx && candidate < fullText.length) {
+            const slice = fullText.slice(startIdx, candidate);
+            // If the slice doesn't end with whitespace, we might be mid-word
+            if (slice.length > 0 && !/\s$/.test(slice)) {
+              // Find the last whitespace in the slice
+              const lastSpace = slice.lastIndexOf(' ');
+              if (lastSpace >= 0) {
+                // Move candidate to after the last complete word
+                candidate = startIdx + lastSpace + 1;
+                // Trim any trailing whitespace
+                while (candidate > startIdx && /\s/.test(fullText[candidate - 1])) {
+                  candidate--;
+                }
+              } else {
+                // No space found - the entire slice is one partial word
+                // Don't emit anything (return startIdx)
+                candidate = startIdx;
+              }
+            }
+          }
+
           return candidate;
         }
 
