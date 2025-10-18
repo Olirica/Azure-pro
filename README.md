@@ -34,7 +34,7 @@ Three profiles aligned with Azure Speech recognition modes. See `.env.profiles` 
 
 | Profile | Mode | Latency | Quality | Punctuation | Use Case |
 |---------|------|---------|---------|-------------|----------|
-| **CONVERSATION** | conversation | ~2.5-3s ⚡⚡ | ⭐⭐⭐ | Good | Team meetings, webinars |
+| **CONVERSATION** | conversation | ~2-2.5s ⚡⚡⚡ | ⭐⭐⭐ | Good | Team meetings, webinars |
 | **HYBRID** ⭐ | dictation | ~3-4s ⚡⚡ | ⭐⭐⭐⭐ | Excellent | Conferences (recommended) |
 | **DICTATION** | dictation | ~4-5s ⚡ | ⭐⭐⭐⭐⭐ | Excellent | CEO speeches, subtitles |
 
