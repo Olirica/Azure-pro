@@ -817,6 +817,35 @@
               return null;
             }
 
+            // Check response body for dropped segments (server returns HTTP 202 with ok: false for dropped segments)
+            try {
+              const body = await res.json();
+
+              // Server returns { ok: false, stale: true, empty?: true } when segment is dropped
+              if (body && (body.ok === false || body.stale === true)) {
+                const reason = body.empty ? 'only filler words' : 'stale version';
+                const droppedText = patch.text?.substring(0, 100) || '(empty)';
+
+                log('⚠️  Segment DROPPED by server', {
+                  reason,
+                  unitId: patch.utteranceId || patch.unitId,
+                  text: droppedText,
+                  isEmpty: Boolean(body.empty),
+                  isStale: Boolean(body.stale),
+                  stage: patch.stage
+                });
+
+                // Don't increment revision for dropped segments
+                return null;
+              }
+            } catch (parseErr) {
+              // Response body wasn't JSON or couldn't be parsed - assume success
+              log('Could not parse segment response (assuming success)', {
+                status: res.status,
+                error: parseErr?.message
+              });
+            }
+
             // Only increment revision if we're using currentUtteranceId (soft patches)
             // Hard segments get new utteranceId each time
             if (!options.utteranceId) {
@@ -1140,6 +1169,13 @@
               'true'
             );
 
+            // Enable Azure's cloud-side audio processing (noise suppression, echo cancellation)
+            // This helps VAD detect silence even with background noise (breathing, keyboard, etc.)
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceConnection_EnableAudioProcessing,
+              'true'
+            );
+
             // Log SDK configuration for debugging
             log('Azure SDK configured', {
               recognitionMode,
@@ -1238,28 +1274,74 @@
                   // Use stable prefix instead of unstable merged text
                   const stableText = merged.slice(0, stableLen);
                   const uncommitted = stableText.slice(prefixState.committedChars);
-                  const lastSpace = uncommitted.lastIndexOf(' ');
 
-                  if (lastSpace > 0) {
-                    const segment = uncommitted.slice(0, lastSpace).trim();
-                    const commitEnd = prefixState.committedChars + lastSpace;
+                  // Smart segmentation: Prefer sentence boundaries, require minimum words
+                  let segment = null;
+                  let commitEnd = null;
 
-                    if (segment) {
-                      log('⏱️  DURATION TIMEOUT (9s, stable prefix)', {
+                  // Look for sentence boundary first (.!?)
+                  const sentenceMatch = uncommitted.match(/^(.*?[.!?])\s*/);
+                  if (sentenceMatch) {
+                    const sentenceSegment = sentenceMatch[1].trim();
+                    const wordCount = countWords(sentenceSegment);
+
+                    if (wordCount >= 5) {
+                      // Found a complete sentence with ≥5 words
+                      segment = sentenceSegment;
+                      commitEnd = prefixState.committedChars + sentenceMatch[0].length;
+                      log('⏱️  DURATION TIMEOUT (sentence boundary)', {
                         segment: segment.substring(0, 50),
                         duration: Math.round(utteranceDuration),
-                        stableLen,
-                        committedChars: prefixState.committedChars
+                        wordCount,
+                        reason: 'sentence'
                       });
-
-                      // Emit segment and update state synchronously
-                      prefixState.committedChars = commitEnd;
-                      prefixState.committedRaw += uncommitted.slice(0, lastSpace);
-                      prefixState.utteranceStartedAt = now; // Reset timer for next segment
-
-                      // Emit the segment
-                      emitHardSegment(segment, event.result, { isDurationTimeout: true });
                     }
+                  }
+
+                  // Fallback: Use last space, but still require ≥5 words
+                  if (!segment) {
+                    const lastSpace = uncommitted.lastIndexOf(' ');
+                    if (lastSpace > 0) {
+                      const fallbackSegment = uncommitted.slice(0, lastSpace).trim();
+                      const wordCount = countWords(fallbackSegment);
+
+                      if (wordCount >= 5) {
+                        segment = fallbackSegment;
+                        commitEnd = prefixState.committedChars + lastSpace;
+                        log('⏱️  DURATION TIMEOUT (word boundary)', {
+                          segment: segment.substring(0, 50),
+                          duration: Math.round(utteranceDuration),
+                          wordCount,
+                          reason: 'words'
+                        });
+                      } else {
+                        // Not enough words - don't emit, wait for SDK final
+                        log('⏱️  DURATION TIMEOUT skipped (< 5 words)', {
+                          segment: fallbackSegment.substring(0, 50),
+                          duration: Math.round(utteranceDuration),
+                          wordCount,
+                          minRequired: 5
+                        });
+                      }
+                    }
+                  }
+
+                  // Only emit if we found a valid segment
+                  if (segment && commitEnd) {
+                    // Calculate raw slice for tracking (before updating committedChars)
+                    const rawSlice = stableText.slice(prefixState.committedChars, commitEnd);
+
+                    // Reset utterance timer for next segment
+                    prefixState.utteranceStartedAt = now;
+
+                    // Emit segment with prefix state management
+                    emitHardSegment(segment, event.result, {
+                      isDurationTimeout: true,
+                      isPrefix: true,
+                      rawSlice,
+                      commitEnd,
+                      now
+                    });
                   }
                 }
               }
@@ -1288,27 +1370,35 @@
                 prefixState.lastStableLen = stableLen;
                 prefixState.lastStableAt = now;
               }
-              const boundary =
-                stableLen > prefixState.committedChars
-                  ? lastBoundaryBefore(merged, stableLen)
-                  : -1;
-              let candidateEnd = boundary >= 0 ? boundary : stableLen;
-              if (boundary < 0) {
-                candidateEnd = applyTailGuards(
-                  merged,
-                  prefixState.committedChars,
-                  candidateEnd,
-                  fastConfig
-                );
-              }
-              if (candidateEnd < prefixState.committedChars) {
-                candidateEnd = prefixState.committedChars;
-              }
-              if (candidateEnd !== prefixState.lastCandidateEnd) {
-                prefixState.lastCandidateEnd = candidateEnd;
-                prefixState.candidateStableAt = now;
-              }
-              if (stableLen > prefixState.committedChars) {
+
+              // Check if fast-finals is effectively disabled (skip computation to save CPU)
+              const isFastFinalsDisabled =
+                fastConfig.stableK >= 99 ||
+                fastConfig.minStableMs >= 9999 ||
+                fastConfig.minWords >= 99;
+
+              if (!isFastFinalsDisabled && stableLen > prefixState.committedChars) {
+                // Fast-finals enabled - compute boundaries and emit if conditions met
+                const boundary =
+                  stableLen > prefixState.committedChars
+                    ? lastBoundaryBefore(merged, stableLen)
+                    : -1;
+                let candidateEnd = boundary >= 0 ? boundary : stableLen;
+                if (boundary < 0) {
+                  candidateEnd = applyTailGuards(
+                    merged,
+                    prefixState.committedChars,
+                    candidateEnd,
+                    fastConfig
+                  );
+                }
+                if (candidateEnd < prefixState.committedChars) {
+                  candidateEnd = prefixState.committedChars;
+                }
+                if (candidateEnd !== prefixState.lastCandidateEnd) {
+                  prefixState.lastCandidateEnd = candidateEnd;
+                  prefixState.candidateStableAt = now;
+                }
                 const commitEnd = candidateEnd;
                 if (commitEnd > prefixState.committedChars) {
                   const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
