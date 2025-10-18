@@ -330,6 +330,61 @@
           }
         }
 
+        /**
+         * Parse unitId into components for sorting
+         * Format: session|lang|index or session|lang|index#segment
+         * Returns: { session, lang, index, segment }
+         */
+        function parseUnitId(unitId) {
+          const parts = unitId.split('|');
+          if (parts.length < 3) {
+            return { session: '', lang: '', index: 0, segment: 0 };
+          }
+          const lastPart = parts[parts.length - 1];
+          const segmentMatch = lastPart.match(/^(\d+)#(\d+)$/);
+          if (segmentMatch) {
+            return {
+              session: parts.slice(0, -2).join('|'),
+              lang: parts[parts.length - 2],
+              index: parseInt(segmentMatch[1], 10),
+              segment: parseInt(segmentMatch[2], 10)
+            };
+          }
+          return {
+            session: parts.slice(0, -2).join('|'),
+            lang: parts[parts.length - 2],
+            index: parseInt(parts[parts.length - 1], 10) || 0,
+            segment: 0
+          };
+        }
+
+        /**
+         * Compare two unitIds for sorting
+         * Returns: negative if a < b, positive if a > b, 0 if equal
+         */
+        function compareUnitIds(a, b) {
+          const parsedA = parseUnitId(a);
+          const parsedB = parseUnitId(b);
+
+          // Compare session
+          if (parsedA.session !== parsedB.session) {
+            return parsedA.session.localeCompare(parsedB.session);
+          }
+
+          // Compare language
+          if (parsedA.lang !== parsedB.lang) {
+            return parsedA.lang.localeCompare(parsedB.lang);
+          }
+
+          // Compare index
+          if (parsedA.index !== parsedB.index) {
+            return parsedA.index - parsedB.index;
+          }
+
+          // Compare segment
+          return parsedA.segment - parsedB.segment;
+        }
+
         function enqueueTts(payload) {
           if (!state.wantsTts) {
             return;
@@ -339,10 +394,31 @@
             return;
           }
 
+          const calculatedRootUnitId = rootUnitId || unitId.split('#')[0];
+
+          // Deduplicate: Remove any existing items with the same rootUnitId or unitId
+          // This prevents duplicate/revised segments from playing
+          const beforeLength = state.queue.length;
+          state.queue = state.queue.filter(
+            (item) => item.rootUnitId !== calculatedRootUnitId && item.unitId !== unitId
+          );
+          const removedCount = beforeLength - state.queue.length;
+
+          // Cancel currently playing audio if it matches this rootUnitId
+          if (state.playing &&
+              (state.playing.rootUnitId === calculatedRootUnitId || state.playing.unitId === unitId)) {
+            console.debug('[listener] Cancelling currently playing audio (replaced)', {
+              oldUnitId: state.playing.unitId,
+              newUnitId: unitId
+            });
+            state.playing.audio.pause();
+            state.playing = null;
+          }
+
           const audioUrl = `data:${payload.format || 'audio/wav'};base64,${audio}`;
           const queueItem = {
             unitId,
-            rootUnitId: rootUnitId || unitId.split('|').slice(0, -1).join('|'),
+            rootUnitId: calculatedRootUnitId,
             audioUrl,
             text: text || '',
             enqueuedAt: Date.now()
@@ -350,12 +426,19 @@
 
           state.queue.push(queueItem);
 
+          // Sort queue by unitId to ensure correct playback order
+          // This handles out-of-order network arrivals
+          state.queue.sort((a, b) => compareUnitIds(a.unitId, b.unitId));
+
           const queueSize = state.queue.length + (state.playing ? 1 : 0);
           setQueueStats(`${queueSize} item(s) queued`);
           console.debug('[listener] TTS enqueued', {
             unitId,
+            rootUnitId: calculatedRootUnitId,
             text: text?.substring(0, 40),
-            queueSize
+            queueSize,
+            removed: removedCount,
+            sorted: true
           });
 
           if (!state.playing) {
