@@ -1257,8 +1257,8 @@
                 });
               }
 
-              // Track when ring buffer first fills to K entries
-              if (prefixState.ring.length >= fastConfig.stableK && !prefixState.ringFilledAt) {
+              // Track when ring buffer first fills to K entries (for duration timeout stability)
+              if (prefixState.ring.length >= DURATION_TIMEOUT_STABLE_K && !prefixState.ringFilledAt) {
                 prefixState.ringFilledAt = now;
               }
 
