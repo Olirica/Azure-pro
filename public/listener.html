@@ -238,15 +238,62 @@
           const receivedAt = now;
           const rev = patch.rev ?? patch.version ?? 0;
           const isFinal = patch.isFinal ?? (patch.stage === 'hard');
+          const isRevision = patch.op === 'translation-revision';
 
           // Hide soft/partial patches (they'll update in-place when final arrives)
-          if (!isFinal) {
+          if (!isFinal && !isRevision) {
             console.debug('[listener] Soft patch (hidden)', {
               utteranceId: utterId,
               text: patch.text?.substring(0, 40),
               rev,
               receivedAt
             });
+            return;
+          }
+
+          // Handle translation revisions (backward peek gender corrections)
+          if (isRevision) {
+            const existing = state.itemsByUnit.get(utterId);
+            if (!existing) {
+              console.debug('[listener] Revision for unknown utterance (ignoring)', {
+                utteranceId: utterId,
+                text: patch.text?.substring(0, 40)
+              });
+              return;
+            }
+
+            // Update stored text with revision
+            existing.text = patch.text;
+            existing.rev = rev;
+            existing.receivedAt = receivedAt;
+
+            // Reconstruct the paragraph containing this utterance
+            const paragraph = existing.element;
+            if (paragraph && paragraph.dataset.utterances) {
+              const utteranceIds = JSON.parse(paragraph.dataset.utterances);
+              const texts = utteranceIds
+                .map(id => {
+                  const item = state.itemsByUnit.get(id);
+                  return item?.text || '';
+                })
+                .filter(Boolean);
+
+              // Capitalize first letter of paragraph
+              if (texts.length > 0) {
+                texts[0] = texts[0].charAt(0).toUpperCase() + texts[0].slice(1);
+              }
+
+              paragraph.textContent = texts.join(' ');
+
+              console.debug('[listener] Revision applied (paragraph reconstructed)', {
+                utteranceId: utterId,
+                newText: patch.text?.substring(0, 50),
+                revisionReason: patch.revisionReason,
+                revisionGender: patch.revisionGender,
+                paragraphLength: paragraph.textContent.length
+              });
+            }
+
             return;
           }
 
@@ -275,10 +322,18 @@
             currentParagraph = document.createElement('li');
             currentParagraph.dataset.lastUpdate = now;
             currentParagraph.dataset.stage = 'hard';
+            currentParagraph.dataset.utterances = '[]'; // Track utterances in this paragraph
             transcriptEl.appendChild(currentParagraph);
           } else {
             currentParagraph.dataset.lastUpdate = now;
           }
+
+          // Track utterances in this paragraph
+          const utteranceIds = currentParagraph.dataset.utterances
+            ? JSON.parse(currentParagraph.dataset.utterances)
+            : [];
+          utteranceIds.push(utterId);
+          currentParagraph.dataset.utterances = JSON.stringify(utteranceIds);
 
           // Append text with space separator
           const currentText = currentParagraph.textContent;
@@ -296,6 +351,7 @@
           // Track this utterance to prevent duplicates
           state.itemsByUnit.set(utterId, {
             rev,
+            text: patch.text, // Store original text for revisions
             element: currentParagraph,
             receivedAt,
             isFinal

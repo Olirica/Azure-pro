@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { TranslationBuffer } = require('./translation-buffer');
+const { shouldPerformBackwardPeek } = require('./peek-detector');
 
 function normalizeForOverlap(text) {
   return (text || '')
@@ -160,6 +161,18 @@ class SegmentProcessor {
     this.contextBuffer = []; // Array of {text, srcLang, unitId}
     this.contextBufferSize = Math.max(1, Math.min(contextSegments, 5)); // Clamp 1-5
 
+    // Backward peek window for gender/pronoun correction
+    const peekEnabled = process.env.TRANSLATION_PEEK_ENABLED !== 'false';
+    const peekWindowMs = parseInt(process.env.TRANSLATION_PEEK_WINDOW_MS, 10) || 500;
+    const peekMaxSegments = parseInt(process.env.TRANSLATION_PEEK_MAX_SEGMENTS, 10) || 2;
+    const peekMinConfidence = parseFloat(process.env.TRANSLATION_PEEK_MIN_CONFIDENCE) || 0.7;
+
+    this.peekEnabled = peekEnabled;
+    this.peekWindowMs = peekWindowMs;
+    this.peekMaxSegments = peekMaxSegments;
+    this.peekMinConfidence = peekMinConfidence;
+    this.peekableSegments = []; // Array of {segment, targetLangs, timestamp}
+
     // Initialize translation buffer for intelligent segment merging
     const bufferEnabled = process.env.TRANSLATION_MERGE_ENABLED !== 'false';
     const mergeWindowMs = parseInt(process.env.TRANSLATION_MERGE_WINDOW_MS, 10) || 1500;
@@ -258,6 +271,138 @@ class SegmentProcessor {
     }
     this.units.set(root, unit);
     this.enforceUnitLimit('hydrate_evict');
+  }
+
+  /**
+   * Prune expired segments from peek window.
+   */
+  prunePeekWindow() {
+    const now = Date.now();
+    this.peekableSegments = this.peekableSegments.filter(
+      (entry) => now - entry.timestamp < this.peekWindowMs
+    );
+
+    // Also enforce max segments limit
+    while (this.peekableSegments.length > this.peekMaxSegments) {
+      this.peekableSegments.shift(); // Remove oldest
+    }
+  }
+
+  /**
+   * Perform backward peek to re-translate previous segment with gender context.
+   * @param {Object} newSegment - New segment that revealed gender
+   * @param {string[]} targetLangs - Target languages
+   * @returns {Promise<boolean>} True if peek was performed
+   */
+  async performBackwardPeek(newSegment, targetLangs) {
+    if (!this.peekEnabled || !this.peekableSegments.length) {
+      return false;
+    }
+
+    // Prune expired segments first
+    this.prunePeekWindow();
+
+    if (!this.peekableSegments.length) {
+      return false;
+    }
+
+    // Check most recent peekable segment (LIFO)
+    const lastEntry = this.peekableSegments[this.peekableSegments.length - 1];
+    const previousSegment = lastEntry.segment;
+
+    // Use peek detector to determine if we should peek
+    const peekDecision = shouldPerformBackwardPeek(newSegment, previousSegment);
+
+    this.logger.debug(
+      {
+        component: 'segment-processor',
+        roomId: this.roomId,
+        peekDecision,
+        newSegmentText: newSegment.text?.substring(0, 50),
+        prevSegmentText: previousSegment.text?.substring(0, 50)
+      },
+      'Backward peek decision.'
+    );
+
+    if (!peekDecision.shouldPeek || peekDecision.confidence < this.peekMinConfidence) {
+      return false;
+    }
+
+    // Perform backward peek: re-translate previous segment with gender context
+    this.logger.info(
+      {
+        component: 'segment-processor',
+        roomId: this.roomId,
+        previousUnit: previousSegment.unitId,
+        gender: peekDecision.gender,
+        confidence: peekDecision.confidence,
+        markers: peekDecision.markers
+      },
+      'Performing backward peek translation revision.'
+    );
+
+    // Add gender context to translation prompt
+    const genderContext = [`Gender: ${peekDecision.gender}`];
+
+    // Re-translate with gender context
+    try {
+      const translations = await this.translator.translate(
+        this.roomId,
+        previousSegment.text,
+        previousSegment.srcLang,
+        targetLangs,
+        genderContext // Pass gender as context
+      );
+
+      // Emit revision patches
+      const revisionPatches = translations.map((translation) => ({
+        unitId: previousSegment.unitId,
+        utteranceId: previousSegment.unitId,
+        stage: 'hard',
+        op: 'translation-revision', // Special op for revisions
+        version: previousSegment.version,
+        rev: previousSegment.version,
+        text: translation.text,
+        srcLang: previousSegment.srcLang,
+        targetLang: translation.lang,
+        isFinal: true,
+        sentLen: {
+          src: translation.srcSentLen,
+          tgt: translation.transSentLen
+        },
+        ts: previousSegment.ts,
+        revisionReason: 'gender_correction',
+        revisionGender: peekDecision.gender,
+        revisionConfidence: peekDecision.confidence
+      }));
+
+      // Broadcast revision patches
+      if (revisionPatches.length && this.onTranslationReady) {
+        this.onTranslationReady(revisionPatches);
+      }
+
+      // Update cache with revised translations
+      for (const translation of translations) {
+        this.cacheTranslation(
+          previousSegment.unitId,
+          previousSegment.version,
+          translation.lang,
+          translation
+        );
+      }
+
+      return true;
+    } catch (err) {
+      this.logger.error(
+        {
+          component: 'segment-processor',
+          roomId: this.roomId,
+          err: err?.message
+        },
+        'Backward peek translation failed.'
+      );
+      return false;
+    }
   }
 
   /**
@@ -565,6 +710,20 @@ class SegmentProcessor {
         version,
         ts
       };
+
+      // Perform backward peek to check if previous segment needs gender revision
+      // This happens BEFORE translating current segment to avoid race conditions
+      await this.performBackwardPeek(segmentForTranslation, uniqueTargets);
+
+      // Add current segment to peekable window for future gender corrections
+      this.peekableSegments.push({
+        segment: segmentForTranslation,
+        targetLangs: uniqueTargets,
+        timestamp: Date.now()
+      });
+
+      // Prune expired segments from peek window
+      this.prunePeekWindow();
 
       // Track hard segment in context buffer for translation context
       this.contextBuffer.push({
