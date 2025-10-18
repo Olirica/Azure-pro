@@ -155,6 +155,11 @@ class SegmentProcessor {
     this.translationCache = new Map(); // cache key -> result
     this.translationIndex = new Map(); // root -> Set(cacheKey)
 
+    // Context buffer for translation (maintains last N hard segments for gender/pronoun continuity)
+    const contextSegments = parseInt(process.env.TRANSLATION_CONTEXT_SEGMENTS, 10) || 2;
+    this.contextBuffer = []; // Array of {text, srcLang, unitId}
+    this.contextBufferSize = Math.max(1, Math.min(contextSegments, 5)); // Clamp 1-5
+
     // Initialize translation buffer for intelligent segment merging
     const bufferEnabled = process.env.TRANSLATION_MERGE_ENABLED !== 'false';
     const mergeWindowMs = parseInt(process.env.TRANSLATION_MERGE_WINDOW_MS, 10) || 1500;
@@ -305,11 +310,18 @@ class SegmentProcessor {
     // Translate cache misses
     if (misses.length) {
       try {
+        // Gather context from recent segments (exclude current segment)
+        const contextTexts = this.contextBuffer
+          .filter(ctx => ctx.unitId !== unitId) // Exclude current segment
+          .slice(-2) // Last 2 segments for context
+          .map(ctx => ctx.text);
+
         const translations = await this.translator.translate(
           this.roomId,
           text,
           srcLang,
-          misses
+          misses,
+          contextTexts // Pass context for gender/pronoun continuity
         );
         this.logger.debug(
           {
@@ -317,6 +329,7 @@ class SegmentProcessor {
             unitId,
             translations,
             misses,
+            contextSegments: contextTexts.length,
             mergedFrom: segment.mergedFrom
           },
           'Translator response.'
@@ -396,7 +409,8 @@ class SegmentProcessor {
           this.roomId,
           unit.text,
           unit.srcLang,
-          [lang]
+          [lang],
+          [] // No context for snapshots (late-joining listeners)
         );
         if (results.length) {
           const translation = results[0];
@@ -551,6 +565,18 @@ class SegmentProcessor {
         version,
         ts
       };
+
+      // Track hard segment in context buffer for translation context
+      this.contextBuffer.push({
+        text: mergedText,
+        srcLang: updatedUnit.srcLang,
+        unitId
+      });
+
+      // Keep only last N segments
+      if (this.contextBuffer.length > this.contextBufferSize) {
+        this.contextBuffer.shift();
+      }
 
       // Add to buffer (translation happens asynchronously)
       await this.translationBuffer.add(segmentForTranslation, uniqueTargets);

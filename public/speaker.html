@@ -1105,21 +1105,27 @@
             }
 
             speechConfig.outputFormat = SpeechSDK.OutputFormat.Detailed;
+
+            const stablePartials = config.stablePartials ?? DEFAULT_CONFIG.stablePartials;
+            const segmentationSilenceMs = config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs;
+            const initialSilenceMs = config.initialSilenceMs ?? DEFAULT_CONFIG.initialSilenceMs;
+            const endSilenceMs = config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs;
+
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,
-              String(config.stablePartials ?? DEFAULT_CONFIG.stablePartials)
+              String(stablePartials)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.Speech_SegmentationSilenceTimeoutMs,
-              String(config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs)
+              String(segmentationSilenceMs)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
-              String(config.initialSilenceMs ?? DEFAULT_CONFIG.initialSilenceMs)
+              String(initialSilenceMs)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
-              String(config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs)
+              String(endSilenceMs)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceResponse_RequestSentenceBoundary,
@@ -1133,6 +1139,16 @@
               SpeechSDK.PropertyId.SpeechServiceResponse_RequestPunctuationBoundary,
               'true'
             );
+
+            // Log SDK configuration for debugging
+            log('Azure SDK configured', {
+              recognitionMode,
+              stablePartials,
+              segmentationSilenceMs,
+              initialSilenceMs,
+              endSilenceMs,
+              maxUtteranceDurationMs: config.maxUtteranceDurationMs
+            });
 
             // TEMPORARY: Revert to original simple audio config to test if device selection broke it
             log('Creating audio config from default microphone (original method)');

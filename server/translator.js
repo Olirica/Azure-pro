@@ -28,7 +28,7 @@ function charLengthsForSentences(sentences, originalText) {
   return sentences.map((sentence) => sentence.length);
 }
 
-async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger, metrics }) {
+async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, contextTexts = [], logger, metrics }) {
   if (!OPENAI_API_KEY || !targetLangs.length) {
     return null;
   }
@@ -38,6 +38,11 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger
 
   for (const lang of targetLangs) {
     try {
+      // Build context-aware prompt
+      const contextPrompt = contextTexts.length
+        ? `Previous context for gender/pronoun agreement:\n${contextTexts.join('\n')}\n\nNow translate ONLY the following text:`
+        : 'Translate the user\'s message';
+
       const response = await axios.post(
         OPENAI_TRANSLATE_ENDPOINT,
         {
@@ -45,9 +50,9 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger
           messages: [
             {
               role: 'system',
-              content: `You are a translation engine. Translate the user's message from ${
+              content: `You are a translation engine. ${contextPrompt} from ${
                 fromLang || 'the source language'
-              } to ${lang}. Preserve sentence order and keep the output concise.`
+              } to ${lang}. Maintain gender consistency and pronoun agreement based on context. Preserve sentence order and keep the output concise.`
             },
             {
               role: 'user',
@@ -111,7 +116,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
       'TRANSLATOR_KEY missing – translator will fall back to identity (no-op) behaviour.'
     );
     return {
-      async translate(roomId, text, _fromLang, targetLangs) {
+      async translate(roomId, text, _fromLang, targetLangs, _contextTexts = []) {
         const trimmed = (text || '').trim();
         if (!trimmed) {
           return [];
@@ -143,9 +148,10 @@ function createTranslator({ logger, metrics, observeLatency }) {
      * @param {string} text
      * @param {string | undefined} fromLang
      * @param {string[]} targetLangs
+     * @param {string[]} [contextTexts=[]] - Previous segments for context (gender/pronoun continuity)
      * @returns {Promise<Array<{ lang: string, text: string, srcSentLen: number[], transSentLen: number[] }>>}
      */
-    async translate(roomId, text, fromLang, targetLangs) {
+    async translate(roomId, text, fromLang, targetLangs, contextTexts = []) {
       const trimmed = (text || '').trim();
       if (!trimmed || !targetLangs.length) {
         return [];
@@ -172,7 +178,15 @@ function createTranslator({ logger, metrics, observeLatency }) {
       }
 
       const url = `${endpoint}/translate?${params.toString()}`;
-      const payload = [{ text: trimmed }];
+
+      // Build payload: context segments + current text
+      // Azure Translator maintains context across array elements
+      const payload = [
+        // Previous segments for context (gender/pronoun resolution)
+        ...contextTexts.filter(Boolean).map(ctx => ({ text: ctx.trim() })),
+        // Current text to translate (this is what we'll return)
+        { text: trimmed }
+      ];
 
       const start = process.hrtime.bigint();
       try {
@@ -189,7 +203,9 @@ function createTranslator({ logger, metrics, observeLatency }) {
           }
         }
 
-        const entry = Array.isArray(data) ? data[0] : undefined;
+        // Azure returns array matching input array length
+        // We only want the LAST entry (current segment), context is discarded
+        const entry = Array.isArray(data) ? data[data.length - 1] : undefined;
         const targetMap = new Map();
         for (const lang of targetLangs) {
           const lower = lang.toLowerCase();
@@ -201,7 +217,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
         }
         if (!entry || !Array.isArray(entry.translations)) {
           logger.warn(
-            { component: 'translator', roomId, data },
+            { component: 'translator', roomId, data, contextUsed: contextTexts.length },
             'Unexpected translator response structure.'
           );
           metrics?.observeTranslator?.(roomId, 'unknown', 'malformed');
@@ -249,6 +265,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
           text: trimmed,
           fromLang,
           targetLangs,
+          contextTexts,
           logger,
           metrics
         });
