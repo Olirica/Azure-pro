@@ -211,11 +211,15 @@
           tokenTimer: null,
           tokenRegion: null,
           finalTimer: null,
+          pendingFinals: [],  // Queue of finals waiting to be emitted (accumulate during debounce)
           phraseList: null,
           phraseHints: [],
           autoDetectLangs: [],
           patchSourceLang: null
         };
+
+        // Duration-based segmentation: Emit segments after 9 seconds to prevent long buffering
+        const MAX_UTTERANCE_DURATION_MS = 9000;
 
         const DEFAULT_FAST_FINALS = Object.freeze({
           stableK: 3,
@@ -474,7 +478,8 @@
             candidateStableAt: 0,
             lastEmitAt: 0,
             lastEmittedText: '', // Track last emitted text to prevent duplicates
-            utteranceStartedAt: 0 // Track when current utterance started (for max duration check)
+            utteranceStartedAt: 0, // Track when current utterance started (for max duration check)
+            ringFilledAt: 0 // Track when ring first reached K entries (for stability timing)
           };
         }
 
@@ -613,14 +618,71 @@
           if (!finalText) {
             return '';
           }
+
           const prefixState = state.prefix;
           const rawCommitted = prefixState.committedRaw || '';
+
+          // Fast path: exact match (no Azure corrections)
           if (rawCommitted && finalText.startsWith(rawCommitted)) {
-            return finalText.slice(rawCommitted.length).trim();
+            const remainder = finalText.slice(rawCommitted.length).trim();
+            if (remainder) {
+              log('📄 Final remainder (exact match)', {
+                skipped: rawCommitted.length,
+                remainder: remainder.substring(0, 30)
+              });
+            } else {
+              log('⏭️  Final fully covered by duration timeout', {
+                finalText: finalText.substring(0, 50)
+              });
+            }
+            return remainder;
           }
+
+          // Normalized path: handle Azure corrections (capitalization, punctuation)
+          if (rawCommitted) {
+            const normCommitted = normalize(rawCommitted);
+            const normFinal = normalize(finalText);
+
+            // Check if normalized final starts with normalized committed text
+            if (normCommitted && normFinal.startsWith(normCommitted)) {
+              // Use word-based slicing to avoid character position issues from punctuation
+              const committedWords = rawCommitted.trim().split(/\s+/);
+              const finalWords = finalText.trim().split(/\s+/);
+
+              if (finalWords.length > committedWords.length) {
+                // Extract words after committed portion
+                const remainderWords = finalWords.slice(committedWords.length);
+                const remainder = remainderWords.join(' ').trim();
+
+                log('📄 Final remainder (normalized match)', {
+                  committedWords: committedWords.length,
+                  newWords: remainderWords.length,
+                  remainder: remainder.substring(0, 30)
+                });
+
+                return remainder;
+              } else {
+                // Final is completely covered by duration timeout
+                log('⏭️  Final fully covered by duration timeout (normalized)', {
+                  committedWords: committedWords.length,
+                  finalWords: finalWords.length
+                });
+                return '';
+              }
+            }
+          }
+
+          // Fallback: character-based slicing (legacy fast-finals behavior)
           if (prefixState.committedChars) {
-            return finalText.slice(prefixState.committedChars).trim();
+            const remainder = finalText.slice(prefixState.committedChars).trim();
+            log('📄 Final remainder (char-based)', {
+              committedChars: prefixState.committedChars,
+              remainder: remainder.substring(0, 30)
+            });
+            return remainder;
           }
+
+          // No overlap detected - return full text
           return finalText.trim();
         }
 
@@ -630,12 +692,23 @@
             return null;
           }
 
+          // Determine if this segment continues a sentence or starts a new one
+          const lastChar = cleaned[cleaned.length - 1];
+          const endsWithTerminalPunct = lastChar === '.' || lastChar === '!' || lastChar === '?';
+
+          // Duration timeouts are always mid-sentence continuations
+          // SDK finals ending with .!? are complete sentences (not continuations)
+          const isContinuation = options.isDurationTimeout || !endsWithTerminalPunct;
+
           // Each hard segment gets its own unique utteranceId
           // (Don't reuse currentUtteranceId - that's for partials only)
           const newUtteranceId = generateUtteranceId();
 
           const utteranceId = await postPatch(cleaned, 'hard', result, {
-            meta: options.meta,
+            meta: {
+              ...options.meta,
+              isContinuation  // Add continuation flag for translation
+            },
             targets: options.targets,
             srcLang: options.srcLang,
             utteranceId: newUtteranceId
@@ -667,6 +740,8 @@
             prefixState.lastEmitAt = nowTs;
             prefixState.lastStableAt = nowTs;
             prefixState.candidateStableAt = nowTs;
+            prefixState.ringFilledAt = 0; // Reset ring fill timer for next segment
+            prefixState.ring = []; // Clear ring to wait for K fresh partials
             log('Prefix committed', {
               utteranceId,
               length: cleaned.length,
@@ -790,9 +865,32 @@
           const currentText = currentParagraph.textContent;
           let textToAppend = patch.text;
 
-          // Capitalize first letter if this is the start of a paragraph
-          if (!currentText && textToAppend) {
-            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          // Smart capitalization: Only capitalize if starting a new sentence
+          if (textToAppend) {
+            let shouldCapitalize = false;
+
+            if (!currentText) {
+              // First segment in paragraph → always capitalize
+              shouldCapitalize = true;
+            } else {
+              // Check if previous text ends with terminal punctuation (.!?)
+              const trimmedCurrent = currentText.trim();
+              const lastChar = trimmedCurrent[trimmedCurrent.length - 1];
+              shouldCapitalize = lastChar === '.' || lastChar === '!' || lastChar === '?';
+            }
+
+            if (shouldCapitalize) {
+              textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+              log('🔤 Capitalizing segment (new sentence)', {
+                previousEnded: currentText ? currentText.trim().slice(-1) : '(none)',
+                segment: textToAppend.substring(0, 30)
+              });
+            } else {
+              log('🔤 Preserving lowercase (sentence continuation)', {
+                previousEnded: currentText.trim().slice(-10),
+                segment: textToAppend.substring(0, 30)
+              });
+            }
           }
 
           currentParagraph.textContent = currentText
@@ -1073,6 +1171,36 @@
               const fastConfig = getFastFinalsConfig();
               const stableLen = stablePrefixLength();
 
+              // Track when utterance started (for duration-based segmentation)
+              if (!prefixState.utteranceStartedAt) {
+                prefixState.utteranceStartedAt = now;
+              }
+
+              // Duration-based segmentation: Emit after 9 seconds to prevent long buffering
+              const utteranceDuration = now - prefixState.utteranceStartedAt;
+              if (utteranceDuration > MAX_UTTERANCE_DURATION_MS && merged.length > prefixState.committedChars) {
+                // Find last word boundary in uncommitted text
+                const uncommitted = merged.slice(prefixState.committedChars);
+                const lastSpace = uncommitted.lastIndexOf(' ');
+
+                if (lastSpace > 0) {
+                  const segment = uncommitted.slice(0, lastSpace).trim();
+                  const commitEnd = prefixState.committedChars + lastSpace;
+
+                  if (segment) {
+                    log('⏱️  DURATION TIMEOUT (9s)', { segment: segment.substring(0, 50), duration: Math.round(utteranceDuration) });
+
+                    // Emit segment and update state synchronously
+                    prefixState.committedChars = commitEnd;
+                    prefixState.committedRaw += uncommitted.slice(0, lastSpace);
+                    prefixState.utteranceStartedAt = now; // Reset timer for next segment
+
+                    // Emit the segment
+                    emitHardSegment(segment, event.result, { isDurationTimeout: true });
+                  }
+                }
+              }
+
               // Debug: Log ring buffer state occasionally
               if (Math.random() < 0.05) {
                 log('Prefix ring state', {
@@ -1081,6 +1209,16 @@
                   committedChars: prefixState.committedChars,
                   merged: merged.substring(0, 40)
                 });
+              }
+
+              // Track when ring buffer first fills to K entries
+              if (prefixState.ring.length >= fastConfig.stableK && !prefixState.ringFilledAt) {
+                prefixState.ringFilledAt = now;
+              }
+
+              // Reset ringFilledAt if stableLen shrinks significantly (indicates text changed)
+              if (stableLen < prefixState.lastStableLen * 0.8 && prefixState.lastStableLen > 0) {
+                prefixState.ringFilledAt = 0;
               }
 
               if (stableLen !== prefixState.lastStableLen) {
@@ -1118,7 +1256,7 @@
                     ? fastConfig.punctStableMs
                     : fastConfig.minStableMs;
                   const stableOk =
-                    now - (prefixState.candidateStableAt || 0) >= neededStable;
+                    prefixState.ringFilledAt > 0 && (now - prefixState.ringFilledAt >= neededStable);
                   const lengthOk =
                     boundary >= 0 ||
                     (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
@@ -1140,9 +1278,18 @@
                   if (segment && throttleOk && stableOk && lengthOk && !isDuplicate) {
                     log('🚀 FAST-FINAL (prefix commit)', { segment: segment.substring(0, 50) });
 
-                    // Update lastEmittedText IMMEDIATELY (before async call)
+                    // Update ALL state SYNCHRONOUSLY (before async call) to prevent race conditions
                     prefixState.lastEmittedText = segment;
+                    prefixState.committedChars = commitEnd;
+                    prefixState.lastStableLen = commitEnd;
+                    prefixState.lastCandidateEnd = commitEnd;
+                    prefixState.lastEmitAt = now;
+                    prefixState.lastStableAt = now;
+                    prefixState.candidateStableAt = now;
+                    prefixState.ringFilledAt = 0;
+                    prefixState.ring = [];
 
+                    // Now call async (state already protected from duplicate emissions)
                     emitHardSegment(segment, event.result, {
                       isPrefix: true,
                       rawSlice,
@@ -1214,44 +1361,80 @@
                   Number(activeConfig.finalDebounceMs ?? DEFAULT_CONFIG.finalDebounceMs) || 0,
                   0
                 );
-                const remainder = computeFinalRemainder(finalText);
-                const trimmedRemainder = remainder.trim();
-                const split = trimmedRemainder ? splitSentences(trimmedRemainder) : [];
-                const segments = split.length
-                  ? split
-                  : trimmedRemainder
-                  ? [trimmedRemainder]
-                  : [];
+
+                // Add this final to the pending queue (accumulate instead of replace)
+                state.pendingFinals.push({
+                  text: finalText,
+                  result: event.result,
+                  timestamp: Date.now()
+                });
+
+                // Clear existing timer and start a new debounce window
                 clearTimeout(state.finalTimer);
                 state.finalTimer = null;
 
-                const emitFinalSegments = () => {
-                  let emitted = 0;
-                  for (const sentence of segments) {
-                    if (sentence) {
-                      emitHardSegment(sentence, event.result);
-                      emitted += 1;
+                const emitAllPendingFinals = () => {
+                  // Get all queued finals
+                  const finalsToEmit = state.pendingFinals;
+                  state.pendingFinals = [];  // Clear queue
+
+                  if (!finalsToEmit.length) {
+                    state.finalTimer = null;
+                    return;
+                  }
+
+                  log(`📦 Emitting ${finalsToEmit.length} batched final(s)`, {
+                    count: finalsToEmit.length
+                  });
+
+                  // Merge all finals' text into one combined string
+                  // This handles Azure's tendency to split thoughts into rapid successive finals
+                  const mergedParts = [];
+                  for (const final of finalsToEmit) {
+                    const remainder = computeFinalRemainder(final.text);
+                    const trimmed = remainder.trim();
+                    if (trimmed) {
+                      mergedParts.push(trimmed);
                     }
                   }
+
+                  // Combine all parts with space separator
+                  const combinedText = mergedParts.join(' ');
+
+                  // Now split the merged text into sentences
+                  const split = combinedText ? splitSentences(combinedText) : [];
+                  const segments = split.length ? split : combinedText ? [combinedText] : [];
+
+                  // Emit each sentence once (using the first final's result for metadata)
+                  let totalEmitted = 0;
+                  const firstResult = finalsToEmit[0]?.result;
+                  for (const sentence of segments) {
+                    if (sentence) {
+                      emitHardSegment(sentence, firstResult);
+                      totalEmitted += 1;
+                    }
+                  }
+
                   state.lastSoftText = '';
                   state.lastSoftEmitAt = 0;
                   state.lastPartialFull = '';
-                  resetPrefixState();
+                  resetPrefixState(); // This resets utteranceStartedAt to 0
                   state.finalTimer = null;
                   setTelemetry(
-                    emitted
-                      ? `Hard ✔︎ · ${emitted} segment${emitted > 1 ? 's' : ''}`
+                    totalEmitted
+                      ? `Hard ✔︎ · ${totalEmitted} segment${totalEmitted > 1 ? 's' : ''}`
                       : 'Hard ✔︎ · prefix only'
                   );
                 };
 
                 if (delay > 0) {
+                  // Wait for debounce window, then emit ALL accumulated finals
                   state.finalTimer = setTimeout(() => {
                     state.finalTimer = null;
-                    emitFinalSegments();
+                    emitAllPendingFinals();
                   }, delay);
                 } else {
-                  emitFinalSegments();
+                  emitAllPendingFinals();
                 }
               } else if (event.result.reason === SpeechSDK.ResultReason.NoMatch) {
                 log('No speech match', { reason: event.result.noMatchDetails });
