@@ -218,9 +218,8 @@
           patchSourceLang: null
         };
 
-        // Duration-based segmentation: Emit segments after 9 seconds to prevent long buffering
-        const MAX_UTTERANCE_DURATION_MS = 9000;
-        const DURATION_TIMEOUT_STABLE_K = 3;  // Independent from fast-finals config
+        // Duration-based segmentation stability constant (independent from fast-finals config)
+        const DURATION_TIMEOUT_STABLE_K = 3;
 
         const DEFAULT_FAST_FINALS = Object.freeze({
           stableK: 3,
@@ -244,6 +243,7 @@
           ttsResumeBacklogSec: 4,
           ttsRateBoostPercent: 10,
           finalDebounceMs: 180,
+          maxUtteranceDurationMs: 9000,
           phraseHints: [],
           autoDetectLangs: [],
           fastFinals: { ...DEFAULT_FAST_FINALS }
@@ -1201,9 +1201,10 @@
                 prefixState.utteranceStartedAt = now;
               }
 
-              // Duration-based segmentation: Emit after 9 seconds to prevent long buffering
+              // Duration-based segmentation: Emit after max duration to prevent long buffering
+              const maxDuration = (state.config || DEFAULT_CONFIG).maxUtteranceDurationMs || DEFAULT_CONFIG.maxUtteranceDurationMs;
               const utteranceDuration = now - prefixState.utteranceStartedAt;
-              if (utteranceDuration > MAX_UTTERANCE_DURATION_MS && merged.length > prefixState.committedChars) {
+              if (utteranceDuration > maxDuration && merged.length > prefixState.committedChars) {
                 // Stability checks: Only emit if we have stable text
                 // (prevents emitting unstable partials that Azure will later correct)
                 const hasEnoughPartials = prefixState.ring.length >= Math.min(fastConfig.stableK, DURATION_TIMEOUT_STABLE_K);

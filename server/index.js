@@ -93,6 +93,7 @@ const FASTFINALS_EMIT_THROTTLE_MS = getNumberEnv('FASTFINALS_EMIT_THROTTLE_MS', 
 const FASTFINALS_PUNCT_STABLE_MS = getNumberEnv('FASTFINALS_PUNCT_STABLE_MS', 350);
 const FASTFINALS_TAIL_GUARD_CHARS = getNumberEnv('FASTFINALS_TAIL_GUARD_CHARS', 12);
 const FASTFINALS_TAIL_GUARD_WORDS = getNumberEnv('FASTFINALS_TAIL_GUARD_WORDS', 2);
+const MAX_UTTERANCE_DURATION_MS = getNumberEnv('MAX_UTTERANCE_DURATION_MS', 9000);
 const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
@@ -462,6 +463,7 @@ app.get('/api/config', (_req, res) => {
     ttsRateBoostPercent: TTS_RATE_BOOST_PERCENT,
     patchLruPerRoom: PATCH_LRU_PER_ROOM,
     finalDebounceMs: FINAL_DEBOUNCE_MS,
+    maxUtteranceDurationMs: MAX_UTTERANCE_DURATION_MS,
     phraseHints: PHRASE_HINTS,
     autoDetectLangs: AUTO_DETECT_LANGS,
     ttsFormat: SPEECH_TTS_FORMAT || undefined,
