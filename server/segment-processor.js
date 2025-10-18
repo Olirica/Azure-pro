@@ -54,18 +54,40 @@ function rootFromUnitId(unitId) {
   return (unitId || '').split('#')[0];
 }
 
+// Filler words to remove (English + French)
+// Toggle via FILTER_FILLER_WORDS=true (enabled by default)
+// Customize via FILLER_WORDS_EN and FILLER_WORDS_FR env vars
+const FILLER_FILTER_ENABLED = process.env.FILTER_FILLER_WORDS !== 'false';
+
+const DEFAULT_FILLERS_EN = [
+  'uh', 'um', 'uhm', 'erm', 'er',
+  'you know', 'i mean', 'like',
+  'sort of', 'kind of',
+  'basically', 'actually', 'literally'
+];
+
+const DEFAULT_FILLERS_FR = [
+  'euh', 'heu', 'ben', 'bah',
+  'tu sais', 'vous savez', 'genre',
+  'en fait', 'disons', 'bon'
+];
+
+// Build filler lists from env or defaults (only if enabled)
+const FILLER_LIST = [];
+if (FILLER_FILTER_ENABLED) {
+  const customEN = (process.env.FILLER_WORDS_EN || '').split(',').map(w => w.trim()).filter(Boolean);
+  const customFR = (process.env.FILLER_WORDS_FR || '').split(',').map(w => w.trim()).filter(Boolean);
+
+  if (customEN.length || customFR.length) {
+    FILLER_LIST.push(...customEN, ...customFR);
+  } else {
+    FILLER_LIST.push(...DEFAULT_FILLERS_EN, ...DEFAULT_FILLERS_FR);
+  }
+}
+
 const FILLER_PATTERNS_LEADING = new RegExp(
   '^(?:' +
-    [
-      'uh',
-      'um',
-      'uhm',
-      'erm',
-      'you know',
-      'i mean',
-      'sort of',
-      'kind of'
-    ]
+    FILLER_LIST
       .map((p) => p.replace(/\s+/g, '\\s+'))
       .join('|') +
     ')(?:\s|,)+',
@@ -74,27 +96,25 @@ const FILLER_PATTERNS_LEADING = new RegExp(
 
 const FILLER_PATTERNS_AFTER_PUNCTUATION = new RegExp(
   '([.!?]\s+)(?:' +
-    [
-      'uh',
-      'um',
-      'uhm',
-      'erm',
-      'you know',
-      'i mean',
-      'sort of',
-      'kind of'
-    ]
+    FILLER_LIST
       .map((p) => p.replace(/\s+/g, '\\s+'))
       .join('|') +
     ')(?:\s|,)+',
   'gi'
 );
 
-const FILLER_INLINE_COMMA = /,\s*(?:uh|um|uhm|erm|you know|i mean)(?:\s*,)?/gi;
-const FILLER_SINGLE_WORD = /\s+(?:uh|um|uhm|erm)\s+/gi;
+const FILLER_INLINE_COMMA = new RegExp(
+  ',\\s*(?:' + FILLER_LIST.join('|') + ')(?:\\s*,)?',
+  'gi'
+);
+
+const FILLER_SINGLE_WORD = new RegExp(
+  '\\s+(?:' + FILLER_LIST.filter(w => !w.includes(' ')).join('|') + ')\\s+',
+  'gi'
+);
 
 function stripFillerPhrases(text) {
-  if (!text) {
+  if (!text || !FILLER_FILTER_ENABLED) {
     return text;
   }
   let result = text;
