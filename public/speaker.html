@@ -933,6 +933,30 @@
             if (!useAutoDetect) {
               speechConfig.speechRecognitionLanguage = state.sourceLang;
             }
+
+            // Set recognition mode from config (dictation/conversation/interactive)
+            const recognitionMode = config.recognitionMode || 'conversation';
+            if (recognitionMode === 'dictation') {
+              speechConfig.enableDictation();
+              log('Enabled dictation mode for better punctuation and capitalization');
+            } else if (recognitionMode === 'conversation' || recognitionMode === 'interactive') {
+              // Set explicit mode for conversation or interactive
+              speechConfig.setProperty(
+                SpeechSDK.PropertyId.SpeechServiceConnection_Mode,
+                recognitionMode
+              );
+              log(`Set recognition mode: ${recognitionMode}`);
+            }
+
+            // Set language detection priority to Accuracy (when using auto-detect)
+            if (useAutoDetect) {
+              speechConfig.setProperty(
+                SpeechSDK.PropertyId.SpeechServiceConnection_LanguageIdPriority,
+                "Accuracy"
+              );
+              log('Language detection priority set to Accuracy');
+            }
+
             speechConfig.outputFormat = SpeechSDK.OutputFormat.Detailed;
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,

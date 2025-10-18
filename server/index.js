@@ -102,6 +102,7 @@ const AUTO_DETECT_LANGS = (process.env.AUTO_DETECT_LANGS || '')
   .map((lang) => lang.trim())
   .filter(Boolean);
 const SPEECH_TTS_FORMAT = process.env.SPEECH_TTS_FORMAT || '';
+const RECOGNITION_MODE = process.env.RECOGNITION_MODE || 'conversation';
 
 const translator = createTranslator({ logger, metrics });
 const stateStore = createStateStore({
@@ -447,6 +448,7 @@ app.get('/metrics', metrics.sendMetrics);
 
 app.get('/api/config', (_req, res) => {
   res.json({
+    recognitionMode: RECOGNITION_MODE,
     stablePartials: STABLE_PARTIALS,
     segmentationSilenceMs: SEG_SILENCE_MS,
     initialSilenceMs: INITIAL_SILENCE_MS,
