@@ -220,6 +220,7 @@
 
         // Duration-based segmentation: Emit segments after 9 seconds to prevent long buffering
         const MAX_UTTERANCE_DURATION_MS = 9000;
+        const DURATION_TIMEOUT_STABLE_K = 3;  // Independent from fast-finals config
 
         const DEFAULT_FAST_FINALS = Object.freeze({
           stableK: 3,
@@ -847,13 +848,37 @@
           // Get or create the current paragraph
           let currentParagraph = transcriptList.lastElementChild;
 
-          // Create new paragraph if none exists or if this is a new speaking session
-          // (detect pause by checking if last update was > 5 seconds ago)
+          // Create new paragraph if:
+          // 1. No paragraph exists, OR
+          // 2. Long pause (5s) AND previous sentence ended with terminal punctuation
           const now = Date.now();
           const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
           const timeSinceLastUpdate = now - lastUpdate;
 
-          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+          let shouldCreateNewParagraph = false;
+          if (!currentParagraph) {
+            shouldCreateNewParagraph = true;
+          } else if (timeSinceLastUpdate > 5000) {
+            // Check if previous text ended with terminal punctuation
+            const previousText = currentParagraph.textContent.trim();
+            if (previousText) {
+              const lastChar = previousText[previousText.length - 1];
+              const endsWithTerminalPunct = lastChar === '.' || lastChar === '!' || lastChar === '?';
+              shouldCreateNewParagraph = endsWithTerminalPunct;
+
+              if (!endsWithTerminalPunct) {
+                log('📄 Skipping new paragraph (mid-sentence)', {
+                  timeSinceLastUpdate: Math.round(timeSinceLastUpdate),
+                  previousEnded: lastChar
+                });
+              }
+            } else {
+              // Empty paragraph - create new one
+              shouldCreateNewParagraph = true;
+            }
+          }
+
+          if (shouldCreateNewParagraph) {
             currentParagraph = document.createElement('li');
             currentParagraph.dataset.lastUpdate = now;
             transcriptList.appendChild(currentParagraph);
@@ -1179,24 +1204,45 @@
               // Duration-based segmentation: Emit after 9 seconds to prevent long buffering
               const utteranceDuration = now - prefixState.utteranceStartedAt;
               if (utteranceDuration > MAX_UTTERANCE_DURATION_MS && merged.length > prefixState.committedChars) {
-                // Find last word boundary in uncommitted text
-                const uncommitted = merged.slice(prefixState.committedChars);
-                const lastSpace = uncommitted.lastIndexOf(' ');
+                // Stability checks: Only emit if we have stable text
+                // (prevents emitting unstable partials that Azure will later correct)
+                const hasEnoughPartials = prefixState.ring.length >= Math.min(fastConfig.stableK, DURATION_TIMEOUT_STABLE_K);
+                const hasStabilityTime = prefixState.ringFilledAt > 0 && (now - prefixState.ringFilledAt >= 300);
 
-                if (lastSpace > 0) {
-                  const segment = uncommitted.slice(0, lastSpace).trim();
-                  const commitEnd = prefixState.committedChars + lastSpace;
+                if (!hasEnoughPartials || !hasStabilityTime) {
+                  // Not enough stable data yet - wait for more partials
+                  log('⏱️  DURATION TIMEOUT skipped (waiting for stability)', {
+                    duration: Math.round(utteranceDuration),
+                    ringSize: prefixState.ring.length,
+                    stableK: fastConfig.stableK,
+                    stabilityMs: prefixState.ringFilledAt > 0 ? Math.round(now - prefixState.ringFilledAt) : 0
+                  });
+                } else if (stableLen > prefixState.committedChars) {
+                  // Use stable prefix instead of unstable merged text
+                  const stableText = merged.slice(0, stableLen);
+                  const uncommitted = stableText.slice(prefixState.committedChars);
+                  const lastSpace = uncommitted.lastIndexOf(' ');
 
-                  if (segment) {
-                    log('⏱️  DURATION TIMEOUT (9s)', { segment: segment.substring(0, 50), duration: Math.round(utteranceDuration) });
+                  if (lastSpace > 0) {
+                    const segment = uncommitted.slice(0, lastSpace).trim();
+                    const commitEnd = prefixState.committedChars + lastSpace;
 
-                    // Emit segment and update state synchronously
-                    prefixState.committedChars = commitEnd;
-                    prefixState.committedRaw += uncommitted.slice(0, lastSpace);
-                    prefixState.utteranceStartedAt = now; // Reset timer for next segment
+                    if (segment) {
+                      log('⏱️  DURATION TIMEOUT (9s, stable prefix)', {
+                        segment: segment.substring(0, 50),
+                        duration: Math.round(utteranceDuration),
+                        stableLen,
+                        committedChars: prefixState.committedChars
+                      });
 
-                    // Emit the segment
-                    emitHardSegment(segment, event.result, { isDurationTimeout: true });
+                      // Emit segment and update state synchronously
+                      prefixState.committedChars = commitEnd;
+                      prefixState.committedRaw += uncommitted.slice(0, lastSpace);
+                      prefixState.utteranceStartedAt = now; // Reset timer for next segment
+
+                      // Emit the segment
+                      emitHardSegment(segment, event.result, { isDurationTimeout: true });
+                    }
                   }
                 }
               }
