@@ -1285,8 +1285,8 @@
                     const sentenceSegment = sentenceMatch[1].trim();
                     const wordCount = countWords(sentenceSegment);
 
-                    if (wordCount >= 5) {
-                      // Found a complete sentence with ≥5 words
+                    if (wordCount >= 3) {
+                      // Found a complete sentence with ≥3 words
                       segment = sentenceSegment;
                       commitEnd = prefixState.committedChars + sentenceMatch[0].length;
                       log('⏱️  DURATION TIMEOUT (sentence boundary)', {
@@ -1298,14 +1298,14 @@
                     }
                   }
 
-                  // Fallback: Use last space, but still require ≥5 words
+                  // Fallback: Use last space, but still require ≥3 words
                   if (!segment) {
                     const lastSpace = uncommitted.lastIndexOf(' ');
                     if (lastSpace > 0) {
                       const fallbackSegment = uncommitted.slice(0, lastSpace).trim();
                       const wordCount = countWords(fallbackSegment);
 
-                      if (wordCount >= 5) {
+                      if (wordCount >= 3) {
                         segment = fallbackSegment;
                         commitEnd = prefixState.committedChars + lastSpace;
                         log('⏱️  DURATION TIMEOUT (word boundary)', {
@@ -1316,11 +1316,11 @@
                         });
                       } else {
                         // Not enough words - don't emit, wait for SDK final
-                        log('⏱️  DURATION TIMEOUT skipped (< 5 words)', {
+                        log('⏱️  DURATION TIMEOUT skipped (< 3 words)', {
                           segment: fallbackSegment.substring(0, 50),
                           duration: Math.round(utteranceDuration),
                           wordCount,
-                          minRequired: 5
+                          minRequired: 3
                         });
                       }
                     }
