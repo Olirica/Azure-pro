@@ -3,6 +3,7 @@ const axios = require('axios');
 const DEFAULT_ENDPOINT = 'https://api.cognitive.microsofttranslator.com';
 const PROFANITY_ACTION = process.env.TRANSLATOR_PROFANITY_ACTION;
 const PROFANITY_MARKER = process.env.TRANSLATOR_PROFANITY_MARKER;
+const TRANSLATOR_PROVIDER = process.env.TRANSLATOR_PROVIDER || 'azure'; // 'azure' or 'openai'
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_TRANSLATE_MODEL = process.env.OPENAI_TRANSLATE_MODEL || 'gpt-4o-mini';
 const OPENAI_TRANSLATE_ENDPOINT =
@@ -157,6 +158,27 @@ function createTranslator({ logger, metrics, observeLatency }) {
         return [];
       }
 
+      // Try OpenAI first if configured as primary provider
+      if (TRANSLATOR_PROVIDER === 'openai') {
+        const openaiTranslations = await translateWithOpenAI({
+          roomId,
+          text: trimmed,
+          fromLang,
+          targetLangs,
+          contextTexts,
+          logger,
+          metrics
+        });
+        if (openaiTranslations) {
+          return openaiTranslations.map(t => ({ ...t, provider: 'openai' }));
+        }
+        // Fall through to Azure if OpenAI fails
+        logger.warn(
+          { component: 'translator', roomId },
+          'OpenAI primary translator failed, falling back to Azure'
+        );
+      }
+
       const params = new URLSearchParams({
         'api-version': '3.0',
         includeSentenceLength: 'true'
@@ -234,7 +256,8 @@ function createTranslator({ logger, metrics, observeLatency }) {
               lang: mappedLang,
               text: translation.text || '',
               srcSentLen: Array.isArray(sentLen.srcSentLen) ? sentLen.srcSentLen : [],
-              transSentLen: Array.isArray(sentLen.transSentLen) ? sentLen.transSentLen : []
+              transSentLen: Array.isArray(sentLen.transSentLen) ? sentLen.transSentLen : [],
+              provider: 'azure'
             };
           })
           .filter((translation) => Boolean(translation.lang));
@@ -270,7 +293,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
           metrics
         });
         if (fallbackTranslations) {
-          return fallbackTranslations;
+          return fallbackTranslations.map(t => ({ ...t, provider: t.provider || 'openai' }));
         }
 
         return targetLangs.map((lang) => ({
@@ -278,7 +301,8 @@ function createTranslator({ logger, metrics, observeLatency }) {
           text: trimmed,
           srcSentLen: [trimmed.length],
           transSentLen: [trimmed.length],
-          error: true
+          error: true,
+          provider: 'none'
         }));
       }
     }

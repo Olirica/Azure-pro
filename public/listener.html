@@ -135,6 +135,25 @@
       small {
         color: rgba(148, 163, 184, 0.75);
       }
+      /* Translation quality indicators (dev mode) */
+      .segment {
+        display: inline;
+      }
+      .quality-badge {
+        font-size: 0.85em;
+        margin-right: 0.2rem;
+        cursor: help;
+      }
+      .quality-alert .translation {
+        background: rgba(239, 68, 68, 0.2);
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+      }
+      .quality-warning .translation {
+        background: rgba(250, 204, 21, 0.2);
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+      }
     </style>
   </head>
   <body>
@@ -190,6 +209,10 @@
 
     <script>
       (() => {
+        // Check for dev mode URL parameter (?dev=true)
+        const urlParams = new URLSearchParams(window.location.search);
+        const isDevMode = urlParams.get('dev') === 'true';
+
         const transcriptEl = document.getElementById('transcript');
         const connectionStatus = document.getElementById('connectionStatus');
         const queueStats = document.getElementById('queueStats');
@@ -210,7 +233,8 @@
           playing: null,
           shouldReconnect: false,
           reconnectDelay: 2000,
-          reconnectTimer: null
+          reconnectTimer: null,
+          devMode: isDevMode
         };
 
         function parseInputs() {
@@ -344,9 +368,48 @@
             textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
           }
 
-          currentParagraph.textContent = currentText
-            ? `${currentText} ${textToAppend}`
-            : textToAppend;
+          // Dev mode: Show translation quality indicators
+          if (state.devMode) {
+            // Get quality score based on length ratio
+            let qualityIndicator = '';
+            let qualityClass = '';
+            if (patch.lengthRatio > 3.0) {
+              qualityIndicator = '🔴'; // Likely hallucination
+              qualityClass = 'quality-alert';
+            } else if (patch.lengthRatio > 2.0) {
+              qualityIndicator = '🟡'; // Warning - possible additions
+              qualityClass = 'quality-warning';
+            } else {
+              qualityIndicator = '🟢'; // Normal
+              qualityClass = 'quality-ok';
+            }
+
+            // Add incomplete indicator
+            if (patch.isIncomplete) {
+              qualityIndicator += '⚠️';
+            }
+
+            // Create segment with metadata
+            const segment = document.createElement('span');
+            segment.className = `segment ${qualityClass}`;
+            segment.innerHTML = `<span class="quality-badge" title="Length ratio: ${patch.lengthRatio?.toFixed(2) || 'N/A'}">${qualityIndicator}</span> <span class="translation">${textToAppend}</span>`;
+
+            // Add source text tooltip in dev mode
+            if (patch.sourceText) {
+              segment.title = `Source: ${patch.sourceText}\nProvider: ${patch.provider || 'N/A'}\nRatio: ${patch.lengthRatio?.toFixed(2) || 'N/A'}`;
+            }
+
+            // Append to paragraph
+            if (currentText) {
+              currentParagraph.appendChild(document.createTextNode(' '));
+            }
+            currentParagraph.appendChild(segment);
+          } else {
+            // Production mode: Simple text only
+            currentParagraph.textContent = currentText
+              ? `${currentText} ${textToAppend}`
+              : textToAppend;
+          }
 
           // Track this utterance to prevent duplicates
           state.itemsByUnit.set(utterId, {

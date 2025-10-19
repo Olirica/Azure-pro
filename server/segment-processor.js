@@ -374,26 +374,38 @@ class SegmentProcessor {
       );
 
       // Emit revision patches
-      const revisionPatches = translations.map((translation) => ({
-        unitId: previousSegment.unitId,
-        utteranceId: previousSegment.unitId,
-        stage: 'hard',
-        op: 'translation-revision', // Special op for revisions
-        version: previousSegment.version,
-        rev: previousSegment.version,
-        text: translation.text,
-        srcLang: previousSegment.srcLang,
-        targetLang: translation.lang,
-        isFinal: true,
-        sentLen: {
-          src: translation.srcSentLen,
-          tgt: translation.transSentLen
-        },
-        ts: previousSegment.ts,
-        revisionReason: 'gender_correction',
-        revisionGender: peekDecision.gender,
-        revisionConfidence: peekDecision.confidence
-      }));
+      const revisionPatches = translations.map((translation) => {
+        const sourceLen = previousSegment.text.length;
+        const targetLen = translation.text.length;
+        const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
+        const isIncomplete = /\.\.\.$/.test(translation.text.trim());
+
+        return {
+          unitId: previousSegment.unitId,
+          utteranceId: previousSegment.unitId,
+          stage: 'hard',
+          op: 'translation-revision', // Special op for revisions
+          version: previousSegment.version,
+          rev: previousSegment.version,
+          text: translation.text,
+          srcLang: previousSegment.srcLang,
+          targetLang: translation.lang,
+          isFinal: true,
+          sentLen: {
+            src: translation.srcSentLen,
+            tgt: translation.transSentLen
+          },
+          ts: previousSegment.ts,
+          revisionReason: 'gender_correction',
+          revisionGender: peekDecision.gender,
+          revisionConfidence: peekDecision.confidence,
+          // Translation quality metadata
+          sourceText: previousSegment.text,
+          lengthRatio,
+          isIncomplete,
+          provider: translation.provider || 'azure'
+        };
+      });
 
       // Broadcast revision patches
       if (revisionPatches.length && this.onTranslationReady) {
@@ -448,6 +460,11 @@ class SegmentProcessor {
     for (const lang of uniqueTargets) {
       const cached = this.getCachedTranslation(unitId, version, lang);
       if (cached) {
+        const sourceLen = text.length;
+        const targetLen = cached.text.length;
+        const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
+        const isIncomplete = /\.\.\.$/.test(cached.text.trim());
+
         translatedPatches.push({
           unitId,
           utteranceId: unitId,
@@ -464,7 +481,12 @@ class SegmentProcessor {
             tgt: cached.transSentLen
           },
           ts,
-          mergedFrom: segment.mergedFrom // Preserve merge metadata
+          mergedFrom: segment.mergedFrom, // Preserve merge metadata
+          // Translation quality metadata
+          sourceText: text,
+          lengthRatio,
+          isIncomplete,
+          provider: cached.provider || 'azure'
         });
       } else {
         misses.push(lang);
@@ -499,6 +521,12 @@ class SegmentProcessor {
           'Translator response.'
         );
         for (const translation of translations) {
+          // Calculate quality metrics
+          const sourceLen = text.length;
+          const targetLen = translation.text.length;
+          const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
+          const isIncomplete = /\.\.\.$/.test(translation.text.trim());
+
           const payload = {
             unitId,
             utteranceId: unitId,
@@ -515,7 +543,12 @@ class SegmentProcessor {
               tgt: translation.transSentLen
             },
             ts,
-            mergedFrom: segment.mergedFrom
+            mergedFrom: segment.mergedFrom,
+            // Translation quality metadata
+            sourceText: text, // Original text for comparison
+            lengthRatio,       // Ratio for hallucination detection
+            isIncomplete,      // Flags segments ending with "..."
+            provider: translation.provider || 'azure' // Which translator was used
           };
           this.cacheTranslation(unitId, version, translation.lang, translation);
           translatedPatches.push(payload);
