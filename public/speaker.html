@@ -957,7 +957,7 @@
               if (recognitionMode === 'dictation') {
                 log('Dictation mode: Standard punctuation, semantic segmentation');
               } else {
-                log('Balanced mode: Semantic segmentation + moderately aggressive VAD');
+                log('Balanced mode: Aggressive VAD (200ms/150ms) with dictation punctuation');
               }
             } else if (recognitionMode === 'conversation') {
               speechConfig.setProperty(
@@ -988,7 +988,7 @@
               segmentationSilenceMs = 150;  // Fire after 150ms pause
               endSilenceMs = 150;            // End after 150ms trailing silence
             } else if (recognitionMode === 'balanced') {
-              // Balanced mode: Moderately aggressive VAD with semantic segmentation
+              // Balanced mode: Moderately aggressive VAD (NO semantic - it's broken in JS SDK)
               segmentationSilenceMs = 200;  // Fire after 200ms pause (faster than dictation's 300ms)
               endSilenceMs = 150;            // End after 150ms trailing silence (faster than dictation's 200ms)
             } else {
@@ -1034,19 +1034,20 @@
             );
 
             // Configure segmentation strategy based on mode
-            if (recognitionMode === 'dictation' || recognitionMode === 'balanced') {
-              // Dictation/Balanced: Use semantic segmentation (fires on punctuation boundaries)
-              // Note: In JavaScript SDK, semantic still accumulates context (waits 5-10s)
-              // Balanced mode combines semantic with more aggressive VAD for faster response
+            if (recognitionMode === 'dictation') {
+              // Dictation: Use semantic segmentation (fires on punctuation boundaries)
+              // Note: In JavaScript SDK, semantic accumulates context (waits 5-15s before firing)
+              // This is broken behavior but acceptable for dictation mode prioritizing quality
               speechConfig.setProperty(
                 SpeechSDK.PropertyId.Speech_SegmentationStrategy,
                 'Semantic'
               );
-              log('Semantic segmentation enabled (punctuation-based)');
+              log('Semantic segmentation enabled (punctuation-based, slow)');
             } else {
-              // Conversation: Use default VAD-based segmentation (fires on silence only)
-              // No need to set property - default behavior
-              log('Using default VAD segmentation (silence-based)');
+              // Conversation/Balanced: Use default VAD-based segmentation (fires on silence only)
+              // Balanced mode uses aggressive VAD thresholds (200ms/150ms) for fast response
+              // Semantic segmentation is NOT used because it overrides VAD thresholds in JS SDK
+              log('Using default VAD segmentation (silence-based, fast)');
             }
 
             // NOTE: Speech_SegmentationMaximumTimeMs is not supported in JavaScript SDK
