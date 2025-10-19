@@ -208,6 +208,15 @@
     <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
     <script>
       (() => {
+        // Check for dev mode URL parameter (?dev=true)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('dev') === 'true') {
+          // Show dev-only elements (recognition mode selector)
+          document.querySelectorAll('.dev-only').forEach(el => {
+            el.style.display = 'block';
+          });
+        }
+
         const logArea = document.getElementById('debugLog');
         const transcriptList = document.getElementById('transcript');
         const recognitionStatus = document.getElementById('recognitionStatus');
