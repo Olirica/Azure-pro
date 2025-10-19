@@ -1176,6 +1176,14 @@
               'true'
             );
 
+            // Enable semantic segmentation (fire SDK finals on punctuation, not just silence)
+            // This makes recognition robust to background noise by using sentence boundaries
+            // instead of relying solely on silence detection (VAD)
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.Speech_SegmentationStrategy,
+              'Semantic'
+            );
+
             // Log SDK configuration for debugging
             log('Azure SDK configured', {
               recognitionMode,
