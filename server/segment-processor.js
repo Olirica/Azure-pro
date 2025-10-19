@@ -130,6 +130,38 @@ const FILLER_AT_SENTENCE_END = new RegExp(
 // Handles mid-sentence cuts from aggressive VAD in balanced mode
 const TRAILING_CONNECTORS = /\s+(so|and|but|or|if|because|since|when|while|as)\.$/gi;
 
+/**
+ * Detect if current segment is a continuation of previous segment.
+ * Used for merging truncated segments from aggressive VAD.
+ * @param {Object} previous - Previous segment
+ * @param {Object} current - Current segment
+ * @returns {boolean} True if current should merge with previous
+ */
+function shouldMergeContinuation(previous, current) {
+  if (!previous || !current) {
+    return false;
+  }
+
+  const prevText = (previous.text || '').trim();
+  const currText = (current.text || '').trim();
+
+  if (!prevText || !currText) {
+    return false;
+  }
+
+  // Condition 1: Previous ends with connector word (with or without period)
+  const endsWithConnector = /\s+(so|and|but|or|if|because|since|when|while|as)\.?$/i.test(prevText);
+
+  // Condition 2: Previous has no ending punctuation
+  const hasNoEndingPunct = !/[.!?]$/.test(prevText);
+
+  // Condition 3: Current starts with lowercase letter
+  const startsLowercase = /^[a-z]/.test(currText);
+
+  // Return true if ANY condition is met
+  return endsWithConnector || hasNoEndingPunct || startsLowercase;
+}
+
 function stripFillerPhrases(text) {
   if (!text || !FILLER_FILTER_ENABLED) {
     return text;
@@ -191,6 +223,15 @@ class SegmentProcessor {
     this.peekMaxSegments = peekMaxSegments;
     this.peekMinConfidence = peekMinConfidence;
     this.peekableSegments = []; // Array of {segment, targetLangs, timestamp}
+
+    // Continuation merge window for joining truncated segments from aggressive VAD
+    const continuationEnabled = process.env.CONTINUATION_MERGE_ENABLED !== 'false';
+    const continuationWindowMs = parseInt(process.env.CONTINUATION_WINDOW_MS, 10) || 3000;
+
+    this.continuationEnabled = continuationEnabled;
+    this.continuationWindowMs = continuationWindowMs;
+    this.continuationWindow = []; // Array of {segment, targetLangs, timestamp}
+    this.mergedSegments = new Set(); // Track segments that were merged into previous
 
     // Initialize translation buffer for intelligent segment merging
     const bufferEnabled = process.env.TRANSLATION_MERGE_ENABLED !== 'false';
@@ -431,6 +472,178 @@ class SegmentProcessor {
           err: err?.message
         },
         'Backward peek translation failed.'
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Prune expired segments from continuation window.
+   */
+  pruneContinuationWindow() {
+    const now = Date.now();
+    this.continuationWindow = this.continuationWindow.filter(
+      (entry) => now - entry.timestamp < this.continuationWindowMs
+    );
+  }
+
+  /**
+   * Perform continuation merge to join truncated segments from aggressive VAD.
+   * Emits immediately, then asynchronously merges via revision patches.
+   * @param {Object} newSegment - New segment that may continue previous
+   * @param {string[]} targetLangs - Target languages
+   * @returns {Promise<boolean>} True if merge was performed
+   */
+  async performContinuationMerge(newSegment, targetLangs) {
+    if (!this.continuationEnabled || !this.continuationWindow.length) {
+      return false;
+    }
+
+    // Prune expired segments first
+    this.pruneContinuationWindow();
+
+    if (!this.continuationWindow.length) {
+      return false;
+    }
+
+    // Check most recent segment (LIFO)
+    const lastEntry = this.continuationWindow[this.continuationWindow.length - 1];
+    const previousSegment = lastEntry.segment;
+
+    // Use helper to determine if we should merge
+    const shouldMerge = shouldMergeContinuation(previousSegment, newSegment);
+
+    this.logger.debug(
+      {
+        component: 'segment-processor',
+        roomId: this.roomId,
+        shouldMerge,
+        newSegmentText: newSegment.text?.substring(0, 50),
+        prevSegmentText: previousSegment.text?.substring(0, 50)
+      },
+      'Continuation merge decision.'
+    );
+
+    if (!shouldMerge) {
+      return false;
+    }
+
+    // Perform continuation merge: combine texts and re-translate
+    this.logger.info(
+      {
+        component: 'segment-processor',
+        roomId: this.roomId,
+        previousUnit: previousSegment.unitId,
+        currentUnit: newSegment.unitId
+      },
+      'Performing continuation merge.'
+    );
+
+    // Merge texts intelligently
+    const prevText = previousSegment.text.trim();
+    const currText = newSegment.text.trim();
+
+    // Remove trailing connector/ellipsis from previous, then join
+    const cleanedPrev = prevText.replace(/\.\.\.$/g, '').replace(/\s+(so|and|but|or|if|because|since|when|while|as)\.?$/i, ' $1');
+    const mergedText = `${cleanedPrev} ${currText}`.trim();
+
+    // Re-translate merged text with context
+    try {
+      // Gather context (exclude both previous and current from context)
+      const contextTexts = this.contextBuffer
+        .filter(ctx => ctx.unitId !== previousSegment.unitId && ctx.unitId !== newSegment.unitId)
+        .slice(-2)
+        .map(ctx => ctx.text);
+
+      const translations = await this.translator.translate(
+        this.roomId,
+        mergedText,
+        previousSegment.srcLang,
+        targetLangs,
+        contextTexts
+      );
+
+      // Emit revision patches for PREVIOUS segment with merged text
+      const revisionPatches = translations.map((translation) => {
+        const sourceLen = mergedText.length;
+        const targetLen = translation.text.length;
+        const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
+        const isIncomplete = /\.\.\.$/.test(translation.text.trim());
+
+        return {
+          unitId: previousSegment.unitId,
+          utteranceId: previousSegment.unitId,
+          stage: 'hard',
+          op: 'translation-revision',
+          version: previousSegment.version,
+          rev: previousSegment.version,
+          text: translation.text,
+          srcLang: previousSegment.srcLang,
+          targetLang: translation.lang,
+          isFinal: true,
+          sentLen: {
+            src: translation.srcSentLen,
+            tgt: translation.transSentLen
+          },
+          ts: previousSegment.ts,
+          revisionReason: 'continuation_merge',
+          mergedWith: newSegment.unitId,
+          // Translation quality metadata
+          sourceText: mergedText,
+          lengthRatio,
+          isIncomplete,
+          provider: translation.provider || 'azure'
+        };
+      });
+
+      // Broadcast revision patches
+      if (revisionPatches.length && this.onTranslationReady) {
+        this.onTranslationReady(revisionPatches);
+      }
+
+      // Update cache with merged translations
+      for (const translation of translations) {
+        this.cacheTranslation(
+          previousSegment.unitId,
+          previousSegment.version,
+          translation.lang,
+          translation
+        );
+      }
+
+      // Mark current segment as merged into previous
+      this.mergedSegments.add(newSegment.unitId);
+
+      // Emit suppression patch for current segment
+      if (this.onTranslationReady) {
+        const suppressionPatches = targetLangs.map((lang) => ({
+          unitId: newSegment.unitId,
+          utteranceId: newSegment.unitId,
+          stage: 'hard',
+          op: 'suppress',
+          version: newSegment.version,
+          rev: newSegment.version,
+          text: '',
+          srcLang: newSegment.srcLang,
+          targetLang: lang,
+          isFinal: true,
+          ts: newSegment.ts,
+          mergedIntoPrevious: previousSegment.unitId,
+          suppressReason: 'continuation_merge'
+        }));
+
+        this.onTranslationReady(suppressionPatches);
+      }
+
+      return true;
+    } catch (err) {
+      this.logger.error(
+        {
+          component: 'segment-processor',
+          roomId: this.roomId,
+          err: err?.message
+        },
+        'Continuation merge failed.'
       );
       return false;
     }
@@ -767,6 +980,10 @@ class SegmentProcessor {
       // This happens BEFORE translating current segment to avoid race conditions
       await this.performBackwardPeek(segmentForTranslation, uniqueTargets);
 
+      // Perform continuation merge to join truncated segments from aggressive VAD
+      // This happens AFTER backward peek to ensure gender corrections are applied first
+      await this.performContinuationMerge(segmentForTranslation, uniqueTargets);
+
       // Add current segment to peekable window for future gender corrections
       this.peekableSegments.push({
         segment: segmentForTranslation,
@@ -774,8 +991,16 @@ class SegmentProcessor {
         timestamp: Date.now()
       });
 
-      // Prune expired segments from peek window
+      // Add current segment to continuation window for future merges
+      this.continuationWindow.push({
+        segment: segmentForTranslation,
+        targetLangs: uniqueTargets,
+        timestamp: Date.now()
+      });
+
+      // Prune expired segments from both windows
       this.prunePeekWindow();
+      this.pruneContinuationWindow();
 
       // Track hard segment in context buffer for translation context
       this.contextBuffer.push({

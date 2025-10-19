@@ -1,0 +1,10 @@
+{
+  "testDuration": 130.005,
+  "timestamp": "2025-10-16T12:12:10.791Z",
+  "metrics": {
+    "translations": [],
+    "ttsQueue": [],
+    "ttsSkipped": [],
+    "errors": []
+  }
+}

@@ -275,7 +275,59 @@
             return;
           }
 
-          // Handle translation revisions (backward peek gender corrections)
+          // Handle suppress patches (segments merged into previous)
+          if (patch.op === 'suppress') {
+            console.debug('[listener] Suppress patch (hiding segment merged into previous)', {
+              utteranceId: utterId,
+              mergedIntoPrevious: patch.mergedIntoPrevious,
+              suppressReason: patch.suppressReason
+            });
+
+            // Check if this segment was already rendered
+            const existing = state.itemsByUnit.get(utterId);
+            if (existing && existing.element) {
+              // Reconstruct the paragraph to remove this segment
+              const paragraph = existing.element;
+              if (paragraph && paragraph.dataset.utterances) {
+                const utteranceIds = JSON.parse(paragraph.dataset.utterances);
+                const texts = utteranceIds
+                  .map(id => {
+                    // Skip the suppressed utterance
+                    if (id === utterId) return '';
+                    const item = state.itemsByUnit.get(id);
+                    if (item?.suppressed) return '';
+                    return item?.text || '';
+                  })
+                  .filter(Boolean);
+
+                // Capitalize first letter of paragraph
+                if (texts.length > 0) {
+                  texts[0] = texts[0].charAt(0).toUpperCase() + texts[0].slice(1);
+                }
+
+                paragraph.textContent = texts.join(' ');
+
+                console.debug('[listener] Suppressed segment removed from paragraph', {
+                  utteranceId: utterId,
+                  paragraphLength: paragraph.textContent.length
+                });
+              }
+            }
+
+            // Mark this utterance as suppressed
+            state.itemsByUnit.set(utterId, {
+              text: '',
+              rev,
+              receivedAt,
+              element: existing?.element || null,
+              suppressed: true,
+              mergedIntoPrevious: patch.mergedIntoPrevious
+            });
+
+            return;
+          }
+
+          // Handle translation revisions (backward peek gender corrections + continuation merges)
           if (isRevision) {
             const existing = state.itemsByUnit.get(utterId);
             if (!existing) {
@@ -298,6 +350,8 @@
               const texts = utteranceIds
                 .map(id => {
                   const item = state.itemsByUnit.get(id);
+                  // Skip suppressed segments
+                  if (item?.suppressed) return '';
                   return item?.text || '';
                 })
                 .filter(Boolean);
@@ -314,6 +368,7 @@
                 newText: patch.text?.substring(0, 50),
                 revisionReason: patch.revisionReason,
                 revisionGender: patch.revisionGender,
+                mergedWith: patch.mergedWith,
                 paragraphLength: paragraph.textContent.length
               });
             }
@@ -324,6 +379,16 @@
           // Check if we've already rendered this utterance (prevent duplicates)
           if (state.itemsByUnit.has(utterId)) {
             const existing = state.itemsByUnit.get(utterId);
+
+            // Skip if already suppressed (merged into previous segment)
+            if (existing.suppressed) {
+              console.debug('[listener] Skipping suppressed utterance', {
+                utteranceId: utterId,
+                mergedIntoPrevious: existing.mergedIntoPrevious
+              });
+              return;
+            }
+
             if (existing.rev != null && rev <= existing.rev) {
               console.debug('[listener] Skipping stale/duplicate revision', {
                 utteranceId: utterId,

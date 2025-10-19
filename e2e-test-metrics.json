@@ -1,0 +1,858 @@
+{
+  "testDuration": 512.438,
+  "timestamp": "2025-10-16T00:09:27.119Z",
+  "metrics": {
+    "speakerEvents": [
+      {
+        "timestamp": 1760572859254,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572862249,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572865249,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572868252,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572871249,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572874248,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572877250,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572880247,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572883245,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572886242,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572889244,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572892338,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572895340,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572898339,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572901337,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572904336,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572907562,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572910338,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572913338,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572916341,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572919337,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572922442,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572925440,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572928439,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572931441,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572934441,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572937442,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572940445,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572943454,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572946442,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572949441,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572952535,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572955540,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572958543,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572961539,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572964539,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572967539,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572970539,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572973539,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572976614,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572979618,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572982724,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572985719,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572988720,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572991726,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572994723,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760572997724,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573000725,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573003723,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573006722,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573009723,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573012818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573015819,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573018819,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573021819,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573024822,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573027818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573030818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573033817,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573036818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573039819,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573042923,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573045925,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573048923,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573051924,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573054924,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573057925,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573060926,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573063934,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573066938,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573069923,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573073058,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573076017,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573079017,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573082075,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573085019,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573088018,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573091016,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573094017,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573097018,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573100019,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573103121,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573106125,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573109120,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573112122,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573115122,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573118122,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573121121,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573124122,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573127128,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573130120,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573133217,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573136227,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573139221,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573142218,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573145222,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573148218,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573151219,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573154218,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573157220,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573160219,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573163370,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573166437,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573169324,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573172322,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573175324,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573178320,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573181322,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573184322,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573187323,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573190322,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573193419,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573196423,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573199422,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573202477,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573205569,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573208665,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573211773,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573214867,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573217967,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573221069,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573224176,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573227265,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573230376,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573233469,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573236574,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573239657,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573242769,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573245862,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573250194,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573252019,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573253851,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573256617,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573259621,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573262617,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573265620,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573268621,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573271618,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573274621,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573277633,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573280617,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573283725,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573287123,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573289723,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573292723,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573295724,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573298722,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573301722,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573304723,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573307722,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573310722,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573313819,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573316820,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573319818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573322820,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573325818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573328818,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573331819,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573334817,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573337821,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573340823,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573343925,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573346923,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573349924,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573352924,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573355922,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573358922,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573361927,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      },
+      {
+        "timestamp": 1760573364925,
+        "type": "final",
+        "text": "[speaker] Recognized (final) event {reason: RecognizedSpeech, text: (empty)}"
+      }
+    ],
+    "listenerEvents": [],
+    "fastFinals": [],
+    "ttsQueue": [],
+    "translations": [],
+    "errors": []
+  }
+}
