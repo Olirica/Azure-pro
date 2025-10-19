@@ -114,6 +114,22 @@ const FILLER_SINGLE_WORD = new RegExp(
   'gi'
 );
 
+// Remove comma+filler before sentence-ending punctuation (e.g., "now, um." → "now.")
+const FILLER_BEFORE_PUNCT = new RegExp(
+  ',\\s*(?:' + FILLER_LIST.join('|') + ')\\s*(?=[.!?])',
+  'gi'
+);
+
+// Remove filler words directly before sentence-ending punctuation (e.g., "is uh." → "is.")
+const FILLER_AT_SENTENCE_END = new RegExp(
+  '\\s+(?:' + FILLER_LIST.join('|') + ')(?=[.!?])',
+  'gi'
+);
+
+// Replace trailing connector words with ellipsis (revisable later)
+// Handles mid-sentence cuts from aggressive VAD in balanced mode
+const TRAILING_CONNECTORS = /\s+(so|and|but|or|if|because|since|when|while|as)\.$/gi;
+
 function stripFillerPhrases(text) {
   if (!text || !FILLER_FILTER_ENABLED) {
     return text;
@@ -125,10 +141,13 @@ function stripFillerPhrases(text) {
     iterations += 1;
   }
   result = result.replace(FILLER_PATTERNS_AFTER_PUNCTUATION, (_match, prefix) => prefix);
+  result = result.replace(FILLER_BEFORE_PUNCT, '');  // Remove ", um." → "."
+  result = result.replace(FILLER_AT_SENTENCE_END, '');  // Remove " uh." → "."
   result = result.replace(FILLER_INLINE_COMMA, ', ');
   result = result.replace(FILLER_SINGLE_WORD, ' ');
   result = result.replace(/\s{2,}/g, ' ');
   result = result.replace(/\s+,/g, ',');
+  result = result.replace(TRAILING_CONNECTORS, '...');  // "so." → "..."
   return result.trim();
 }
 

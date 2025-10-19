@@ -127,6 +127,10 @@
       small {
         color: rgba(148, 163, 184, 0.8);
       }
+      /* Hide recognition mode for production (dev/testing only) */
+      .dev-only {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -141,7 +145,7 @@
           </div>
           <div>
             <label for="sourceLang">Source language (BCP-47)</label>
-            <input id="sourceLang" type="text" value="en-CA" />
+            <input id="sourceLang" type="text" value="en-US" />
           </div>
           <div>
             <label for="targetLangs">Target languages (comma separated)</label>
@@ -152,6 +156,24 @@
             <select id="micSelect" style="width: 100%; padding: 0.6rem 0.8rem; margin-top: 0.35rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.35); color: inherit;">
               <option value="">Default microphone</option>
             </select>
+          </div>
+          <!-- Recognition Mode (hidden in production - remove 'dev-only' class to show) -->
+          <div class="dev-only">
+            <label>Recognition Mode</label>
+            <div style="margin-top: 0.5rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="radio" name="recMode" value="conversation" style="cursor: pointer;" />
+                <span>Conversation (Fast VAD)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="radio" name="recMode" value="balanced" checked style="cursor: pointer;" />
+                <span>Balanced (Moderate Speed)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="radio" name="recMode" value="dictation" style="cursor: pointer;" />
+                <span>Dictation (Semantic)</span>
+              </label>
+            </div>
           </div>
         </div>
         <div class="stack" style="margin-top: 1.25rem">
@@ -170,12 +192,16 @@
       </section>
 
       <section>
-        <h2>Debug</h2>
-        <button id="copyDebugBtn" style="margin-bottom: 1rem; background: rgba(148, 163, 184, 0.2); color: inherit;">
-          Copy debug log
-        </button>
-        <pre id="debugLog">Waiting…</pre>
-        <small>Token acquisition, SDK events, and merge decisions appear here.</small>
+        <details>
+          <summary style="cursor: pointer; font-size: 1.5rem; font-weight: 600; margin-bottom: 1rem;">
+            Debug
+          </summary>
+          <button id="copyDebugBtn" style="margin-bottom: 1rem; background: rgba(148, 163, 184, 0.2); color: inherit;">
+            Copy debug log
+          </button>
+          <pre id="debugLog">Waiting…</pre>
+          <small>Token acquisition, SDK events, and merge decisions appear here.</small>
+        </details>
       </section>
     </main>
 
@@ -196,14 +222,11 @@
           sessionId: null,
           currentUtteranceId: null,  // Stable ID for current utterance
           rev: 0,  // Revision counter (increments within same utteranceId)
-          lastSoftEmitAt: 0,
-          lastSoftText: '',
-          lastPartialFull: '',
-          prefix: createPrefixState(),
-          fastFinals: null,
+          // Partials disabled - removed: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix, fastFinals
           roomId: null,
           sourceLang: null,
           targetLangs: [],
+          recognitionMode: 'balanced',  // User-selected mode (conversation, balanced, or dictation)
           heartbeatTimer: null,
           heartbeatIntervalMs: 2500,
           itemsByUnit: new Map(),
@@ -212,23 +235,13 @@
           tokenRegion: null,
           finalTimer: null,
           pendingFinals: [],  // Queue of finals waiting to be emitted (accumulate during debounce)
+          maxBatchSize: 5,     // Max finals to batch before forcing emit
+          finalBatchStartedAt: 0,  // Timestamp when first final in batch arrived
           phraseList: null,
           phraseHints: [],
           autoDetectLangs: [],
           patchSourceLang: null
         };
-
-        // Duration-based segmentation stability constant (independent from fast-finals config)
-        const DURATION_TIMEOUT_STABLE_K = 3;
-
-        const DEFAULT_FAST_FINALS = Object.freeze({
-          stableK: 3,
-          minStableMs: 600,
-          minChars: 28,
-          minWords: 6,
-          emitThrottleMs: 700,
-          punctStableMs: 350
-        });
 
         const DEFAULT_CONFIG = {
           stablePartials: 4,
@@ -245,8 +258,19 @@
           finalDebounceMs: 180,
           maxUtteranceDurationMs: 9000,
           phraseHints: [],
-          autoDetectLangs: [],
-          fastFinals: { ...DEFAULT_FAST_FINALS }
+          autoDetectLangs: []
+        };
+
+        // Fast-finals defaults (effectively disabled with semantic segmentation)
+        const DEFAULT_FAST_FINALS = {
+          stableK: 99,           // Effectively disabled
+          minStableMs: 9999,     // Effectively disabled
+          minChars: 999,         // Effectively disabled
+          minWords: 99,          // Effectively disabled
+          emitThrottleMs: 9999,  // Effectively disabled
+          punctStableMs: 9999,   // Effectively disabled
+          tailGuardChars: 0,     // Not applicable
+          tailGuardWords: 0      // Not applicable
         };
 
         async function loadConfig() {
@@ -420,13 +444,32 @@
           if (!text) {
             return [];
           }
-          const matches = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g);
+
+          // Common abbreviations that don't end sentences (English + French)
+          const ABBREVIATIONS = [
+            'Dr', 'Mr', 'Mrs', 'Ms', 'Prof', 'Sr', 'Jr', 'vs', 'etc', 'Ph.D', 'M.D',
+            'Mme', 'Mlle', 'M'  // French: Madame, Mademoiselle, Monsieur
+          ];
+
+          // Create regex pattern for abbreviations followed by period
+          // (e.g., "Dr." shouldn't split)
+          const abbrevPattern = new RegExp(
+            `\\b(${ABBREVIATIONS.join('|')})\\.(?!\\s+[A-Z])`,
+            'g'
+          );
+
+          // Temporarily replace abbreviations to protect them from splitting
+          const ABBREV_PLACEHOLDER = '\x00ABBREV\x00';
+          const protectedText = text.replace(abbrevPattern, `$1${ABBREV_PLACEHOLDER}`);
+
+          // Split on sentence terminators (.!?) followed by space or end
+          const matches = protectedText.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g);
           if (!matches) {
             return [text.trim()];
           }
 
-          // Filter out fragments (lowercase start suggesting continuation)
-          const sentences = matches.map((s) => s.trim()).filter(Boolean);
+          // Restore abbreviations and filter/merge fragments
+          const sentences = matches.map((s) => s.trim().replace(new RegExp(ABBREV_PLACEHOLDER, 'g'), '.')).filter(Boolean);
           const filtered = [];
 
           for (let i = 0; i < sentences.length; i++) {
@@ -468,90 +511,9 @@
           return `U${timestamp}${random}`;
         }
 
-        function createPrefixState() {
-          return {
-            ring: [],
-            committedChars: 0,
-            committedRaw: '',
-            lastStableLen: 0,
-            lastStableAt: 0,
-            lastCandidateEnd: 0,
-            candidateStableAt: 0,
-            lastEmitAt: 0,
-            lastEmittedText: '', // Track last emitted text to prevent duplicates
-            utteranceStartedAt: 0, // Track when current utterance started (for max duration check)
-            ringFilledAt: 0 // Track when ring first reached K entries (for stability timing)
-          };
-        }
-
-        function getFastFinalsConfig() {
-          const cfg = state.fastFinals || DEFAULT_FAST_FINALS;
-          const coerce = (value, fallback, min = 0) => {
-            const num = Number(value);
-            if (!Number.isFinite(num)) {
-              return fallback;
-            }
-            return Math.max(num, min);
-          };
-          return {
-            stableK: coerce(cfg.stableK, DEFAULT_FAST_FINALS.stableK, 1),
-            minStableMs: coerce(cfg.minStableMs, DEFAULT_FAST_FINALS.minStableMs, 0),
-            minChars: coerce(cfg.minChars, DEFAULT_FAST_FINALS.minChars, 1),
-            minWords: coerce(cfg.minWords, DEFAULT_FAST_FINALS.minWords, 1),
-            emitThrottleMs: coerce(cfg.emitThrottleMs, DEFAULT_FAST_FINALS.emitThrottleMs, 0),
-            punctStableMs: coerce(
-              cfg.punctStableMs,
-              DEFAULT_FAST_FINALS.punctStableMs,
-              0
-            ),
-            tailGuardChars: coerce(cfg.tailGuardChars, DEFAULT_FAST_FINALS.tailGuardChars, 0),
-            tailGuardWords: coerce(cfg.tailGuardWords, DEFAULT_FAST_FINALS.tailGuardWords, 0)
-          };
-        }
-
-        function resetPrefixState() {
-          state.prefix = createPrefixState();
-        }
-
-        function updatePrefixRingSnapshot(snapshot) {
-          const ring = state.prefix.ring;
-          ring.push(snapshot);
-          const { stableK } = getFastFinalsConfig();
-          while (ring.length > stableK) {
-            ring.shift();
-          }
-        }
-
-        function stablePrefixLength() {
-          const ring = state.prefix.ring;
-          if (!ring.length) {
-            return 0;
-          }
-          let prefix = ring[0] || '';
-          for (let i = 1; i < ring.length && prefix; i += 1) {
-            const candidate = ring[i] || '';
-            let j = 0;
-            const max = Math.min(prefix.length, candidate.length);
-            while (j < max && prefix[j] === candidate[j]) {
-              j += 1;
-            }
-            prefix = prefix.slice(0, j);
-          }
-          return prefix.length;
-        }
-
-        function lastBoundaryBefore(text, idx) {
-          const slice = text.slice(0, idx);
-          const terminal = Math.max(slice.lastIndexOf('.'), slice.lastIndexOf('!'), slice.lastIndexOf('?'));
-          if (terminal >= 0) {
-            return terminal + 1;
-          }
-          const secondary = Math.max(slice.lastIndexOf(':'), slice.lastIndexOf(';'));
-          if (secondary >= 0) {
-            return secondary + 1;
-          }
-          return -1;
-        }
+        // ===== FAST-FINALS & PARTIALS CODE REMOVED =====
+        // With semantic segmentation firing on punctuation, fast-finals are no longer needed.
+        // SDK finals arrive within 2-3s with high quality, making partials/fast-finals unnecessary.
 
         function countWords(text) {
           if (!text) {
@@ -559,132 +521,6 @@
           }
           const tokens = text.trim().match(/\S+/g);
           return tokens ? tokens.length : 0;
-        }
-
-        function applyTailGuards(fullText, startIdx, endIdx, config) {
-          if (!fullText || endIdx <= startIdx) {
-            return startIdx;
-          }
-          let candidate = endIdx;
-          const guardChars = Math.max(Number(config.tailGuardChars || 0), 0);
-          if (guardChars > 0 && candidate - startIdx > guardChars) {
-            candidate = Math.max(startIdx, candidate - guardChars);
-          }
-          const guardWords = Math.max(Number(config.tailGuardWords || 0), 0);
-          if (guardWords > 0) {
-            const slice = fullText.slice(startIdx, candidate);
-            const words = slice.match(/\S+/g) || [];
-            if (words.length > guardWords) {
-              const keepCount = words.length - guardWords;
-              let keepEnd = startIdx;
-              const matcher = /\S+/g;
-              let match;
-              let seen = 0;
-              while (seen < keepCount && (match = matcher.exec(slice))) {
-                seen += 1;
-                keepEnd = startIdx + match.index + match[0].length;
-              }
-              candidate = Math.max(startIdx, Math.min(candidate, keepEnd));
-            } else {
-              candidate = startIdx;
-            }
-          }
-
-          // Snap to word boundary: never cut mid-word
-          if (candidate > startIdx && candidate < fullText.length) {
-            const slice = fullText.slice(startIdx, candidate);
-            // If the slice doesn't end with whitespace, we might be mid-word
-            if (slice.length > 0 && !/\s$/.test(slice)) {
-              // Find the last whitespace in the slice
-              const lastSpace = slice.lastIndexOf(' ');
-              if (lastSpace >= 0) {
-                // Move candidate to after the last complete word
-                candidate = startIdx + lastSpace + 1;
-                // Trim any trailing whitespace
-                while (candidate > startIdx && /\s/.test(fullText[candidate - 1])) {
-                  candidate--;
-                }
-              } else {
-                // No space found - the entire slice is one partial word
-                // Don't emit anything (return startIdx)
-                candidate = startIdx;
-              }
-            }
-          }
-
-          return candidate;
-        }
-
-        function computeFinalRemainder(finalText) {
-          if (!finalText) {
-            return '';
-          }
-
-          const prefixState = state.prefix;
-          const rawCommitted = prefixState.committedRaw || '';
-
-          // Fast path: exact match (no Azure corrections)
-          if (rawCommitted && finalText.startsWith(rawCommitted)) {
-            const remainder = finalText.slice(rawCommitted.length).trim();
-            if (remainder) {
-              log('📄 Final remainder (exact match)', {
-                skipped: rawCommitted.length,
-                remainder: remainder.substring(0, 30)
-              });
-            } else {
-              log('⏭️  Final fully covered by duration timeout', {
-                finalText: finalText.substring(0, 50)
-              });
-            }
-            return remainder;
-          }
-
-          // Normalized path: handle Azure corrections (capitalization, punctuation)
-          if (rawCommitted) {
-            const normCommitted = normalize(rawCommitted);
-            const normFinal = normalize(finalText);
-
-            // Check if normalized final starts with normalized committed text
-            if (normCommitted && normFinal.startsWith(normCommitted)) {
-              // Use word-based slicing to avoid character position issues from punctuation
-              const committedWords = rawCommitted.trim().split(/\s+/);
-              const finalWords = finalText.trim().split(/\s+/);
-
-              if (finalWords.length > committedWords.length) {
-                // Extract words after committed portion
-                const remainderWords = finalWords.slice(committedWords.length);
-                const remainder = remainderWords.join(' ').trim();
-
-                log('📄 Final remainder (normalized match)', {
-                  committedWords: committedWords.length,
-                  newWords: remainderWords.length,
-                  remainder: remainder.substring(0, 30)
-                });
-
-                return remainder;
-              } else {
-                // Final is completely covered by duration timeout
-                log('⏭️  Final fully covered by duration timeout (normalized)', {
-                  committedWords: committedWords.length,
-                  finalWords: finalWords.length
-                });
-                return '';
-              }
-            }
-          }
-
-          // Fallback: character-based slicing (legacy fast-finals behavior)
-          if (prefixState.committedChars) {
-            const remainder = finalText.slice(prefixState.committedChars).trim();
-            log('📄 Final remainder (char-based)', {
-              committedChars: prefixState.committedChars,
-              remainder: remainder.substring(0, 30)
-            });
-            return remainder;
-          }
-
-          // No overlap detected - return full text
-          return finalText.trim();
         }
 
         async function emitHardSegment(text, result, options = {}) {
@@ -697,9 +533,8 @@
           const lastChar = cleaned[cleaned.length - 1];
           const endsWithTerminalPunct = lastChar === '.' || lastChar === '!' || lastChar === '?';
 
-          // Duration timeouts are always mid-sentence continuations
           // SDK finals ending with .!? are complete sentences (not continuations)
-          const isContinuation = options.isDurationTimeout || !endsWithTerminalPunct;
+          const isContinuation = !endsWithTerminalPunct;
 
           // Each hard segment gets its own unique utteranceId
           // (Don't reuse currentUtteranceId - that's for partials only)
@@ -726,29 +561,6 @@
           state.rev = 0;
           state.lastSoftText = '';
           state.lastSoftEmitAt = 0;
-
-          if (options.isPrefix) {
-            const prefixState = state.prefix;
-            const nowTs = typeof options.now === 'number' ? options.now : performance.now();
-            if (typeof options.commitEnd === 'number') {
-              prefixState.committedChars = options.commitEnd;
-              prefixState.lastStableLen = options.commitEnd;
-              prefixState.lastCandidateEnd = options.commitEnd;
-            }
-            if (options.rawSlice) {
-              prefixState.committedRaw += options.rawSlice;
-            }
-            prefixState.lastEmitAt = nowTs;
-            prefixState.lastStableAt = nowTs;
-            prefixState.candidateStableAt = nowTs;
-            prefixState.ringFilledAt = 0; // Reset ring fill timer for next segment
-            prefixState.ring = []; // Clear ring to wait for K fresh partials
-            log('Prefix committed', {
-              utteranceId,
-              length: cleaned.length,
-              committedChars: prefixState.committedChars
-            });
-          }
 
           return utteranceId;
         }
@@ -922,15 +734,29 @@
           // Smart capitalization: Only capitalize if starting a new sentence
           if (textToAppend) {
             let shouldCapitalize = false;
+            const firstChar = textToAppend.charAt(0);
+            const isAlreadyCapitalized = firstChar === firstChar.toUpperCase();
 
             if (!currentText) {
               // First segment in paragraph → always capitalize
-              shouldCapitalize = true;
+              shouldCapitalize = !isAlreadyCapitalized;
             } else {
               // Check if previous text ends with terminal punctuation (.!?)
+              // Handle edge cases: quotes/parens after punctuation
               const trimmedCurrent = currentText.trim();
-              const lastChar = trimmedCurrent[trimmedCurrent.length - 1];
-              shouldCapitalize = lastChar === '.' || lastChar === '!' || lastChar === '?';
+
+              // Find the last meaningful punctuation (ignore trailing quotes/parens/spaces)
+              let lastMeaningfulChar = '';
+              for (let i = trimmedCurrent.length - 1; i >= 0; i--) {
+                const char = trimmedCurrent[i];
+                if (char !== ' ' && char !== '"' && char !== "'" && char !== ')' && char !== ']') {
+                  lastMeaningfulChar = char;
+                  break;
+                }
+              }
+
+              const endsWithTerminal = lastMeaningfulChar === '.' || lastMeaningfulChar === '!' || lastMeaningfulChar === '?';
+              shouldCapitalize = endsWithTerminal && !isAlreadyCapitalized;
             }
 
             if (shouldCapitalize) {
@@ -940,8 +766,9 @@
                 segment: textToAppend.substring(0, 30)
               });
             } else {
-              log('🔤 Preserving lowercase (sentence continuation)', {
-                previousEnded: currentText.trim().slice(-10),
+              log('🔤 Preserving SDK capitalization', {
+                wasCapitalized: isAlreadyCapitalized,
+                previousEnded: currentText ? currentText.trim().slice(-10) : '(none)',
                 segment: textToAppend.substring(0, 30)
               });
             }
@@ -1080,13 +907,15 @@
           state.sourceLang = inputSourceLang;
           state.patchSourceLang = inputSourceLang;
           state.targetLangs = parseTargetLangs(document.getElementById('targetLangs').value);
+
+          // Read selected recognition mode from UI
+          const selectedModeRadio = document.querySelector('input[name="recMode"]:checked');
+          state.recognitionMode = selectedModeRadio ? selectedModeRadio.value : 'dictation';
+
           state.sessionId = crypto.randomUUID();
           state.currentUtteranceId = null;
           state.rev = 0;
-          state.lastSoftEmitAt = 0;
-          state.lastSoftText = '';
-          state.lastPartialFull = '';
-          resetPrefixState();
+          // Partials disabled - removed state resets for: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix
           state.itemsByUnit.clear();
           transcriptList.innerHTML = '';
 
@@ -1110,18 +939,23 @@
               speechConfig.speechRecognitionLanguage = state.sourceLang;
             }
 
-            // Set recognition mode from config (dictation/conversation/interactive)
-            const recognitionMode = config.recognitionMode || 'conversation';
-            if (recognitionMode === 'dictation') {
+            // Set recognition mode from UI selection (overrides .env config)
+            const recognitionMode = state.recognitionMode || 'balanced';
+            log(`Using recognition mode: ${recognitionMode} (user-selected)`);
+
+            if (recognitionMode === 'dictation' || recognitionMode === 'balanced') {
               speechConfig.enableDictation();
-              log('Enabled dictation mode for better punctuation and capitalization');
-            } else if (recognitionMode === 'conversation' || recognitionMode === 'interactive') {
-              // Set explicit mode for conversation or interactive
+              if (recognitionMode === 'dictation') {
+                log('Dictation mode: Standard punctuation, semantic segmentation');
+              } else {
+                log('Balanced mode: Semantic segmentation + moderately aggressive VAD');
+              }
+            } else if (recognitionMode === 'conversation') {
               speechConfig.setProperty(
                 SpeechSDK.PropertyId.SpeechServiceConnection_Mode,
-                recognitionMode
+                'conversation'
               );
-              log(`Set recognition mode: ${recognitionMode}`);
+              log('Conversation mode: Fast VAD, aggressive silence thresholds');
             }
 
             // Set language detection priority to Accuracy (when using auto-detect)
@@ -1136,9 +970,23 @@
             speechConfig.outputFormat = SpeechSDK.OutputFormat.Detailed;
 
             const stablePartials = config.stablePartials ?? DEFAULT_CONFIG.stablePartials;
-            const segmentationSilenceMs = config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs;
             const initialSilenceMs = config.initialSilenceMs ?? DEFAULT_CONFIG.initialSilenceMs;
-            const endSilenceMs = config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs;
+
+            // Configure VAD settings based on recognition mode
+            let segmentationSilenceMs, endSilenceMs;
+            if (recognitionMode === 'conversation') {
+              // Conversation mode: Super aggressive VAD for fast response
+              segmentationSilenceMs = 150;  // Fire after 150ms pause
+              endSilenceMs = 150;            // End after 150ms trailing silence
+            } else if (recognitionMode === 'balanced') {
+              // Balanced mode: Moderately aggressive VAD with semantic segmentation
+              segmentationSilenceMs = 200;  // Fire after 200ms pause (faster than dictation's 300ms)
+              endSilenceMs = 150;            // End after 150ms trailing silence (faster than dictation's 200ms)
+            } else {
+              // Dictation mode: Standard VAD (semantic handles segmentation)
+              segmentationSilenceMs = config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs;
+              endSilenceMs = config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs;
+            }
 
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,
@@ -1176,13 +1024,25 @@
               'true'
             );
 
-            // Enable semantic segmentation (fire SDK finals on punctuation, not just silence)
-            // This makes recognition robust to background noise by using sentence boundaries
-            // instead of relying solely on silence detection (VAD)
-            speechConfig.setProperty(
-              SpeechSDK.PropertyId.Speech_SegmentationStrategy,
-              'Semantic'
-            );
+            // Configure segmentation strategy based on mode
+            if (recognitionMode === 'dictation' || recognitionMode === 'balanced') {
+              // Dictation/Balanced: Use semantic segmentation (fires on punctuation boundaries)
+              // Note: In JavaScript SDK, semantic still accumulates context (waits 5-10s)
+              // Balanced mode combines semantic with more aggressive VAD for faster response
+              speechConfig.setProperty(
+                SpeechSDK.PropertyId.Speech_SegmentationStrategy,
+                'Semantic'
+              );
+              log('Semantic segmentation enabled (punctuation-based)');
+            } else {
+              // Conversation: Use default VAD-based segmentation (fires on silence only)
+              // No need to set property - default behavior
+              log('Using default VAD segmentation (silence-based)');
+            }
+
+            // NOTE: Speech_SegmentationMaximumTimeMs is not supported in JavaScript SDK
+            // Causes WebSocket error 1007 "Could not validate speech context"
+            // This property exists in C#/Python but not browser JS
 
             // Log SDK configuration for debugging
             log('Azure SDK configured', {
@@ -1194,8 +1054,8 @@
               maxUtteranceDurationMs: config.maxUtteranceDurationMs
             });
 
-            // TEMPORARY: Revert to original simple audio config to test if device selection broke it
-            log('Creating audio config from default microphone (original method)');
+            // Use default microphone input (fromStreamInput is broken - causes hallucinated transcriptions)
+            log('Creating audio config from default microphone');
             const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
 
             let recognizer;
@@ -1233,255 +1093,17 @@
             startHeartbeat();
 
             recognizer.recognizing = (_, event) => {
-              const partial = event?.result?.text || '';
-              const trimmed = partial.trim();
-              if (!trimmed) {
-                return;
-              }
+              // PARTIALS DISABLED: With semantic segmentation, SDK finals fire so quickly (2-3s)
+              // that partials are unnecessary noise. Only SDK finals are emitted.
 
-              // Log partials occasionally (not every single one to avoid spam)
-              if (Math.random() < 0.1) {
-                log('Recognizing (partial)', { text: trimmed.substring(0, 40) + '...' });
-              }
-              const previous = state.lastPartialFull || '';
-              const merged = dedupeContinuation(previous, trimmed);
-              if (!merged) {
-                return;
-              }
-              state.lastPartialFull = merged;
-              updatePrefixRingSnapshot(merged);
-
-              const now = performance.now();
-              const prefixState = state.prefix;
-              const fastConfig = getFastFinalsConfig();
-              const stableLen = stablePrefixLength();
-
-              // Track when utterance started (for duration-based segmentation)
-              if (!prefixState.utteranceStartedAt) {
-                prefixState.utteranceStartedAt = now;
-              }
-
-              // Duration-based segmentation: Emit after max duration to prevent long buffering
-              const maxDuration = (state.config || DEFAULT_CONFIG).maxUtteranceDurationMs || DEFAULT_CONFIG.maxUtteranceDurationMs;
-              const utteranceDuration = now - prefixState.utteranceStartedAt;
-              if (utteranceDuration > maxDuration && merged.length > prefixState.committedChars) {
-                // Stability checks: Only emit if we have stable text
-                // (prevents emitting unstable partials that Azure will later correct)
-                const hasEnoughPartials = prefixState.ring.length >= Math.min(fastConfig.stableK, DURATION_TIMEOUT_STABLE_K);
-                const hasStabilityTime = prefixState.ringFilledAt > 0 && (now - prefixState.ringFilledAt >= 300);
-
-                if (!hasEnoughPartials || !hasStabilityTime) {
-                  // Not enough stable data yet - wait for more partials
-                  log('⏱️  DURATION TIMEOUT skipped (waiting for stability)', {
-                    duration: Math.round(utteranceDuration),
-                    ringSize: prefixState.ring.length,
-                    stableK: fastConfig.stableK,
-                    stabilityMs: prefixState.ringFilledAt > 0 ? Math.round(now - prefixState.ringFilledAt) : 0
-                  });
-                } else if (stableLen > prefixState.committedChars) {
-                  // Use stable prefix instead of unstable merged text
-                  const stableText = merged.slice(0, stableLen);
-                  const uncommitted = stableText.slice(prefixState.committedChars);
-
-                  // Smart segmentation: Prefer sentence boundaries, require minimum words
-                  let segment = null;
-                  let commitEnd = null;
-
-                  // Look for sentence boundary first (.!?)
-                  const sentenceMatch = uncommitted.match(/^(.*?[.!?])\s*/);
-                  if (sentenceMatch) {
-                    const sentenceSegment = sentenceMatch[1].trim();
-                    const wordCount = countWords(sentenceSegment);
-
-                    if (wordCount >= 3) {
-                      // Found a complete sentence with ≥3 words
-                      segment = sentenceSegment;
-                      commitEnd = prefixState.committedChars + sentenceMatch[0].length;
-                      log('⏱️  DURATION TIMEOUT (sentence boundary)', {
-                        segment: segment.substring(0, 50),
-                        duration: Math.round(utteranceDuration),
-                        wordCount,
-                        reason: 'sentence'
-                      });
-                    }
-                  }
-
-                  // Fallback: Use last space, but still require ≥3 words
-                  if (!segment) {
-                    const lastSpace = uncommitted.lastIndexOf(' ');
-                    if (lastSpace > 0) {
-                      const fallbackSegment = uncommitted.slice(0, lastSpace).trim();
-                      const wordCount = countWords(fallbackSegment);
-
-                      if (wordCount >= 3) {
-                        segment = fallbackSegment;
-                        commitEnd = prefixState.committedChars + lastSpace;
-                        log('⏱️  DURATION TIMEOUT (word boundary)', {
-                          segment: segment.substring(0, 50),
-                          duration: Math.round(utteranceDuration),
-                          wordCount,
-                          reason: 'words'
-                        });
-                      } else {
-                        // Not enough words - don't emit, wait for SDK final
-                        log('⏱️  DURATION TIMEOUT skipped (< 3 words)', {
-                          segment: fallbackSegment.substring(0, 50),
-                          duration: Math.round(utteranceDuration),
-                          wordCount,
-                          minRequired: 3
-                        });
-                      }
-                    }
-                  }
-
-                  // Only emit if we found a valid segment
-                  if (segment && commitEnd) {
-                    // Calculate raw slice for tracking (before updating committedChars)
-                    const rawSlice = stableText.slice(prefixState.committedChars, commitEnd);
-
-                    // Reset utterance timer for next segment
-                    prefixState.utteranceStartedAt = now;
-
-                    // Emit segment with prefix state management
-                    emitHardSegment(segment, event.result, {
-                      isDurationTimeout: true,
-                      isPrefix: true,
-                      rawSlice,
-                      commitEnd,
-                      now
-                    });
-                  }
-                }
-              }
-
-              // Debug: Log ring buffer state occasionally
+              // Optional: Keep minimal logging for debugging (sampling to avoid spam)
               if (Math.random() < 0.05) {
-                log('Prefix ring state', {
-                  ringSize: prefixState.ring.length,
-                  stableLen,
-                  committedChars: prefixState.committedChars,
-                  merged: merged.substring(0, 40)
+                const partial = event?.result?.text || '';
+                log('Recognizing (partial - not emitted)', {
+                  text: partial.substring(0, 40) + '...',
+                  len: partial.length
                 });
               }
-
-              // Track when ring buffer first fills to K entries (for duration timeout stability)
-              if (prefixState.ring.length >= DURATION_TIMEOUT_STABLE_K && !prefixState.ringFilledAt) {
-                prefixState.ringFilledAt = now;
-              }
-
-              // Reset ringFilledAt if stableLen shrinks significantly (indicates text changed)
-              if (stableLen < prefixState.lastStableLen * 0.8 && prefixState.lastStableLen > 0) {
-                prefixState.ringFilledAt = 0;
-              }
-
-              if (stableLen !== prefixState.lastStableLen) {
-                prefixState.lastStableLen = stableLen;
-                prefixState.lastStableAt = now;
-              }
-
-              // Check if fast-finals is effectively disabled (skip computation to save CPU)
-              const isFastFinalsDisabled =
-                fastConfig.stableK >= 99 ||
-                fastConfig.minStableMs >= 9999 ||
-                fastConfig.minWords >= 99;
-
-              if (!isFastFinalsDisabled && stableLen > prefixState.committedChars) {
-                // Fast-finals enabled - compute boundaries and emit if conditions met
-                const boundary =
-                  stableLen > prefixState.committedChars
-                    ? lastBoundaryBefore(merged, stableLen)
-                    : -1;
-                let candidateEnd = boundary >= 0 ? boundary : stableLen;
-                if (boundary < 0) {
-                  candidateEnd = applyTailGuards(
-                    merged,
-                    prefixState.committedChars,
-                    candidateEnd,
-                    fastConfig
-                  );
-                }
-                if (candidateEnd < prefixState.committedChars) {
-                  candidateEnd = prefixState.committedChars;
-                }
-                if (candidateEnd !== prefixState.lastCandidateEnd) {
-                  prefixState.lastCandidateEnd = candidateEnd;
-                  prefixState.candidateStableAt = now;
-                }
-                const commitEnd = candidateEnd;
-                if (commitEnd > prefixState.committedChars) {
-                  const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
-                  const segment = rawSlice.trim();
-                  const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
-                  const isPunctCut = boundary >= 0;
-                  const neededStable = isPunctCut
-                    ? fastConfig.punctStableMs
-                    : fastConfig.minStableMs;
-                  const stableOk =
-                    prefixState.ringFilledAt > 0 && (now - prefixState.ringFilledAt >= neededStable);
-                  const lengthOk =
-                    boundary >= 0 ||
-                    (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
-
-                  // Debug fast-finals decision occasionally
-                  if (Math.random() < 0.05) {
-                    log('Fast-finals check', {
-                      segment: segment.substring(0, 30),
-                      throttleOk,
-                      stableOk,
-                      lengthOk,
-                      isPunct: boundary >= 0
-                    });
-                  }
-
-                  // Prevent duplicate emissions of the exact same text
-                  const isDuplicate = segment === prefixState.lastEmittedText;
-
-                  if (segment && throttleOk && stableOk && lengthOk && !isDuplicate) {
-                    log('🚀 FAST-FINAL (prefix commit)', { segment: segment.substring(0, 50) });
-
-                    // Update ALL state SYNCHRONOUSLY (before async call) to prevent race conditions
-                    prefixState.lastEmittedText = segment;
-                    prefixState.committedChars = commitEnd;
-                    prefixState.lastStableLen = commitEnd;
-                    prefixState.lastCandidateEnd = commitEnd;
-                    prefixState.lastEmitAt = now;
-                    prefixState.lastStableAt = now;
-                    prefixState.candidateStableAt = now;
-                    prefixState.ringFilledAt = 0;
-                    prefixState.ring = [];
-
-                    // Now call async (state already protected from duplicate emissions)
-                    emitHardSegment(segment, event.result, {
-                      isPrefix: true,
-                      rawSlice,
-                      commitEnd,
-                      now
-                    });
-                  } else if (isDuplicate) {
-                    log('Skipping duplicate fast-final', { segment: segment.substring(0, 30) });
-                  }
-                }
-              }
-
-              const tail = merged.slice(prefixState.committedChars).trim();
-              const config = state.config || DEFAULT_CONFIG;
-              const softThrottle =
-                config.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
-              const minDelta =
-                config.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
-              const delta = tail.length - state.lastSoftText.length;
-              const charTrigger = delta >= minDelta;
-              const punctuationTrigger = /[.?!]\s*$/.test(tail);
-              const timeTrigger = now - state.lastSoftEmitAt > softThrottle;
-              if (tail && (charTrigger || punctuationTrigger || !state.lastSoftText) && timeTrigger) {
-                state.lastSoftEmitAt = now;
-                state.lastSoftText = tail;
-                postPatch(tail, 'soft', event.result);
-              } else if (!tail) {
-                state.lastSoftText = '';
-              }
-
-              setTelemetry(`Soft v${state.version + 1} · tail ${tail.length} chars`);
             };
 
             recognizer.recognized = (_, event) => {
@@ -1510,34 +1132,50 @@
               if (event.result.reason === SpeechSDK.ResultReason.RecognizedSpeech) {
                 const finalText = (event.result.text || '').trim();
                 if (!finalText) {
-                  resetPrefixState();
-                  state.lastPartialFull = '';
-                  state.lastSoftText = '';
-                  state.lastSoftEmitAt = 0;
+                  // Empty final - just skip it
                   return;
                 }
-                state.lastPartialFull = finalText;
                 const activeConfig = state.config || DEFAULT_CONFIG;
                 const delay = Math.max(
                   Number(activeConfig.finalDebounceMs ?? DEFAULT_CONFIG.finalDebounceMs) || 0,
                   0
                 );
 
+                const now = Date.now();
+
                 // Add this final to the pending queue (accumulate instead of replace)
                 state.pendingFinals.push({
                   text: finalText,
                   result: event.result,
-                  timestamp: Date.now()
+                  timestamp: now
                 });
+
+                // Track batch start time (for timeout safeguard)
+                if (state.pendingFinals.length === 1) {
+                  state.finalBatchStartedAt = now;
+                }
 
                 // Clear existing timer and start a new debounce window
                 clearTimeout(state.finalTimer);
                 state.finalTimer = null;
 
+                // SAFEGUARD 1: Force emit if batch size limit reached
+                // Prevents unbounded accumulation during continuous speech
+                const MAX_BATCH_TIMEOUT_MS = 500; // Absolute max time to hold finals
+                const batchAge = now - state.finalBatchStartedAt;
+                const shouldForceEmit =
+                  state.pendingFinals.length >= state.maxBatchSize ||
+                  batchAge >= MAX_BATCH_TIMEOUT_MS;
+
+                if (shouldForceEmit) {
+                  log(`🚨 Force emitting batch (size: ${state.pendingFinals.length}, age: ${batchAge}ms)`);
+                }
+
                 const emitAllPendingFinals = () => {
                   // Get all queued finals
                   const finalsToEmit = state.pendingFinals;
                   state.pendingFinals = [];  // Clear queue
+                  state.finalBatchStartedAt = 0;  // Reset batch timer
 
                   if (!finalsToEmit.length) {
                     state.finalTimer = null;
@@ -1545,28 +1183,22 @@
                   }
 
                   log(`📦 Emitting ${finalsToEmit.length} batched final(s)`, {
-                    count: finalsToEmit.length
+                    count: finalsToEmit.length,
+                    batchAge: finalsToEmit.length ? Date.now() - finalsToEmit[0].timestamp : 0
                   });
 
-                  // Merge all finals' text into one combined string
-                  // This handles Azure's tendency to split thoughts into rapid successive finals
-                  const mergedParts = [];
-                  for (const final of finalsToEmit) {
-                    const remainder = computeFinalRemainder(final.text);
-                    const trimmed = remainder.trim();
-                    if (trimmed) {
-                      mergedParts.push(trimmed);
-                    }
-                  }
+                  // With semantic segmentation, SDK finals are atomic sentences (no overlap/dedup needed)
+                  // Combine all finals' text with space separator
+                  const combinedText = finalsToEmit
+                    .map(final => final.text.trim())
+                    .filter(Boolean)
+                    .join(' ');
 
-                  // Combine all parts with space separator
-                  const combinedText = mergedParts.join(' ');
-
-                  // Now split the merged text into sentences
+                  // Split combined text into sentences
                   const split = combinedText ? splitSentences(combinedText) : [];
                   const segments = split.length ? split : combinedText ? [combinedText] : [];
 
-                  // Emit each sentence once (using the first final's result for metadata)
+                  // Emit each sentence (using the first final's result for metadata)
                   let totalEmitted = 0;
                   const firstResult = finalsToEmit[0]?.result;
                   for (const sentence of segments) {
@@ -1576,26 +1208,24 @@
                     }
                   }
 
-                  state.lastSoftText = '';
-                  state.lastSoftEmitAt = 0;
-                  state.lastPartialFull = '';
-                  resetPrefixState(); // This resets utteranceStartedAt to 0
+                  // Partials disabled - removed state resets
                   state.finalTimer = null;
                   setTelemetry(
                     totalEmitted
                       ? `Hard ✔︎ · ${totalEmitted} segment${totalEmitted > 1 ? 's' : ''}`
-                      : 'Hard ✔︎ · prefix only'
+                      : 'Hard ✔︎'
                   );
                 };
 
-                if (delay > 0) {
+                // Emit immediately if force conditions met, otherwise debounce
+                if (shouldForceEmit || delay === 0) {
+                  emitAllPendingFinals();
+                } else {
                   // Wait for debounce window, then emit ALL accumulated finals
                   state.finalTimer = setTimeout(() => {
                     state.finalTimer = null;
                     emitAllPendingFinals();
                   }, delay);
-                } else {
-                  emitAllPendingFinals();
                 }
               } else if (event.result.reason === SpeechSDK.ResultReason.NoMatch) {
                 log('No speech match', { reason: event.result.noMatchDetails });
@@ -1651,10 +1281,7 @@
           stopHeartbeat();
           clearTimeout(state.finalTimer);
           state.finalTimer = null;
-          state.lastSoftEmitAt = 0;
-          state.lastSoftText = '';
-          state.lastPartialFull = '';
-          resetPrefixState();
+          // Partials disabled - removed state resets for: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix
           if (state.recognizer) {
             try {
               state.recognizer.stopContinuousRecognitionAsync(() => {
