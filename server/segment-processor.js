@@ -126,9 +126,8 @@ const FILLER_AT_SENTENCE_END = new RegExp(
   'gi'
 );
 
-// Replace trailing connector words with ellipsis (revisable later)
-// Handles mid-sentence cuts from aggressive VAD in balanced mode
-const TRAILING_CONNECTORS = /\s+(so|and|but|or|if|because|since|when|while|as)\.$/gi;
+// NOTE: TRAILING_CONNECTORS pattern removed - continuation merge handles incomplete segments naturally
+// Previously replaced "and." → "..." but this broke merge detection by removing the connector
 
 /**
  * Detect if current segment is a continuation of previous segment.
@@ -179,7 +178,7 @@ function stripFillerPhrases(text) {
   result = result.replace(FILLER_SINGLE_WORD, ' ');
   result = result.replace(/\s{2,}/g, ' ');
   result = result.replace(/\s+,/g, ',');
-  result = result.replace(TRAILING_CONNECTORS, '...');  // "so." → "..."
+  // REMOVED: TRAILING_CONNECTORS replacement - let continuation merge handle incomplete segments
   return result.trim();
 }
 
