@@ -157,8 +157,12 @@ function shouldMergeContinuation(previous, current) {
   // Condition 3: Current starts with lowercase letter
   const startsLowercase = /^[a-z]/.test(currText);
 
+  // Condition 4: Previous ends with ellipsis (trailing connector was replaced by filler filter)
+  // This catches segments like "I'm going to the store..." (was "and." before filtering)
+  const endsWithEllipsis = /\.\.\.$/.test(prevText);
+
   // Return true if ANY condition is met
-  return endsWithConnector || hasNoEndingPunct || startsLowercase;
+  return endsWithConnector || hasNoEndingPunct || startsLowercase || endsWithEllipsis;
 }
 
 function stripFillerPhrases(text) {
@@ -562,6 +566,17 @@ class SegmentProcessor {
         contextTexts
       );
 
+      this.logger.info(
+        {
+          component: 'segment-processor',
+          roomId: this.roomId,
+          translationCount: translations?.length || 0,
+          mergedText: mergedText.substring(0, 50),
+          targetLangs
+        },
+        'Continuation merge: translation completed.'
+      );
+
       // Emit revision patches for PREVIOUS segment with merged text
       const revisionPatches = translations.map((translation) => {
         const sourceLen = mergedText.length;
@@ -596,8 +611,26 @@ class SegmentProcessor {
       });
 
       // Broadcast revision patches
+      this.logger.info(
+        {
+          component: 'segment-processor',
+          roomId: this.roomId,
+          revisionPatchCount: revisionPatches.length,
+          hasCallback: !!this.onTranslationReady
+        },
+        'Continuation merge: emitting revision patches.'
+      );
+
       if (revisionPatches.length && this.onTranslationReady) {
         this.onTranslationReady(revisionPatches);
+        this.logger.info(
+          {
+            component: 'segment-processor',
+            roomId: this.roomId,
+            emittedCount: revisionPatches.length
+          },
+          'Continuation merge: revision patches emitted.'
+        );
       }
 
       // Update cache with merged translations

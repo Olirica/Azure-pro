@@ -87,7 +87,16 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, contex
       });
     } catch (err) {
       logger?.warn(
-        { component: 'translator', roomId, lang, err: err?.response?.data || err?.message },
+        {
+          component: 'translator',
+          roomId,
+          lang,
+          err: err?.response?.data || err?.message,
+          errCode: err?.code,
+          errStatus: err?.response?.status,
+          model: OPENAI_TRANSLATE_MODEL,
+          endpoint: OPENAI_TRANSLATE_ENDPOINT
+        },
         'OpenAI fallback translation failed.'
       );
     }
