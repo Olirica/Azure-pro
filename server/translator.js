@@ -9,6 +9,15 @@ const OPENAI_TRANSLATE_MODEL = process.env.OPENAI_TRANSLATE_MODEL || 'gpt-4o-min
 const OPENAI_TRANSLATE_ENDPOINT =
   process.env.OPENAI_TRANSLATE_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
 
+// Startup logging to verify OpenAI configuration
+console.log('[translator] OpenAI Configuration:', {
+  hasApiKey: !!OPENAI_API_KEY,
+  apiKeyPrefix: OPENAI_API_KEY?.substring(0, 20) + '...',
+  model: OPENAI_TRANSLATE_MODEL,
+  endpoint: OPENAI_TRANSLATE_ENDPOINT,
+  provider: TRANSLATOR_PROVIDER
+});
+
 function splitSentences(text) {
   const trimmed = (text || '').trim();
   if (!trimmed) {
@@ -39,6 +48,17 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, contex
 
   for (const lang of targetLangs) {
     try {
+      // Log attempt details
+      logger?.info({
+        component: 'translator',
+        roomId,
+        lang,
+        fromLang,
+        textLength: text.length,
+        contextCount: contextTexts.length,
+        model: OPENAI_TRANSLATE_MODEL
+      }, 'Attempting OpenAI translation...');
+
       // Build context-aware prompt
       const contextPrompt = contextTexts.length
         ? `Previous context for gender/pronoun agreement:\n${contextTexts.join('\n')}\n\nNow translate ONLY the following text:`
@@ -67,7 +87,7 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, contex
             Authorization: `Bearer ${OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 15000
+          timeout: 30000  // Increased from 15s to 30s
         }
       );
 
@@ -86,19 +106,25 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, contex
         fallback: 'openai'
       });
     } catch (err) {
-      logger?.warn(
-        {
-          component: 'translator',
-          roomId,
-          lang,
-          err: err?.response?.data || err?.message,
-          errCode: err?.code,
-          errStatus: err?.response?.status,
-          model: OPENAI_TRANSLATE_MODEL,
-          endpoint: OPENAI_TRANSLATE_ENDPOINT
-        },
-        'OpenAI fallback translation failed.'
-      );
+      // Enhanced error logging with detailed diagnostics
+      const errorDetails = {
+        component: 'translator',
+        roomId,
+        lang,
+        errorType: err.constructor.name,
+        message: err?.message,
+        code: err?.code,
+        status: err?.response?.status,
+        statusText: err?.response?.statusText,
+        data: err?.response?.data,
+        model: OPENAI_TRANSLATE_MODEL,
+        endpoint: OPENAI_TRANSLATE_ENDPOINT,
+        hasApiKey: !!OPENAI_API_KEY,
+        // Check if it's a timeout
+        isTimeout: err?.code === 'ECONNABORTED' || err?.message?.includes('timeout')
+      };
+
+      logger?.warn(errorDetails, 'OpenAI fallback translation failed.');
     }
   }
 

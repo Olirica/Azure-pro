@@ -429,8 +429,8 @@ class SegmentProcessor {
           utteranceId: previousSegment.unitId,
           stage: 'hard',
           op: 'translation-revision', // Special op for revisions
-          version: previousSegment.version,
-          rev: previousSegment.version,
+          version: previousSegment.version + 1, // Increment version to bypass deduplication
+          rev: previousSegment.version + 1,
           text: translation.text,
           srcLang: previousSegment.srcLang,
           targetLang: translation.lang,
@@ -589,8 +589,8 @@ class SegmentProcessor {
           utteranceId: previousSegment.unitId,
           stage: 'hard',
           op: 'translation-revision',
-          version: previousSegment.version,
-          rev: previousSegment.version,
+          version: previousSegment.version + 1, // Increment version to bypass deduplication
+          rev: previousSegment.version + 1,
           text: translation.text,
           srcLang: previousSegment.srcLang,
           targetLang: translation.lang,

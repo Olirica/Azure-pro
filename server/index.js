@@ -1,8 +1,10 @@
+// Load environment variables FIRST before any other modules
+require('dotenv').config();
+
 const path = require('path');
 const http = require('http');
 const express = require('express');
 const pino = require('pino');
-const dotenv = require('dotenv');
 const WS = require('ws');
 const axios = require('axios');
 
@@ -12,8 +14,6 @@ const { createTranslator } = require('./translator');
 const { createTtsQueue } = require('./tts');
 const { createWatchdog } = require('./watchdog');
 const { createStateStore } = require('./state-store');
-
-dotenv.config();
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';

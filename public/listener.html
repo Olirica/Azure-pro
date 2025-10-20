@@ -768,6 +768,19 @@
           socket.onmessage = (event) => {
             try {
               const message = JSON.parse(event.data);
+
+              // DEBUG: Log ALL incoming patches
+              if (message.type === 'patch') {
+                console.log('[listener] RAW PATCH RECEIVED:', {
+                  op: message.payload?.op,
+                  utteranceId: message.payload?.utteranceId || message.payload?.unitId,
+                  text: message.payload?.text?.substring(0, 50),
+                  targetLang: message.payload?.targetLang,
+                  revisionReason: message.payload?.revisionReason,
+                  suppressReason: message.payload?.suppressReason
+                });
+              }
+
               if (message.type === 'patch') {
                 renderPatch(message.payload);
               } else if (message.type === 'tts') {
