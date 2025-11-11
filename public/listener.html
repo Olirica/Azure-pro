@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <title>Simo by Canoë · Listener</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <style>
       :root {
         color-scheme: light dark;
@@ -134,6 +135,25 @@
       small {
         color: rgba(148, 163, 184, 0.75);
       }
+      /* Translation quality indicators (dev mode) */
+      .segment {
+        display: inline;
+      }
+      .quality-badge {
+        font-size: 0.85em;
+        margin-right: 0.2rem;
+        cursor: help;
+      }
+      .quality-alert .translation {
+        background: rgba(239, 68, 68, 0.2);
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+      }
+      .quality-warning .translation {
+        background: rgba(250, 204, 21, 0.2);
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+      }
     </style>
   </head>
   <body>
@@ -189,6 +209,10 @@
 
     <script>
       (() => {
+        // Check for dev mode URL parameter (?dev=true)
+        const urlParams = new URLSearchParams(window.location.search);
+        const isDevMode = urlParams.get('dev') === 'true';
+
         const transcriptEl = document.getElementById('transcript');
         const connectionStatus = document.getElementById('connectionStatus');
         const queueStats = document.getElementById('queueStats');
@@ -209,7 +233,8 @@
           playing: null,
           shouldReconnect: false,
           reconnectDelay: 2000,
-          reconnectTimer: null
+          reconnectTimer: null,
+          devMode: isDevMode
         };
 
         function parseInputs() {
@@ -237,9 +262,10 @@
           const receivedAt = now;
           const rev = patch.rev ?? patch.version ?? 0;
           const isFinal = patch.isFinal ?? (patch.stage === 'hard');
+          const isRevision = patch.op === 'translation-revision';
 
           // Hide soft/partial patches (they'll update in-place when final arrives)
-          if (!isFinal) {
+          if (!isFinal && !isRevision) {
             console.debug('[listener] Soft patch (hidden)', {
               utteranceId: utterId,
               text: patch.text?.substring(0, 40),
@@ -249,9 +275,120 @@
             return;
           }
 
+          // Handle suppress patches (segments merged into previous)
+          if (patch.op === 'suppress') {
+            console.debug('[listener] Suppress patch (hiding segment merged into previous)', {
+              utteranceId: utterId,
+              mergedIntoPrevious: patch.mergedIntoPrevious,
+              suppressReason: patch.suppressReason
+            });
+
+            // Check if this segment was already rendered
+            const existing = state.itemsByUnit.get(utterId);
+            if (existing && existing.element) {
+              // Reconstruct the paragraph to remove this segment
+              const paragraph = existing.element;
+              if (paragraph && paragraph.dataset.utterances) {
+                const utteranceIds = JSON.parse(paragraph.dataset.utterances);
+                const texts = utteranceIds
+                  .map(id => {
+                    // Skip the suppressed utterance
+                    if (id === utterId) return '';
+                    const item = state.itemsByUnit.get(id);
+                    if (item?.suppressed) return '';
+                    return item?.text || '';
+                  })
+                  .filter(Boolean);
+
+                // Capitalize first letter of paragraph
+                if (texts.length > 0) {
+                  texts[0] = texts[0].charAt(0).toUpperCase() + texts[0].slice(1);
+                }
+
+                paragraph.textContent = texts.join(' ');
+
+                console.debug('[listener] Suppressed segment removed from paragraph', {
+                  utteranceId: utterId,
+                  paragraphLength: paragraph.textContent.length
+                });
+              }
+            }
+
+            // Mark this utterance as suppressed
+            state.itemsByUnit.set(utterId, {
+              text: '',
+              rev,
+              receivedAt,
+              element: existing?.element || null,
+              suppressed: true,
+              mergedIntoPrevious: patch.mergedIntoPrevious
+            });
+
+            return;
+          }
+
+          // Handle translation revisions (backward peek gender corrections + continuation merges)
+          if (isRevision) {
+            const existing = state.itemsByUnit.get(utterId);
+            if (!existing) {
+              console.debug('[listener] Revision for unknown utterance (ignoring)', {
+                utteranceId: utterId,
+                text: patch.text?.substring(0, 40)
+              });
+              return;
+            }
+
+            // Update stored text with revision
+            existing.text = patch.text;
+            existing.rev = rev;
+            existing.receivedAt = receivedAt;
+
+            // Reconstruct the paragraph containing this utterance
+            const paragraph = existing.element;
+            if (paragraph && paragraph.dataset.utterances) {
+              const utteranceIds = JSON.parse(paragraph.dataset.utterances);
+              const texts = utteranceIds
+                .map(id => {
+                  const item = state.itemsByUnit.get(id);
+                  // Skip suppressed segments
+                  if (item?.suppressed) return '';
+                  return item?.text || '';
+                })
+                .filter(Boolean);
+
+              // Capitalize first letter of paragraph
+              if (texts.length > 0) {
+                texts[0] = texts[0].charAt(0).toUpperCase() + texts[0].slice(1);
+              }
+
+              paragraph.textContent = texts.join(' ');
+
+              console.debug('[listener] Revision applied (paragraph reconstructed)', {
+                utteranceId: utterId,
+                newText: patch.text?.substring(0, 50),
+                revisionReason: patch.revisionReason,
+                revisionGender: patch.revisionGender,
+                mergedWith: patch.mergedWith,
+                paragraphLength: paragraph.textContent.length
+              });
+            }
+
+            return;
+          }
+
           // Check if we've already rendered this utterance (prevent duplicates)
           if (state.itemsByUnit.has(utterId)) {
             const existing = state.itemsByUnit.get(utterId);
+
+            // Skip if already suppressed (merged into previous segment)
+            if (existing.suppressed) {
+              console.debug('[listener] Skipping suppressed utterance', {
+                utteranceId: utterId,
+                mergedIntoPrevious: existing.mergedIntoPrevious
+              });
+              return;
+            }
+
             if (existing.rev != null && rev <= existing.rev) {
               console.debug('[listener] Skipping stale/duplicate revision', {
                 utteranceId: utterId,
@@ -274,10 +411,18 @@
             currentParagraph = document.createElement('li');
             currentParagraph.dataset.lastUpdate = now;
             currentParagraph.dataset.stage = 'hard';
+            currentParagraph.dataset.utterances = '[]'; // Track utterances in this paragraph
             transcriptEl.appendChild(currentParagraph);
           } else {
             currentParagraph.dataset.lastUpdate = now;
           }
+
+          // Track utterances in this paragraph
+          const utteranceIds = currentParagraph.dataset.utterances
+            ? JSON.parse(currentParagraph.dataset.utterances)
+            : [];
+          utteranceIds.push(utterId);
+          currentParagraph.dataset.utterances = JSON.stringify(utteranceIds);
 
           // Append text with space separator
           const currentText = currentParagraph.textContent;
@@ -288,13 +433,53 @@
             textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
           }
 
-          currentParagraph.textContent = currentText
-            ? `${currentText} ${textToAppend}`
-            : textToAppend;
+          // Dev mode: Show translation quality indicators
+          if (state.devMode) {
+            // Get quality score based on length ratio
+            let qualityIndicator = '';
+            let qualityClass = '';
+            if (patch.lengthRatio > 3.0) {
+              qualityIndicator = '🔴'; // Likely hallucination
+              qualityClass = 'quality-alert';
+            } else if (patch.lengthRatio > 2.0) {
+              qualityIndicator = '🟡'; // Warning - possible additions
+              qualityClass = 'quality-warning';
+            } else {
+              qualityIndicator = '🟢'; // Normal
+              qualityClass = 'quality-ok';
+            }
+
+            // Add incomplete indicator
+            if (patch.isIncomplete) {
+              qualityIndicator += '⚠️';
+            }
+
+            // Create segment with metadata
+            const segment = document.createElement('span');
+            segment.className = `segment ${qualityClass}`;
+            segment.innerHTML = `<span class="quality-badge" title="Length ratio: ${patch.lengthRatio?.toFixed(2) || 'N/A'}">${qualityIndicator}</span> <span class="translation">${textToAppend}</span>`;
+
+            // Add source text tooltip in dev mode
+            if (patch.sourceText) {
+              segment.title = `Source: ${patch.sourceText}\nProvider: ${patch.provider || 'N/A'}\nRatio: ${patch.lengthRatio?.toFixed(2) || 'N/A'}`;
+            }
+
+            // Append to paragraph
+            if (currentText) {
+              currentParagraph.appendChild(document.createTextNode(' '));
+            }
+            currentParagraph.appendChild(segment);
+          } else {
+            // Production mode: Simple text only
+            currentParagraph.textContent = currentText
+              ? `${currentText} ${textToAppend}`
+              : textToAppend;
+          }
 
           // Track this utterance to prevent duplicates
           state.itemsByUnit.set(utterId, {
             rev,
+            text: patch.text, // Store original text for revisions
             element: currentParagraph,
             receivedAt,
             isFinal
@@ -329,6 +514,61 @@
           }
         }
 
+        /**
+         * Parse unitId into components for sorting
+         * Format: session|lang|index or session|lang|index#segment
+         * Returns: { session, lang, index, segment }
+         */
+        function parseUnitId(unitId) {
+          const parts = unitId.split('|');
+          if (parts.length < 3) {
+            return { session: '', lang: '', index: 0, segment: 0 };
+          }
+          const lastPart = parts[parts.length - 1];
+          const segmentMatch = lastPart.match(/^(\d+)#(\d+)$/);
+          if (segmentMatch) {
+            return {
+              session: parts.slice(0, -2).join('|'),
+              lang: parts[parts.length - 2],
+              index: parseInt(segmentMatch[1], 10),
+              segment: parseInt(segmentMatch[2], 10)
+            };
+          }
+          return {
+            session: parts.slice(0, -2).join('|'),
+            lang: parts[parts.length - 2],
+            index: parseInt(parts[parts.length - 1], 10) || 0,
+            segment: 0
+          };
+        }
+
+        /**
+         * Compare two unitIds for sorting
+         * Returns: negative if a < b, positive if a > b, 0 if equal
+         */
+        function compareUnitIds(a, b) {
+          const parsedA = parseUnitId(a);
+          const parsedB = parseUnitId(b);
+
+          // Compare session
+          if (parsedA.session !== parsedB.session) {
+            return parsedA.session.localeCompare(parsedB.session);
+          }
+
+          // Compare language
+          if (parsedA.lang !== parsedB.lang) {
+            return parsedA.lang.localeCompare(parsedB.lang);
+          }
+
+          // Compare index
+          if (parsedA.index !== parsedB.index) {
+            return parsedA.index - parsedB.index;
+          }
+
+          // Compare segment
+          return parsedA.segment - parsedB.segment;
+        }
+
         function enqueueTts(payload) {
           if (!state.wantsTts) {
             return;
@@ -338,10 +578,31 @@
             return;
           }
 
+          const calculatedRootUnitId = rootUnitId || unitId.split('#')[0];
+
+          // Deduplicate: Remove any existing items with the same rootUnitId or unitId
+          // This prevents duplicate/revised segments from playing
+          const beforeLength = state.queue.length;
+          state.queue = state.queue.filter(
+            (item) => item.rootUnitId !== calculatedRootUnitId && item.unitId !== unitId
+          );
+          const removedCount = beforeLength - state.queue.length;
+
+          // Cancel currently playing audio if it matches this rootUnitId
+          if (state.playing &&
+              (state.playing.rootUnitId === calculatedRootUnitId || state.playing.unitId === unitId)) {
+            console.debug('[listener] Cancelling currently playing audio (replaced)', {
+              oldUnitId: state.playing.unitId,
+              newUnitId: unitId
+            });
+            state.playing.audio.pause();
+            state.playing = null;
+          }
+
           const audioUrl = `data:${payload.format || 'audio/wav'};base64,${audio}`;
           const queueItem = {
             unitId,
-            rootUnitId: rootUnitId || unitId.split('|').slice(0, -1).join('|'),
+            rootUnitId: calculatedRootUnitId,
             audioUrl,
             text: text || '',
             enqueuedAt: Date.now()
@@ -349,12 +610,19 @@
 
           state.queue.push(queueItem);
 
+          // Sort queue by unitId to ensure correct playback order
+          // This handles out-of-order network arrivals
+          state.queue.sort((a, b) => compareUnitIds(a.unitId, b.unitId));
+
           const queueSize = state.queue.length + (state.playing ? 1 : 0);
           setQueueStats(`${queueSize} item(s) queued`);
           console.debug('[listener] TTS enqueued', {
             unitId,
+            rootUnitId: calculatedRootUnitId,
             text: text?.substring(0, 40),
-            queueSize
+            queueSize,
+            removed: removedCount,
+            sorted: true
           });
 
           if (!state.playing) {
@@ -500,6 +768,19 @@
           socket.onmessage = (event) => {
             try {
               const message = JSON.parse(event.data);
+
+              // DEBUG: Log ALL incoming patches
+              if (message.type === 'patch') {
+                console.log('[listener] RAW PATCH RECEIVED:', {
+                  op: message.payload?.op,
+                  utteranceId: message.payload?.utteranceId || message.payload?.unitId,
+                  text: message.payload?.text?.substring(0, 50),
+                  targetLang: message.payload?.targetLang,
+                  revisionReason: message.payload?.revisionReason,
+                  suppressReason: message.payload?.suppressReason
+                });
+              }
+
               if (message.type === 'patch') {
                 renderPatch(message.payload);
               } else if (message.type === 'tts') {

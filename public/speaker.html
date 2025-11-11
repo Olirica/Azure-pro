@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <title>Simo by Canoë · Speaker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <style>
       :root {
         color-scheme: light dark;
@@ -126,6 +127,10 @@
       small {
         color: rgba(148, 163, 184, 0.8);
       }
+      /* Hide recognition mode for production (dev/testing only) */
+      .dev-only {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -140,7 +145,7 @@
           </div>
           <div>
             <label for="sourceLang">Source language (BCP-47)</label>
-            <input id="sourceLang" type="text" value="en-CA" />
+            <input id="sourceLang" type="text" value="en-US" />
           </div>
           <div>
             <label for="targetLangs">Target languages (comma separated)</label>
@@ -151,6 +156,24 @@
             <select id="micSelect" style="width: 100%; padding: 0.6rem 0.8rem; margin-top: 0.35rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.35); color: inherit;">
               <option value="">Default microphone</option>
             </select>
+          </div>
+          <!-- Recognition Mode (hidden in production - remove 'dev-only' class to show) -->
+          <div class="dev-only">
+            <label>Recognition Mode</label>
+            <div style="margin-top: 0.5rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="radio" name="recMode" value="conversation" style="cursor: pointer;" />
+                <span>Conversation (Fast VAD)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="radio" name="recMode" value="balanced" checked style="cursor: pointer;" />
+                <span>Balanced (Moderate Speed)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="radio" name="recMode" value="dictation" style="cursor: pointer;" />
+                <span>Dictation (Semantic)</span>
+              </label>
+            </div>
           </div>
         </div>
         <div class="stack" style="margin-top: 1.25rem">
@@ -169,18 +192,31 @@
       </section>
 
       <section>
-        <h2>Debug</h2>
-        <button id="copyDebugBtn" style="margin-bottom: 1rem; background: rgba(148, 163, 184, 0.2); color: inherit;">
-          Copy debug log
-        </button>
-        <pre id="debugLog">Waiting…</pre>
-        <small>Token acquisition, SDK events, and merge decisions appear here.</small>
+        <details>
+          <summary style="cursor: pointer; font-size: 1.5rem; font-weight: 600; margin-bottom: 1rem;">
+            Debug
+          </summary>
+          <button id="copyDebugBtn" style="margin-bottom: 1rem; background: rgba(148, 163, 184, 0.2); color: inherit;">
+            Copy debug log
+          </button>
+          <pre id="debugLog">Waiting…</pre>
+          <small>Token acquisition, SDK events, and merge decisions appear here.</small>
+        </details>
       </section>
     </main>
 
     <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
     <script>
       (() => {
+        // Check for dev mode URL parameter (?dev=true)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('dev') === 'true') {
+          // Show dev-only elements (recognition mode selector)
+          document.querySelectorAll('.dev-only').forEach(el => {
+            el.style.display = 'block';
+          });
+        }
+
         const logArea = document.getElementById('debugLog');
         const transcriptList = document.getElementById('transcript');
         const recognitionStatus = document.getElementById('recognitionStatus');
@@ -195,14 +231,11 @@
           sessionId: null,
           currentUtteranceId: null,  // Stable ID for current utterance
           rev: 0,  // Revision counter (increments within same utteranceId)
-          lastSoftEmitAt: 0,
-          lastSoftText: '',
-          lastPartialFull: '',
-          prefix: createPrefixState(),
-          fastFinals: null,
+          // Partials disabled - removed: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix, fastFinals
           roomId: null,
           sourceLang: null,
           targetLangs: [],
+          recognitionMode: 'balanced',  // User-selected mode (conversation, balanced, or dictation)
           heartbeatTimer: null,
           heartbeatIntervalMs: 2500,
           itemsByUnit: new Map(),
@@ -210,20 +243,14 @@
           tokenTimer: null,
           tokenRegion: null,
           finalTimer: null,
+          pendingFinals: [],  // Queue of finals waiting to be emitted (accumulate during debounce)
+          maxBatchSize: 5,     // Max finals to batch before forcing emit
+          finalBatchStartedAt: 0,  // Timestamp when first final in batch arrived
           phraseList: null,
           phraseHints: [],
           autoDetectLangs: [],
           patchSourceLang: null
         };
-
-        const DEFAULT_FAST_FINALS = Object.freeze({
-          stableK: 3,
-          minStableMs: 600,
-          minChars: 28,
-          minWords: 6,
-          emitThrottleMs: 700,
-          punctStableMs: 350
-        });
 
         const DEFAULT_CONFIG = {
           stablePartials: 4,
@@ -238,9 +265,21 @@
           ttsResumeBacklogSec: 4,
           ttsRateBoostPercent: 10,
           finalDebounceMs: 180,
+          maxUtteranceDurationMs: 9000,
           phraseHints: [],
-          autoDetectLangs: [],
-          fastFinals: { ...DEFAULT_FAST_FINALS }
+          autoDetectLangs: []
+        };
+
+        // Fast-finals defaults (effectively disabled with semantic segmentation)
+        const DEFAULT_FAST_FINALS = {
+          stableK: 99,           // Effectively disabled
+          minStableMs: 9999,     // Effectively disabled
+          minChars: 999,         // Effectively disabled
+          minWords: 99,          // Effectively disabled
+          emitThrottleMs: 9999,  // Effectively disabled
+          punctStableMs: 9999,   // Effectively disabled
+          tailGuardChars: 0,     // Not applicable
+          tailGuardWords: 0      // Not applicable
         };
 
         async function loadConfig() {
@@ -414,13 +453,32 @@
           if (!text) {
             return [];
           }
-          const matches = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g);
+
+          // Common abbreviations that don't end sentences (English + French)
+          const ABBREVIATIONS = [
+            'Dr', 'Mr', 'Mrs', 'Ms', 'Prof', 'Sr', 'Jr', 'vs', 'etc', 'Ph.D', 'M.D',
+            'Mme', 'Mlle', 'M'  // French: Madame, Mademoiselle, Monsieur
+          ];
+
+          // Create regex pattern for abbreviations followed by period
+          // (e.g., "Dr." shouldn't split)
+          const abbrevPattern = new RegExp(
+            `\\b(${ABBREVIATIONS.join('|')})\\.(?!\\s+[A-Z])`,
+            'g'
+          );
+
+          // Temporarily replace abbreviations to protect them from splitting
+          const ABBREV_PLACEHOLDER = '\x00ABBREV\x00';
+          const protectedText = text.replace(abbrevPattern, `$1${ABBREV_PLACEHOLDER}`);
+
+          // Split on sentence terminators (.!?) followed by space or end
+          const matches = protectedText.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g);
           if (!matches) {
             return [text.trim()];
           }
 
-          // Filter out fragments (lowercase start suggesting continuation)
-          const sentences = matches.map((s) => s.trim()).filter(Boolean);
+          // Restore abbreviations and filter/merge fragments
+          const sentences = matches.map((s) => s.trim().replace(new RegExp(ABBREV_PLACEHOLDER, 'g'), '.')).filter(Boolean);
           const filtered = [];
 
           for (let i = 0; i < sentences.length; i++) {
@@ -462,88 +520,9 @@
           return `U${timestamp}${random}`;
         }
 
-        function createPrefixState() {
-          return {
-            ring: [],
-            committedChars: 0,
-            committedRaw: '',
-            lastStableLen: 0,
-            lastStableAt: 0,
-            lastCandidateEnd: 0,
-            candidateStableAt: 0,
-            lastEmitAt: 0,
-            lastEmittedText: '' // Track last emitted text to prevent duplicates
-          };
-        }
-
-        function getFastFinalsConfig() {
-          const cfg = state.fastFinals || DEFAULT_FAST_FINALS;
-          const coerce = (value, fallback, min = 0) => {
-            const num = Number(value);
-            if (!Number.isFinite(num)) {
-              return fallback;
-            }
-            return Math.max(num, min);
-          };
-          return {
-            stableK: coerce(cfg.stableK, DEFAULT_FAST_FINALS.stableK, 1),
-            minStableMs: coerce(cfg.minStableMs, DEFAULT_FAST_FINALS.minStableMs, 0),
-            minChars: coerce(cfg.minChars, DEFAULT_FAST_FINALS.minChars, 1),
-            minWords: coerce(cfg.minWords, DEFAULT_FAST_FINALS.minWords, 1),
-            emitThrottleMs: coerce(cfg.emitThrottleMs, DEFAULT_FAST_FINALS.emitThrottleMs, 0),
-            punctStableMs: coerce(
-              cfg.punctStableMs,
-              DEFAULT_FAST_FINALS.punctStableMs,
-              0
-            ),
-            tailGuardChars: coerce(cfg.tailGuardChars, DEFAULT_FAST_FINALS.tailGuardChars, 0),
-            tailGuardWords: coerce(cfg.tailGuardWords, DEFAULT_FAST_FINALS.tailGuardWords, 0)
-          };
-        }
-
-        function resetPrefixState() {
-          state.prefix = createPrefixState();
-        }
-
-        function updatePrefixRingSnapshot(snapshot) {
-          const ring = state.prefix.ring;
-          ring.push(snapshot);
-          const { stableK } = getFastFinalsConfig();
-          while (ring.length > stableK) {
-            ring.shift();
-          }
-        }
-
-        function stablePrefixLength() {
-          const ring = state.prefix.ring;
-          if (!ring.length) {
-            return 0;
-          }
-          let prefix = ring[0] || '';
-          for (let i = 1; i < ring.length && prefix; i += 1) {
-            const candidate = ring[i] || '';
-            let j = 0;
-            const max = Math.min(prefix.length, candidate.length);
-            while (j < max && prefix[j] === candidate[j]) {
-              j += 1;
-            }
-            prefix = prefix.slice(0, j);
-          }
-          return prefix.length;
-        }
-
-        function lastBoundaryBefore(text, idx) {
-          const slice = text.slice(0, idx);
-          const terminal = Math.max(slice.lastIndexOf('.'), slice.lastIndexOf('!'), slice.lastIndexOf('?'));
-          if (terminal >= 0) {
-            return terminal + 1;
-          }
-          const secondary = Math.max(slice.lastIndexOf(':'), slice.lastIndexOf(';'));
-          if (secondary >= 0) {
-            return secondary + 1;
-          }
-          return -1;
-        }
+        // ===== FAST-FINALS & PARTIALS CODE REMOVED =====
+        // With semantic segmentation firing on punctuation, fast-finals are no longer needed.
+        // SDK finals arrive within 2-3s with high quality, making partials/fast-finals unnecessary.
 
         function countWords(text) {
           if (!text) {
@@ -553,64 +532,28 @@
           return tokens ? tokens.length : 0;
         }
 
-        function applyTailGuards(fullText, startIdx, endIdx, config) {
-          if (!fullText || endIdx <= startIdx) {
-            return startIdx;
-          }
-          let candidate = endIdx;
-          const guardChars = Math.max(Number(config.tailGuardChars || 0), 0);
-          if (guardChars > 0 && candidate - startIdx > guardChars) {
-            candidate = Math.max(startIdx, candidate - guardChars);
-          }
-          const guardWords = Math.max(Number(config.tailGuardWords || 0), 0);
-          if (guardWords > 0) {
-            const slice = fullText.slice(startIdx, candidate);
-            const words = slice.match(/\S+/g) || [];
-            if (words.length > guardWords) {
-              const keepCount = words.length - guardWords;
-              let keepEnd = startIdx;
-              const matcher = /\S+/g;
-              let match;
-              let seen = 0;
-              while (seen < keepCount && (match = matcher.exec(slice))) {
-                seen += 1;
-                keepEnd = startIdx + match.index + match[0].length;
-              }
-              candidate = Math.max(startIdx, Math.min(candidate, keepEnd));
-            } else {
-              candidate = startIdx;
-            }
-          }
-          return candidate;
-        }
-
-        function computeFinalRemainder(finalText) {
-          if (!finalText) {
-            return '';
-          }
-          const prefixState = state.prefix;
-          const rawCommitted = prefixState.committedRaw || '';
-          if (rawCommitted && finalText.startsWith(rawCommitted)) {
-            return finalText.slice(rawCommitted.length).trim();
-          }
-          if (prefixState.committedChars) {
-            return finalText.slice(prefixState.committedChars).trim();
-          }
-          return finalText.trim();
-        }
-
         async function emitHardSegment(text, result, options = {}) {
           const cleaned = (text || '').trim();
           if (!cleaned) {
             return null;
           }
 
+          // Determine if this segment continues a sentence or starts a new one
+          const lastChar = cleaned[cleaned.length - 1];
+          const endsWithTerminalPunct = lastChar === '.' || lastChar === '!' || lastChar === '?';
+
+          // SDK finals ending with .!? are complete sentences (not continuations)
+          const isContinuation = !endsWithTerminalPunct;
+
           // Each hard segment gets its own unique utteranceId
           // (Don't reuse currentUtteranceId - that's for partials only)
           const newUtteranceId = generateUtteranceId();
 
           const utteranceId = await postPatch(cleaned, 'hard', result, {
-            meta: options.meta,
+            meta: {
+              ...options.meta,
+              isContinuation  // Add continuation flag for translation
+            },
             targets: options.targets,
             srcLang: options.srcLang,
             utteranceId: newUtteranceId
@@ -627,27 +570,6 @@
           state.rev = 0;
           state.lastSoftText = '';
           state.lastSoftEmitAt = 0;
-
-          if (options.isPrefix) {
-            const prefixState = state.prefix;
-            const nowTs = typeof options.now === 'number' ? options.now : performance.now();
-            if (typeof options.commitEnd === 'number') {
-              prefixState.committedChars = options.commitEnd;
-              prefixState.lastStableLen = options.commitEnd;
-              prefixState.lastCandidateEnd = options.commitEnd;
-            }
-            if (options.rawSlice) {
-              prefixState.committedRaw += options.rawSlice;
-            }
-            prefixState.lastEmitAt = nowTs;
-            prefixState.lastStableAt = nowTs;
-            prefixState.candidateStableAt = nowTs;
-            log('Prefix committed', {
-              utteranceId,
-              length: cleaned.length,
-              committedChars: prefixState.committedChars
-            });
-          }
 
           return utteranceId;
         }
@@ -716,6 +638,35 @@
               return null;
             }
 
+            // Check response body for dropped segments (server returns HTTP 202 with ok: false for dropped segments)
+            try {
+              const body = await res.json();
+
+              // Server returns { ok: false, stale: true, empty?: true } when segment is dropped
+              if (body && (body.ok === false || body.stale === true)) {
+                const reason = body.empty ? 'only filler words' : 'stale version';
+                const droppedText = patch.text?.substring(0, 100) || '(empty)';
+
+                log('⚠️  Segment DROPPED by server', {
+                  reason,
+                  unitId: patch.utteranceId || patch.unitId,
+                  text: droppedText,
+                  isEmpty: Boolean(body.empty),
+                  isStale: Boolean(body.stale),
+                  stage: patch.stage
+                });
+
+                // Don't increment revision for dropped segments
+                return null;
+              }
+            } catch (parseErr) {
+              // Response body wasn't JSON or couldn't be parsed - assume success
+              log('Could not parse segment response (assuming success)', {
+                status: res.status,
+                error: parseErr?.message
+              });
+            }
+
             // Only increment revision if we're using currentUtteranceId (soft patches)
             // Hard segments get new utteranceId each time
             if (!options.utteranceId) {
@@ -747,13 +698,37 @@
           // Get or create the current paragraph
           let currentParagraph = transcriptList.lastElementChild;
 
-          // Create new paragraph if none exists or if this is a new speaking session
-          // (detect pause by checking if last update was > 5 seconds ago)
+          // Create new paragraph if:
+          // 1. No paragraph exists, OR
+          // 2. Long pause (5s) AND previous sentence ended with terminal punctuation
           const now = Date.now();
           const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
           const timeSinceLastUpdate = now - lastUpdate;
 
-          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+          let shouldCreateNewParagraph = false;
+          if (!currentParagraph) {
+            shouldCreateNewParagraph = true;
+          } else if (timeSinceLastUpdate > 5000) {
+            // Check if previous text ended with terminal punctuation
+            const previousText = currentParagraph.textContent.trim();
+            if (previousText) {
+              const lastChar = previousText[previousText.length - 1];
+              const endsWithTerminalPunct = lastChar === '.' || lastChar === '!' || lastChar === '?';
+              shouldCreateNewParagraph = endsWithTerminalPunct;
+
+              if (!endsWithTerminalPunct) {
+                log('📄 Skipping new paragraph (mid-sentence)', {
+                  timeSinceLastUpdate: Math.round(timeSinceLastUpdate),
+                  previousEnded: lastChar
+                });
+              }
+            } else {
+              // Empty paragraph - create new one
+              shouldCreateNewParagraph = true;
+            }
+          }
+
+          if (shouldCreateNewParagraph) {
             currentParagraph = document.createElement('li');
             currentParagraph.dataset.lastUpdate = now;
             transcriptList.appendChild(currentParagraph);
@@ -765,9 +740,47 @@
           const currentText = currentParagraph.textContent;
           let textToAppend = patch.text;
 
-          // Capitalize first letter if this is the start of a paragraph
-          if (!currentText && textToAppend) {
-            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          // Smart capitalization: Only capitalize if starting a new sentence
+          if (textToAppend) {
+            let shouldCapitalize = false;
+            const firstChar = textToAppend.charAt(0);
+            const isAlreadyCapitalized = firstChar === firstChar.toUpperCase();
+
+            if (!currentText) {
+              // First segment in paragraph → always capitalize
+              shouldCapitalize = !isAlreadyCapitalized;
+            } else {
+              // Check if previous text ends with terminal punctuation (.!?)
+              // Handle edge cases: quotes/parens after punctuation
+              const trimmedCurrent = currentText.trim();
+
+              // Find the last meaningful punctuation (ignore trailing quotes/parens/spaces)
+              let lastMeaningfulChar = '';
+              for (let i = trimmedCurrent.length - 1; i >= 0; i--) {
+                const char = trimmedCurrent[i];
+                if (char !== ' ' && char !== '"' && char !== "'" && char !== ')' && char !== ']') {
+                  lastMeaningfulChar = char;
+                  break;
+                }
+              }
+
+              const endsWithTerminal = lastMeaningfulChar === '.' || lastMeaningfulChar === '!' || lastMeaningfulChar === '?';
+              shouldCapitalize = endsWithTerminal && !isAlreadyCapitalized;
+            }
+
+            if (shouldCapitalize) {
+              textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+              log('🔤 Capitalizing segment (new sentence)', {
+                previousEnded: currentText ? currentText.trim().slice(-1) : '(none)',
+                segment: textToAppend.substring(0, 30)
+              });
+            } else {
+              log('🔤 Preserving SDK capitalization', {
+                wasCapitalized: isAlreadyCapitalized,
+                previousEnded: currentText ? currentText.trim().slice(-10) : '(none)',
+                segment: textToAppend.substring(0, 30)
+              });
+            }
           }
 
           currentParagraph.textContent = currentText
@@ -903,13 +916,15 @@
           state.sourceLang = inputSourceLang;
           state.patchSourceLang = inputSourceLang;
           state.targetLangs = parseTargetLangs(document.getElementById('targetLangs').value);
+
+          // Read selected recognition mode from UI
+          const selectedModeRadio = document.querySelector('input[name="recMode"]:checked');
+          state.recognitionMode = selectedModeRadio ? selectedModeRadio.value : 'dictation';
+
           state.sessionId = crypto.randomUUID();
           state.currentUtteranceId = null;
           state.rev = 0;
-          state.lastSoftEmitAt = 0;
-          state.lastSoftText = '';
-          state.lastPartialFull = '';
-          resetPrefixState();
+          // Partials disabled - removed state resets for: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix
           state.itemsByUnit.clear();
           transcriptList.innerHTML = '';
 
@@ -932,22 +947,71 @@
             if (!useAutoDetect) {
               speechConfig.speechRecognitionLanguage = state.sourceLang;
             }
+
+            // Set recognition mode from UI selection (overrides .env config)
+            const recognitionMode = state.recognitionMode || 'balanced';
+            log(`Using recognition mode: ${recognitionMode} (user-selected)`);
+
+            if (recognitionMode === 'dictation' || recognitionMode === 'balanced') {
+              speechConfig.enableDictation();
+              if (recognitionMode === 'dictation') {
+                log('Dictation mode: Standard punctuation, semantic segmentation');
+              } else {
+                log('Balanced mode: Aggressive VAD (200ms/150ms) with dictation punctuation');
+              }
+            } else if (recognitionMode === 'conversation') {
+              speechConfig.setProperty(
+                SpeechSDK.PropertyId.SpeechServiceConnection_Mode,
+                'conversation'
+              );
+              log('Conversation mode: Fast VAD, aggressive silence thresholds');
+            }
+
+            // Set language detection priority to Accuracy (when using auto-detect)
+            if (useAutoDetect) {
+              speechConfig.setProperty(
+                SpeechSDK.PropertyId.SpeechServiceConnection_LanguageIdPriority,
+                "Accuracy"
+              );
+              log('Language detection priority set to Accuracy');
+            }
+
             speechConfig.outputFormat = SpeechSDK.OutputFormat.Detailed;
+
+            const stablePartials = config.stablePartials ?? DEFAULT_CONFIG.stablePartials;
+            const initialSilenceMs = config.initialSilenceMs ?? DEFAULT_CONFIG.initialSilenceMs;
+
+            // Configure VAD settings based on recognition mode
+            let segmentationSilenceMs, endSilenceMs;
+            if (recognitionMode === 'conversation') {
+              // Conversation mode: Super aggressive VAD for fast response
+              segmentationSilenceMs = 150;  // Fire after 150ms pause
+              endSilenceMs = 150;            // End after 150ms trailing silence
+            } else if (recognitionMode === 'balanced') {
+              // Balanced mode: Moderately aggressive VAD (NO semantic - it's broken in JS SDK)
+              segmentationSilenceMs = 200;  // Fire after 200ms pause (faster than dictation's 300ms)
+              endSilenceMs = 150;            // End after 150ms trailing silence (faster than dictation's 200ms)
+            } else {
+              // Dictation mode: Standard VAD (semantic handles segmentation)
+              segmentationSilenceMs = config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs;
+              endSilenceMs = config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs;
+            }
+
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,
-              String(config.stablePartials ?? DEFAULT_CONFIG.stablePartials)
+              String(stablePartials)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.Speech_SegmentationSilenceTimeoutMs,
-              String(config.segmentationSilenceMs ?? DEFAULT_CONFIG.segmentationSilenceMs)
+              String(segmentationSilenceMs)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
-              String(config.initialSilenceMs ?? DEFAULT_CONFIG.initialSilenceMs)
+              String(initialSilenceMs)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
-              String(config.endSilenceMs ?? DEFAULT_CONFIG.endSilenceMs)
+              String(endSilenceMs)
             );
             speechConfig.setProperty(
               SpeechSDK.PropertyId.SpeechServiceResponse_RequestSentenceBoundary,
@@ -962,8 +1026,46 @@
               'true'
             );
 
-            // TEMPORARY: Revert to original simple audio config to test if device selection broke it
-            log('Creating audio config from default microphone (original method)');
+            // Enable Azure's cloud-side audio processing (noise suppression, echo cancellation)
+            // This helps VAD detect silence even with background noise (breathing, keyboard, etc.)
+            speechConfig.setProperty(
+              SpeechSDK.PropertyId.SpeechServiceConnection_EnableAudioProcessing,
+              'true'
+            );
+
+            // Configure segmentation strategy based on mode
+            if (recognitionMode === 'dictation') {
+              // Dictation: Use semantic segmentation (fires on punctuation boundaries)
+              // Note: In JavaScript SDK, semantic accumulates context (waits 5-15s before firing)
+              // This is broken behavior but acceptable for dictation mode prioritizing quality
+              speechConfig.setProperty(
+                SpeechSDK.PropertyId.Speech_SegmentationStrategy,
+                'Semantic'
+              );
+              log('Semantic segmentation enabled (punctuation-based, slow)');
+            } else {
+              // Conversation/Balanced: Use default VAD-based segmentation (fires on silence only)
+              // Balanced mode uses aggressive VAD thresholds (200ms/150ms) for fast response
+              // Semantic segmentation is NOT used because it overrides VAD thresholds in JS SDK
+              log('Using default VAD segmentation (silence-based, fast)');
+            }
+
+            // NOTE: Speech_SegmentationMaximumTimeMs is not supported in JavaScript SDK
+            // Causes WebSocket error 1007 "Could not validate speech context"
+            // This property exists in C#/Python but not browser JS
+
+            // Log SDK configuration for debugging
+            log('Azure SDK configured', {
+              recognitionMode,
+              stablePartials,
+              segmentationSilenceMs,
+              initialSilenceMs,
+              endSilenceMs,
+              maxUtteranceDurationMs: config.maxUtteranceDurationMs
+            });
+
+            // Use default microphone input (fromStreamInput is broken - causes hallucinated transcriptions)
+            log('Creating audio config from default microphone');
             const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
 
             let recognizer;
@@ -1001,130 +1103,17 @@
             startHeartbeat();
 
             recognizer.recognizing = (_, event) => {
-              const partial = event?.result?.text || '';
-              const trimmed = partial.trim();
-              if (!trimmed) {
-                return;
-              }
+              // PARTIALS DISABLED: With semantic segmentation, SDK finals fire so quickly (2-3s)
+              // that partials are unnecessary noise. Only SDK finals are emitted.
 
-              // Log partials occasionally (not every single one to avoid spam)
-              if (Math.random() < 0.1) {
-                log('Recognizing (partial)', { text: trimmed.substring(0, 40) + '...' });
-              }
-              const previous = state.lastPartialFull || '';
-              const merged = dedupeContinuation(previous, trimmed);
-              if (!merged) {
-                return;
-              }
-              state.lastPartialFull = merged;
-              updatePrefixRingSnapshot(merged);
-
-              const now = performance.now();
-              const prefixState = state.prefix;
-              const fastConfig = getFastFinalsConfig();
-              const stableLen = stablePrefixLength();
-
-              // Debug: Log ring buffer state occasionally
+              // Optional: Keep minimal logging for debugging (sampling to avoid spam)
               if (Math.random() < 0.05) {
-                log('Prefix ring state', {
-                  ringSize: prefixState.ring.length,
-                  stableLen,
-                  committedChars: prefixState.committedChars,
-                  merged: merged.substring(0, 40)
+                const partial = event?.result?.text || '';
+                log('Recognizing (partial - not emitted)', {
+                  text: partial.substring(0, 40) + '...',
+                  len: partial.length
                 });
               }
-
-              if (stableLen !== prefixState.lastStableLen) {
-                prefixState.lastStableLen = stableLen;
-                prefixState.lastStableAt = now;
-              }
-              const boundary =
-                stableLen > prefixState.committedChars
-                  ? lastBoundaryBefore(merged, stableLen)
-                  : -1;
-              let candidateEnd = boundary >= 0 ? boundary : stableLen;
-              if (boundary < 0) {
-                candidateEnd = applyTailGuards(
-                  merged,
-                  prefixState.committedChars,
-                  candidateEnd,
-                  fastConfig
-                );
-              }
-              if (candidateEnd < prefixState.committedChars) {
-                candidateEnd = prefixState.committedChars;
-              }
-              if (candidateEnd !== prefixState.lastCandidateEnd) {
-                prefixState.lastCandidateEnd = candidateEnd;
-                prefixState.candidateStableAt = now;
-              }
-              if (stableLen > prefixState.committedChars) {
-                const commitEnd = candidateEnd;
-                if (commitEnd > prefixState.committedChars) {
-                  const rawSlice = merged.slice(prefixState.committedChars, commitEnd);
-                  const segment = rawSlice.trim();
-                  const throttleOk = now - prefixState.lastEmitAt >= fastConfig.emitThrottleMs;
-                  const isPunctCut = boundary >= 0;
-                  const neededStable = isPunctCut
-                    ? fastConfig.punctStableMs
-                    : fastConfig.minStableMs;
-                  const stableOk =
-                    now - (prefixState.candidateStableAt || 0) >= neededStable;
-                  const lengthOk =
-                    boundary >= 0 ||
-                    (segment.length >= fastConfig.minChars && countWords(segment) >= fastConfig.minWords);
-
-                  // Debug fast-finals decision occasionally
-                  if (Math.random() < 0.05) {
-                    log('Fast-finals check', {
-                      segment: segment.substring(0, 30),
-                      throttleOk,
-                      stableOk,
-                      lengthOk,
-                      isPunct: boundary >= 0
-                    });
-                  }
-
-                  // Prevent duplicate emissions of the exact same text
-                  const isDuplicate = segment === prefixState.lastEmittedText;
-
-                  if (segment && throttleOk && stableOk && lengthOk && !isDuplicate) {
-                    log('🚀 FAST-FINAL (prefix commit)', { segment: segment.substring(0, 50) });
-
-                    // Update lastEmittedText IMMEDIATELY (before async call)
-                    prefixState.lastEmittedText = segment;
-
-                    emitHardSegment(segment, event.result, {
-                      isPrefix: true,
-                      rawSlice,
-                      commitEnd,
-                      now
-                    });
-                  } else if (isDuplicate) {
-                    log('Skipping duplicate fast-final', { segment: segment.substring(0, 30) });
-                  }
-                }
-              }
-
-              const tail = merged.slice(prefixState.committedChars).trim();
-              const config = state.config || DEFAULT_CONFIG;
-              const softThrottle =
-                config.softThrottleMs ?? DEFAULT_CONFIG.softThrottleMs;
-              const minDelta =
-                config.softMinDeltaChars ?? DEFAULT_CONFIG.softMinDeltaChars;
-              const delta = tail.length - state.lastSoftText.length;
-              const charTrigger = delta >= minDelta;
-              const punctuationTrigger = /[.?!]\s*$/.test(tail);
-              const timeTrigger = now - state.lastSoftEmitAt > softThrottle;
-              if (tail && (charTrigger || punctuationTrigger || !state.lastSoftText) && timeTrigger) {
-                state.lastSoftEmitAt = now;
-                state.lastSoftText = tail;
-                postPatch(tail, 'soft', event.result);
-              } else if (!tail) {
-                state.lastSoftText = '';
-              }
-
-              setTelemetry(`Soft v${state.version + 1} · tail ${tail.length} chars`);
             };
 
             recognizer.recognized = (_, event) => {
@@ -1153,56 +1142,100 @@
               if (event.result.reason === SpeechSDK.ResultReason.RecognizedSpeech) {
                 const finalText = (event.result.text || '').trim();
                 if (!finalText) {
-                  resetPrefixState();
-                  state.lastPartialFull = '';
-                  state.lastSoftText = '';
-                  state.lastSoftEmitAt = 0;
+                  // Empty final - just skip it
                   return;
                 }
-                state.lastPartialFull = finalText;
                 const activeConfig = state.config || DEFAULT_CONFIG;
                 const delay = Math.max(
                   Number(activeConfig.finalDebounceMs ?? DEFAULT_CONFIG.finalDebounceMs) || 0,
                   0
                 );
-                const remainder = computeFinalRemainder(finalText);
-                const trimmedRemainder = remainder.trim();
-                const split = trimmedRemainder ? splitSentences(trimmedRemainder) : [];
-                const segments = split.length
-                  ? split
-                  : trimmedRemainder
-                  ? [trimmedRemainder]
-                  : [];
+
+                const now = Date.now();
+
+                // Add this final to the pending queue (accumulate instead of replace)
+                state.pendingFinals.push({
+                  text: finalText,
+                  result: event.result,
+                  timestamp: now
+                });
+
+                // Track batch start time (for timeout safeguard)
+                if (state.pendingFinals.length === 1) {
+                  state.finalBatchStartedAt = now;
+                }
+
+                // Clear existing timer and start a new debounce window
                 clearTimeout(state.finalTimer);
                 state.finalTimer = null;
 
-                const emitFinalSegments = () => {
-                  let emitted = 0;
+                // SAFEGUARD 1: Force emit if batch size limit reached
+                // Prevents unbounded accumulation during continuous speech
+                const MAX_BATCH_TIMEOUT_MS = 500; // Absolute max time to hold finals
+                const batchAge = now - state.finalBatchStartedAt;
+                const shouldForceEmit =
+                  state.pendingFinals.length >= state.maxBatchSize ||
+                  batchAge >= MAX_BATCH_TIMEOUT_MS;
+
+                if (shouldForceEmit) {
+                  log(`🚨 Force emitting batch (size: ${state.pendingFinals.length}, age: ${batchAge}ms)`);
+                }
+
+                const emitAllPendingFinals = () => {
+                  // Get all queued finals
+                  const finalsToEmit = state.pendingFinals;
+                  state.pendingFinals = [];  // Clear queue
+                  state.finalBatchStartedAt = 0;  // Reset batch timer
+
+                  if (!finalsToEmit.length) {
+                    state.finalTimer = null;
+                    return;
+                  }
+
+                  log(`📦 Emitting ${finalsToEmit.length} batched final(s)`, {
+                    count: finalsToEmit.length,
+                    batchAge: finalsToEmit.length ? Date.now() - finalsToEmit[0].timestamp : 0
+                  });
+
+                  // With semantic segmentation, SDK finals are atomic sentences (no overlap/dedup needed)
+                  // Combine all finals' text with space separator
+                  const combinedText = finalsToEmit
+                    .map(final => final.text.trim())
+                    .filter(Boolean)
+                    .join(' ');
+
+                  // Split combined text into sentences
+                  const split = combinedText ? splitSentences(combinedText) : [];
+                  const segments = split.length ? split : combinedText ? [combinedText] : [];
+
+                  // Emit each sentence (using the first final's result for metadata)
+                  let totalEmitted = 0;
+                  const firstResult = finalsToEmit[0]?.result;
                   for (const sentence of segments) {
                     if (sentence) {
-                      emitHardSegment(sentence, event.result);
-                      emitted += 1;
+                      emitHardSegment(sentence, firstResult);
+                      totalEmitted += 1;
                     }
                   }
-                  state.lastSoftText = '';
-                  state.lastSoftEmitAt = 0;
-                  state.lastPartialFull = '';
-                  resetPrefixState();
+
+                  // Partials disabled - removed state resets
                   state.finalTimer = null;
                   setTelemetry(
-                    emitted
-                      ? `Hard ✔︎ · ${emitted} segment${emitted > 1 ? 's' : ''}`
-                      : 'Hard ✔︎ · prefix only'
+                    totalEmitted
+                      ? `Hard ✔︎ · ${totalEmitted} segment${totalEmitted > 1 ? 's' : ''}`
+                      : 'Hard ✔︎'
                   );
                 };
 
-                if (delay > 0) {
+                // Emit immediately if force conditions met, otherwise debounce
+                if (shouldForceEmit || delay === 0) {
+                  emitAllPendingFinals();
+                } else {
+                  // Wait for debounce window, then emit ALL accumulated finals
                   state.finalTimer = setTimeout(() => {
                     state.finalTimer = null;
-                    emitFinalSegments();
+                    emitAllPendingFinals();
                   }, delay);
-                } else {
-                  emitFinalSegments();
                 }
               } else if (event.result.reason === SpeechSDK.ResultReason.NoMatch) {
                 log('No speech match', { reason: event.result.noMatchDetails });
@@ -1258,10 +1291,7 @@
           stopHeartbeat();
           clearTimeout(state.finalTimer);
           state.finalTimer = null;
-          state.lastSoftEmitAt = 0;
-          state.lastSoftText = '';
-          state.lastPartialFull = '';
-          resetPrefixState();
+          // Partials disabled - removed state resets for: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix
           if (state.recognizer) {
             try {
               state.recognizer.stopContinuousRecognitionAsync(() => {

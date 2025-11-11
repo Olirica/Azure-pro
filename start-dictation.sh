@@ -1,0 +1,28 @@
+#!/bin/bash
+# Start server with DICTATION profile (fast-finals disabled)
+# Override key variables from .env without editing it
+
+echo "🎯 Starting server with DICTATION profile..."
+echo "   - Recognition mode: dictation"
+echo "   - Fast-finals: DISABLED"
+echo "   - Expected latency: ~4-5s"
+echo ""
+
+RECOGNITION_MODE=dictation \
+SPEECH_STABLE_PARTIALS=4 \
+SPEECH_SEGMENTATION_SILENCE_MS=1200 \
+SPEECH_END_SILENCE_MS=800 \
+SPEECH_INITIAL_SILENCE_MS=5000 \
+FASTFINALS_STABLE_K=99 \
+FASTFINALS_MIN_STABLE_MS=9999 \
+FASTFINALS_PUNCT_STABLE_MS=9999 \
+FASTFINALS_MIN_CHARS=999 \
+FASTFINALS_MIN_WORDS=99 \
+FASTFINALS_EMIT_THROTTLE_MS=9999 \
+FASTFINALS_TAIL_GUARD_CHARS=0 \
+FASTFINALS_TAIL_GUARD_WORDS=0 \
+SOFT_THROTTLE_MS=1200 \
+SOFT_MIN_DELTA_CHARS=25 \
+FINAL_DEBOUNCE_MS=200 \
+TRANSLATION_MERGE_ENABLED=false \
+node server/index.js

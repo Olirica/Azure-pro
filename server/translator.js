@@ -3,10 +3,20 @@ const axios = require('axios');
 const DEFAULT_ENDPOINT = 'https://api.cognitive.microsofttranslator.com';
 const PROFANITY_ACTION = process.env.TRANSLATOR_PROFANITY_ACTION;
 const PROFANITY_MARKER = process.env.TRANSLATOR_PROFANITY_MARKER;
+const TRANSLATOR_PROVIDER = process.env.TRANSLATOR_PROVIDER || 'openai'; // 'openai' (default) or 'azure' (dev/fallback)
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_TRANSLATE_MODEL = process.env.OPENAI_TRANSLATE_MODEL || 'gpt-4o-mini';
 const OPENAI_TRANSLATE_ENDPOINT =
   process.env.OPENAI_TRANSLATE_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
+
+// Startup logging to verify OpenAI configuration
+console.log('[translator] OpenAI Configuration:', {
+  hasApiKey: !!OPENAI_API_KEY,
+  apiKeyPrefix: OPENAI_API_KEY?.substring(0, 20) + '...',
+  model: OPENAI_TRANSLATE_MODEL,
+  endpoint: OPENAI_TRANSLATE_ENDPOINT,
+  provider: TRANSLATOR_PROVIDER
+});
 
 function splitSentences(text) {
   const trimmed = (text || '').trim();
@@ -28,7 +38,7 @@ function charLengthsForSentences(sentences, originalText) {
   return sentences.map((sentence) => sentence.length);
 }
 
-async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger, metrics }) {
+async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, contextTexts = [], logger, metrics }) {
   if (!OPENAI_API_KEY || !targetLangs.length) {
     return null;
   }
@@ -38,6 +48,22 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger
 
   for (const lang of targetLangs) {
     try {
+      // Log attempt details
+      logger?.info({
+        component: 'translator',
+        roomId,
+        lang,
+        fromLang,
+        textLength: text.length,
+        contextCount: contextTexts.length,
+        model: OPENAI_TRANSLATE_MODEL
+      }, 'Attempting OpenAI translation...');
+
+      // Build context-aware prompt
+      const contextPrompt = contextTexts.length
+        ? `Previous context for gender/pronoun agreement:\n${contextTexts.join('\n')}\n\nNow translate ONLY the following text:`
+        : 'Translate the user\'s message';
+
       const response = await axios.post(
         OPENAI_TRANSLATE_ENDPOINT,
         {
@@ -45,9 +71,9 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger
           messages: [
             {
               role: 'system',
-              content: `You are a translation engine. Translate the user's message from ${
+              content: `You are a translation engine. ${contextPrompt} from ${
                 fromLang || 'the source language'
-              } to ${lang}. Preserve sentence order and keep the output concise.`
+              } to ${lang}. Maintain gender consistency and pronoun agreement based on context. Preserve sentence order and keep the output concise.`
             },
             {
               role: 'user',
@@ -61,7 +87,7 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger
             Authorization: `Bearer ${OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 15000
+          timeout: 30000  // Increased from 15s to 30s
         }
       );
 
@@ -80,10 +106,25 @@ async function translateWithOpenAI({ roomId, text, fromLang, targetLangs, logger
         fallback: 'openai'
       });
     } catch (err) {
-      logger?.warn(
-        { component: 'translator', roomId, lang, err: err?.response?.data || err?.message },
-        'OpenAI fallback translation failed.'
-      );
+      // Enhanced error logging with detailed diagnostics
+      const errorDetails = {
+        component: 'translator',
+        roomId,
+        lang,
+        errorType: err.constructor.name,
+        message: err?.message,
+        code: err?.code,
+        status: err?.response?.status,
+        statusText: err?.response?.statusText,
+        data: err?.response?.data,
+        model: OPENAI_TRANSLATE_MODEL,
+        endpoint: OPENAI_TRANSLATE_ENDPOINT,
+        hasApiKey: !!OPENAI_API_KEY,
+        // Check if it's a timeout
+        isTimeout: err?.code === 'ECONNABORTED' || err?.message?.includes('timeout')
+      };
+
+      logger?.warn(errorDetails, 'OpenAI fallback translation failed.');
     }
   }
 
@@ -111,7 +152,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
       'TRANSLATOR_KEY missing – translator will fall back to identity (no-op) behaviour.'
     );
     return {
-      async translate(roomId, text, _fromLang, targetLangs) {
+      async translate(roomId, text, _fromLang, targetLangs, _contextTexts = []) {
         const trimmed = (text || '').trim();
         if (!trimmed) {
           return [];
@@ -143,12 +184,34 @@ function createTranslator({ logger, metrics, observeLatency }) {
      * @param {string} text
      * @param {string | undefined} fromLang
      * @param {string[]} targetLangs
+     * @param {string[]} [contextTexts=[]] - Previous segments for context (gender/pronoun continuity)
      * @returns {Promise<Array<{ lang: string, text: string, srcSentLen: number[], transSentLen: number[] }>>}
      */
-    async translate(roomId, text, fromLang, targetLangs) {
+    async translate(roomId, text, fromLang, targetLangs, contextTexts = []) {
       const trimmed = (text || '').trim();
       if (!trimmed || !targetLangs.length) {
         return [];
+      }
+
+      // Try OpenAI first if configured as primary provider
+      if (TRANSLATOR_PROVIDER === 'openai') {
+        const openaiTranslations = await translateWithOpenAI({
+          roomId,
+          text: trimmed,
+          fromLang,
+          targetLangs,
+          contextTexts,
+          logger,
+          metrics
+        });
+        if (openaiTranslations) {
+          return openaiTranslations.map(t => ({ ...t, provider: 'openai' }));
+        }
+        // Fall through to Azure if OpenAI fails
+        logger.warn(
+          { component: 'translator', roomId },
+          'OpenAI primary translator failed, falling back to Azure'
+        );
       }
 
       const params = new URLSearchParams({
@@ -172,7 +235,15 @@ function createTranslator({ logger, metrics, observeLatency }) {
       }
 
       const url = `${endpoint}/translate?${params.toString()}`;
-      const payload = [{ text: trimmed }];
+
+      // Build payload: context segments + current text
+      // Azure Translator maintains context across array elements
+      const payload = [
+        // Previous segments for context (gender/pronoun resolution)
+        ...contextTexts.filter(Boolean).map(ctx => ({ text: ctx.trim() })),
+        // Current text to translate (this is what we'll return)
+        { text: trimmed }
+      ];
 
       const start = process.hrtime.bigint();
       try {
@@ -189,7 +260,9 @@ function createTranslator({ logger, metrics, observeLatency }) {
           }
         }
 
-        const entry = Array.isArray(data) ? data[0] : undefined;
+        // Azure returns array matching input array length
+        // We only want the LAST entry (current segment), context is discarded
+        const entry = Array.isArray(data) ? data[data.length - 1] : undefined;
         const targetMap = new Map();
         for (const lang of targetLangs) {
           const lower = lang.toLowerCase();
@@ -201,7 +274,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
         }
         if (!entry || !Array.isArray(entry.translations)) {
           logger.warn(
-            { component: 'translator', roomId, data },
+            { component: 'translator', roomId, data, contextUsed: contextTexts.length },
             'Unexpected translator response structure.'
           );
           metrics?.observeTranslator?.(roomId, 'unknown', 'malformed');
@@ -218,7 +291,8 @@ function createTranslator({ logger, metrics, observeLatency }) {
               lang: mappedLang,
               text: translation.text || '',
               srcSentLen: Array.isArray(sentLen.srcSentLen) ? sentLen.srcSentLen : [],
-              transSentLen: Array.isArray(sentLen.transSentLen) ? sentLen.transSentLen : []
+              transSentLen: Array.isArray(sentLen.transSentLen) ? sentLen.transSentLen : [],
+              provider: 'azure'
             };
           })
           .filter((translation) => Boolean(translation.lang));
@@ -249,11 +323,12 @@ function createTranslator({ logger, metrics, observeLatency }) {
           text: trimmed,
           fromLang,
           targetLangs,
+          contextTexts,
           logger,
           metrics
         });
         if (fallbackTranslations) {
-          return fallbackTranslations;
+          return fallbackTranslations.map(t => ({ ...t, provider: t.provider || 'openai' }));
         }
 
         return targetLangs.map((lang) => ({
@@ -261,7 +336,8 @@ function createTranslator({ logger, metrics, observeLatency }) {
           text: trimmed,
           srcSentLen: [trimmed.length],
           transSentLen: [trimmed.length],
-          error: true
+          error: true,
+          provider: 'none'
         }));
       }
     }

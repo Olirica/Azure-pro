@@ -30,20 +30,24 @@ cp .env.example .env
 
 ## Tuning Profiles
 
-Choose a performance profile based on your use case. See `.env.profiles` for complete settings.
+Three profiles aligned with Azure Speech recognition modes. See `.env.profiles` for complete settings.
 
-| Profile | Latency | Quality | Use Case |
-|---------|---------|---------|----------|
-| **SPEED** | ~2s ⚡⚡⚡ | ⭐ | Testing, demos |
-| **BALANCED** | ~3s ⚡⚡ | ⭐⭐⭐ | Most conferences (default) |
-| **ACCURATE** | ~4s ⚡ | ⭐⭐⭐⭐ | Critical presentations |
-| **ULTRA-ACCURATE** | ~6s 🐢 | ⭐⭐⭐⭐⭐ | Post-production, subtitles |
+| Profile | Mode | Latency | Quality | Punctuation | Use Case |
+|---------|------|---------|---------|-------------|----------|
+| **CONVERSATION** | conversation | ~2-2.5s ⚡⚡⚡ | ⭐⭐⭐ | Good | Team meetings, webinars |
+| **HYBRID** ⭐ | dictation | ~3-4s ⚡⚡ | ⭐⭐⭐⭐ | Excellent | Conferences (recommended) |
+| **DICTATION** | dictation | ~4-5s ⚡ | ⭐⭐⭐⭐⭐ | Excellent | CEO speeches, subtitles |
 
-**Current configuration**: ACCURATE (slow but accurate)
+**Current configuration**: HYBRID (dictation quality at conversation speed)
+
+**Key difference**: Azure recognition mode determines punctuation quality and text normalization
+- `dictation` – Best punctuation, capitalization, homophone resolution (e.g., "two" vs "to")
+- `conversation` – Natural dialogue, handles fillers ("um", "uh"), faster but simpler punctuation
+- `hybrid` – Uses dictation mode with conversation-like timing for optimal balance
 
 To change profiles:
 1. Open `.env.profiles`
-2. Copy the variables from your desired profile section
+2. Copy **all variables** from your desired profile section
 3. Paste into `.env` (local) or Railway dashboard (production)
 4. Restart server
 

@@ -1,0 +1,21 @@
+{
+  "testDuration": 10.082,
+  "timestamp": "2025-10-16T03:46:54.521Z",
+  "metrics": {
+    "translations": [],
+    "ttsQueue": [],
+    "ttsPlayback": [],
+    "errors": [
+      {
+        "timestamp": 1760586404515,
+        "text": "{\"ev\":\"error\",\"msg\":\"WebSocket error: Unexpected server response: 400\"}\n"
+      },
+      {
+        "timestamp": 1760586404515,
+        "text": "{\"ev\":\"error\",\"msg\":\"Unexpected server response: 400\"}\n"
+      }
+    ]
+  },
+  "processorExitCode": 1,
+  "processorOutput": "{\"ev\":\"info\",\"msg\":\"Connecting to ws://localhost:3000/speaker\"}\n{\"ev\":\"info\",\"msg\":\"WebSocket closed\"}\n"
+}

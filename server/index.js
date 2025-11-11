@@ -1,8 +1,10 @@
+// Load environment variables FIRST before any other modules
+require('dotenv').config();
+
 const path = require('path');
 const http = require('http');
 const express = require('express');
 const pino = require('pino');
-const dotenv = require('dotenv');
 const WS = require('ws');
 const axios = require('axios');
 
@@ -12,8 +14,6 @@ const { createTranslator } = require('./translator');
 const { createTtsQueue } = require('./tts');
 const { createWatchdog } = require('./watchdog');
 const { createStateStore } = require('./state-store');
-
-dotenv.config();
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -93,6 +93,7 @@ const FASTFINALS_EMIT_THROTTLE_MS = getNumberEnv('FASTFINALS_EMIT_THROTTLE_MS', 
 const FASTFINALS_PUNCT_STABLE_MS = getNumberEnv('FASTFINALS_PUNCT_STABLE_MS', 350);
 const FASTFINALS_TAIL_GUARD_CHARS = getNumberEnv('FASTFINALS_TAIL_GUARD_CHARS', 12);
 const FASTFINALS_TAIL_GUARD_WORDS = getNumberEnv('FASTFINALS_TAIL_GUARD_WORDS', 2);
+const MAX_UTTERANCE_DURATION_MS = getNumberEnv('MAX_UTTERANCE_DURATION_MS', 9000);
 const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
@@ -102,6 +103,7 @@ const AUTO_DETECT_LANGS = (process.env.AUTO_DETECT_LANGS || '')
   .map((lang) => lang.trim())
   .filter(Boolean);
 const SPEECH_TTS_FORMAT = process.env.SPEECH_TTS_FORMAT || '';
+const RECOGNITION_MODE = process.env.RECOGNITION_MODE || 'conversation';
 
 const translator = createTranslator({ logger, metrics });
 const stateStore = createStateStore({
@@ -447,6 +449,7 @@ app.get('/metrics', metrics.sendMetrics);
 
 app.get('/api/config', (_req, res) => {
   res.json({
+    recognitionMode: RECOGNITION_MODE,
     stablePartials: STABLE_PARTIALS,
     segmentationSilenceMs: SEG_SILENCE_MS,
     initialSilenceMs: INITIAL_SILENCE_MS,
@@ -460,6 +463,7 @@ app.get('/api/config', (_req, res) => {
     ttsRateBoostPercent: TTS_RATE_BOOST_PERCENT,
     patchLruPerRoom: PATCH_LRU_PER_ROOM,
     finalDebounceMs: FINAL_DEBOUNCE_MS,
+    maxUtteranceDurationMs: MAX_UTTERANCE_DURATION_MS,
     phraseHints: PHRASE_HINTS,
     autoDetectLangs: AUTO_DETECT_LANGS,
     ttsFormat: SPEECH_TTS_FORMAT || undefined,
