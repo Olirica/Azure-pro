@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin • Rooms</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              background: '#0b1220',
+              card: '#111827',
+              ring: '#60a5fa',
+              muted: '#9ca3af'
+            }
+          }
+        }
+      }
+    </script>
+  </head>
+  <body class="bg-background text-slate-100 min-h-screen">
+    <main class="container mx-auto max-w-2xl px-4 py-8">
+      <h1 class="text-2xl font-semibold mb-6">Room Admin</h1>
+
+      <div class="rounded-lg border border-slate-700 bg-card p-6 shadow">
+        <form id="roomForm" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">Admin Token</label>
+            <input id="adminToken" type="password" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring" placeholder="Required to save" />
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1">Slug</label>
+              <input id="slug" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., launch-2025" required />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Title</label>
+              <input id="title" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="Optional" />
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1">Starts At</label>
+              <input id="startsAt" type="datetime-local" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Ends At</label>
+              <input id="endsAt" type="datetime-local" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" />
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1">Source Language</label>
+              <input id="sourceLang" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., auto or en-US" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Auto-Detect Languages</label>
+              <input id="autoDetectLangs" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., en-US,fr-FR,es-ES" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Default Target Languages</label>
+            <input id="defaultTargetLangs" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., fr-CA,es-ES" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Base Code</label>
+            <input id="baseCode" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., launch-2025" />
+            <p class="mt-1 text-xs text-muted">Listener code = Base Code; Speaker code = Base Code + "-speaker"</p>
+          </div>
+
+          <div class="flex items-center gap-3 pt-2">
+            <button type="submit" class="inline-flex items-center rounded-md bg-sky-500 px-4 py-2 font-semibold text-slate-900 hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-ring">Save Room</button>
+            <span id="status" class="text-sm text-muted"></span>
+          </div>
+        </form>
+      </div>
+
+      <p class="mt-6 text-sm text-muted">Window enforcement: joins/ingest allowed from <em>Starts At - earlyJoin</em> to <em>Ends At + grace</em>. Configure via env: <code>ROOM_EARLY_JOIN_MINUTES</code>, <code>ROOM_GRACE_MINUTES</code>.</p>
+    </main>
+
+    <script>
+      function toMillis(dt) {
+        if (!dt) return 0;
+        try { return new Date(dt).getTime() || 0; } catch { return 0; }
+      }
+
+      document.getElementById('roomForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = '';
+        const payload = {
+          slug: document.getElementById('slug').value.trim(),
+          title: document.getElementById('title').value.trim(),
+          startsAt: toMillis(document.getElementById('startsAt').value),
+          endsAt: toMillis(document.getElementById('endsAt').value),
+          sourceLang: document.getElementById('sourceLang').value.trim(),
+          autoDetectLangs: document.getElementById('autoDetectLangs').value,
+          defaultTargetLangs: document.getElementById('defaultTargetLangs').value
+        };
+        const baseCode = document.getElementById('baseCode').value.trim();
+        if (baseCode) {
+          payload.code = baseCode;
+        }
+        const token = document.getElementById('adminToken').value.trim();
+        if (!token) {
+          statusEl.textContent = 'Admin token required.';
+          return;
+        }
+        try {
+          const res = await fetch('/api/admin/rooms', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+            body: JSON.stringify(payload)
+          });
+          const body = await res.json();
+          if (!res.ok || !body?.ok) {
+            throw new Error(body?.error || 'Save failed');
+          }
+          statusEl.textContent = 'Saved.';
+        } catch (err) {
+          statusEl.textContent = 'Error: ' + (err?.message || 'unknown');
+        }
+      });
+    </script>
+  </body>
+  </html>

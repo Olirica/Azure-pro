@@ -56,6 +56,14 @@ npm start
 
 Prometheus metrics are served from `http://localhost:3000/metrics`. Health check at `/healthz`.
 
+## Persistence Options
+
+- In-memory (default): leave both `REDIS_URL` and `FS_STORE_DIR` unset. Fast, but non‑durable.
+- Filesystem (single instance): set `FS_STORE_DIR` (e.g., `./data`). This persists rooms, patches, and TTS queues locally without any external service. Optionally set `FS_ROOMS_FILE` (defaults to `<FS_STORE_DIR>/rooms-registry.json`).
+- Redis (multi instance): set `REDIS_URL` (and optionally `REDIS_PREFIX`). Enables durable, multi‑instance state.
+
+Admin dashboard (`/admin.html`) works with all modes. Without persistence, saved rooms vanish after a restart.
+
 ## Scripts
 
 - `npm run dev` – start server in development mode.
