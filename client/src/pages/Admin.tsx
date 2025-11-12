@@ -31,25 +31,9 @@ function parseList(value: string): string[] {
     .filter(Boolean)
 }
 
-function useAdminToken() {
-  const [token, setToken] = useState('')
-  useEffect(() => {
-    try {
-      const u = new URL(window.location.href)
-      const urlToken = u.searchParams.get('token') || ''
-      const stored = sessionStorage.getItem('adminToken') || ''
-      const chosen = urlToken || stored
-      if (chosen) {
-        setToken(chosen)
-        sessionStorage.setItem('adminToken', chosen)
-      }
-    } catch {}
-  }, [])
-  return [token, setToken] as const
-}
-
 export function AdminApp() {
-  const [token, setToken] = useAdminToken()
+  const [authed, setAuthed] = useState<boolean | null>(null)
+  const [token, setToken] = useState('')
   const [title, setTitle] = useState('')
   const [slug, setSlug] = useState('')
   const [startsAt, setStartsAt] = useState('')
@@ -57,6 +41,13 @@ export function AdminApp() {
   const [languages, setLanguages] = useState('')
   const [defaultTargets, setDefaultTargets] = useState('')
   const [status, setStatus] = useState('')
+
+  useEffect(() => {
+    // Check auth on mount
+    fetch('/api/admin/check').then(async (r) => {
+      setAuthed(r.ok)
+    }).catch(() => setAuthed(false))
+  }, [])
 
   useEffect(() => {
     if (!slug && title) setSlug(slugify(title))
@@ -112,27 +103,46 @@ export function AdminApp() {
     }
   }
 
-  function applyToken() {
-    if (!token) return
+  async function login(e: React.FormEvent) {
+    e.preventDefault()
+    setStatus('')
     try {
-      sessionStorage.setItem('adminToken', token)
-      const u = new URL(window.location.href)
-      u.searchParams.set('token', token)
-      window.history.replaceState(null, '', u.toString())
-    } catch {}
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || !body?.ok) throw new Error(body?.error || 'Login failed')
+      setAuthed(true)
+      setStatus('')
+    } catch (err: any) {
+      setStatus('Error: ' + (err?.message || 'unknown'))
+    }
+  }
+
+  if (authed === false) {
+    return (
+      <main className="container mx-auto max-w-md p-6">
+        <h1 className="text-2xl font-semibold mb-4">Admin Login</h1>
+        <form onSubmit={login} className="rounded-lg border border-slate-700 bg-slate-800/60 p-6 shadow space-y-3">
+          <div>
+            <Label className="mb-1 block">Admin token</Label>
+            <Input type="password" value={token} onChange={(e)=>setToken(e.target.value)} placeholder="••••••" />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="submit">Continue</Button>
+            <span className={cn('text-sm', status.startsWith('Error') ? 'text-red-400' : 'text-slate-400')}>{status}</span>
+          </div>
+        </form>
+      </main>
+    )
   }
 
   return (
     <main className="container mx-auto max-w-2xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Room Admin</h1>
       <form onSubmit={onSave} className="rounded-lg border border-slate-700 bg-slate-800/60 p-6 shadow space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="text-sm text-slate-400">Access requires ADMIN_TOKEN; append ?token=... to the URL.</div>
-          <div className="flex items-center gap-2">
-            <Input placeholder="Admin token" value={token} onChange={(e) => setToken(e.target.value)} className="w-64" />
-            <Button type="button" onClick={applyToken}>Use Token</Button>
-          </div>
-        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>

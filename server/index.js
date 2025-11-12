@@ -60,19 +60,8 @@ app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 app.use(metrics.httpMetricsMiddleware);
 
-// Gate admin UI behind ADMIN_TOKEN when set. Allow /admin (login page) without token.
-app.use((req, res, next) => {
-  if (ADMIN_TOKEN && !DISABLE_ADMIN_AUTH && req.path === '/admin.html') {
-    const headerToken = req.get('x-admin-token');
-    const queryToken = req.query?.token;
-    const cookieToken = parseCookies(req).admin_token;
-    const provided = headerToken || queryToken || cookieToken;
-    if (provided !== ADMIN_TOKEN) {
-      return res.redirect(302, '/admin');
-    }
-  }
-  next();
-});
+// Do not gate the admin UI route here. The React app handles login UX; APIs enforce auth.
+app.use((req, _res, next) => next());
 
 // If the client build exists, serve its assets under /assets and send its index for /admin.html
 if (fs.existsSync(CLIENT_DIST_DIR)) {
@@ -82,20 +71,19 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
   if (fs.existsSync(assetsDir)) {
     app.use('/assets', express.static(assetsDir));
   }
-  app.get('/admin.html', (req, res, next) => {
+  // Serve SPA for admin and related routes
+  const serveSpa = (req, res, next) => {
     if (fs.existsSync(adminIndex)) {
       return res.sendFile(adminIndex);
     }
     next();
-  });
+  };
+  app.get('/admin', serveSpa);
+  app.get('/admin/*', serveSpa);
+  app.get('/admin.html', serveSpa);
   // Also serve the same client index for speaker/listener routes
   for (const route of ['/listener.html', '/speaker.html', '/listener', '/speaker']) {
-    app.get(route, (req, res, next) => {
-      if (fs.existsSync(adminIndex)) {
-        return res.sendFile(adminIndex);
-      }
-      next();
-    });
+    app.get(route, serveSpa);
   }
 }
 
@@ -597,6 +585,19 @@ app.post('/api/admin/logout', (req, res) => {
   const secure = (req.secure || req.headers['x-forwarded-proto'] === 'https') && process.env.NODE_ENV !== 'development';
   res.cookie('admin_token', '', { httpOnly: true, sameSite: 'lax', secure, expires: new Date(0) });
   res.json({ ok: true });
+});
+
+// Admin: check auth status
+app.get('/api/admin/check', (req, res) => {
+  if (!ADMIN_TOKEN || DISABLE_ADMIN_AUTH) {
+    return res.json({ ok: true, dev: true });
+  }
+  const cookieToken = parseCookies(req).admin_token;
+  const headerToken = req.get('x-admin-token');
+  if (headerToken === ADMIN_TOKEN || cookieToken === ADMIN_TOKEN) {
+    return res.json({ ok: true });
+  }
+  return res.status(401).json({ ok: false });
 });
 
 // Public: fetch room defaults/meta
