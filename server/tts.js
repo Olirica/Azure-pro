@@ -1,6 +1,17 @@
 const { EventEmitter } = require('events');
 const sdk = require('microsoft-cognitiveservices-speech-sdk');
-const { segmentText } = require('../scripts/segment-text');
+let segmentText = null;
+try {
+  ({ segmentText } = require('../scripts/segment-text'));
+} catch (e) {
+  // Fallback sentence splitter if helper is unavailable (e.g., minimal container)
+  segmentText = function fallbackSegmentText(input) {
+    const text = (input || '').trim();
+    if (!text) return [];
+    const parts = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [text];
+    return parts.map((s) => s.trim()).filter(Boolean);
+  };
+}
 
 const DEFAULT_VOICE = 'en-US-JennyNeural';
 const WORDS_PER_MINUTE = 160;
