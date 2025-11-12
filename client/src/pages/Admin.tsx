@@ -43,6 +43,7 @@ export function AdminApp() {
   const [defaultTargets, setDefaultTargets] = useState('')
   const [status, setStatus] = useState('')
   const [rooms, setRooms] = useState<any[]>([])
+  const [health, setHealth] = useState<{ redis?: { configured?: boolean; up?: boolean; error?: string } } | null>(null)
 
   useEffect(() => {
     // Check auth on mount
@@ -60,9 +61,22 @@ export function AdminApp() {
     } catch {}
   }
 
+  async function loadHealth() {
+    try {
+      const r = await fetch('/healthz', { cache: 'no-store' })
+      if (!r.ok) return
+      const data = await r.json().catch(() => ({}))
+      setHealth(data || null)
+    } catch {}
+  }
+
   useEffect(() => {
     if (authed) loadRooms()
   }, [authed])
+
+  useEffect(() => {
+    loadHealth()
+  }, [])
 
   useEffect(() => {
     if (!slug && title) setSlug(slugify(title))
@@ -158,6 +172,28 @@ export function AdminApp() {
   return (
     <main className="container mx-auto max-w-2xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Room Admin</h1>
+      {(
+        <div className="mb-4 rounded-md border p-3 "
+          style={{
+            borderColor: health?.redis?.up ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)',
+            background: health?.redis?.up ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.08)'
+          }}>
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="font-medium">Redis:</span>{' '}
+              {!health?.redis?.configured && <span className="opacity-80">not configured (using memory)</span>}
+              {health?.redis?.configured && health?.redis?.up && <span className="text-emerald-400">up</span>}
+              {health?.redis?.configured && health?.redis && health.redis.up === false && (
+                <span className="text-red-400">down</span>
+              )}
+              {health?.redis?.error && (
+                <span className="ml-2 text-xs opacity-80">{health.redis.error}</span>
+              )}
+            </div>
+            <Button type="button" variant="outline" onClick={loadHealth}>Check</Button>
+          </div>
+        </div>
+      )}
       <form onSubmit={onSave} className="rounded-lg border border-slate-700 bg-slate-800/60 p-6 shadow space-y-4">
         <div className="flex items-center justify-between">
           <div className="text-sm text-slate-400">Authenticated</div>
