@@ -167,8 +167,8 @@ const stateStore = createStateStore({
 // Minimal room registry (Redis-backed if available)
 const roomRegistry = createRoomRegistry({ logger, redisClient: stateStore?.client });
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
-const DISABLE_ADMIN_AUTH =
-  process.env.NODE_ENV === 'development' || process.env.DISABLE_ADMIN_AUTH === 'true';
+// Dev-only bypass: enabled only when not in production
+const ADMIN_DEV_BYPASS = process.env.NODE_ENV !== 'production';
 
 function parseMillis(value) {
   if (value == null) return 0;
@@ -526,8 +526,13 @@ app.post('/api/admin/rooms', async (req, res) => {
   try {
     const cookieToken = parseCookies(req).admin_token;
     const headerToken = req.get('x-admin-token');
-    if (!DISABLE_ADMIN_AUTH && ADMIN_TOKEN && headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN) {
-      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    if (!ADMIN_DEV_BYPASS) {
+      if (!ADMIN_TOKEN) {
+        return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
+      }
+      if (headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN) {
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+      }
     }
     const body = req.body || {};
     const slug = String(body.slug || '').trim().toLowerCase();
@@ -574,9 +579,12 @@ app.post('/api/admin/rooms', async (req, res) => {
 // Admin: login to set cookie
 app.post('/api/admin/login', async (req, res) => {
   try {
-    if (!ADMIN_TOKEN || DISABLE_ADMIN_AUTH) {
-      // Dev mode or not configured: allow access without strict auth
+    if (ADMIN_DEV_BYPASS) {
+      // Dev mode: allow access without strict auth
       return res.json({ ok: true, dev: true });
+    }
+    if (!ADMIN_TOKEN) {
+      return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
     }
     const token = String(req.body?.token || '').trim();
     if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
@@ -602,8 +610,11 @@ app.post('/api/admin/logout', (req, res) => {
 
 // Admin: check auth status
 app.get('/api/admin/check', (req, res) => {
-  if (!ADMIN_TOKEN || DISABLE_ADMIN_AUTH) {
+  if (ADMIN_DEV_BYPASS) {
     return res.json({ ok: true, dev: true });
+  }
+  if (!ADMIN_TOKEN) {
+    return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
   }
   const cookieToken = parseCookies(req).admin_token;
   const headerToken = req.get('x-admin-token');
