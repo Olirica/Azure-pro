@@ -76,6 +76,7 @@ app.use((req, res, next) => {
 
 // If the client build exists, serve its assets under /assets and send its index for /admin.html
 if (fs.existsSync(CLIENT_DIST_DIR)) {
+  logger.info({ component: 'admin-ui', dir: CLIENT_DIST_DIR }, 'Serving admin client from dist.');
   const adminIndex = path.join(CLIENT_DIST_DIR, 'index.html');
   const assetsDir = path.join(CLIENT_DIST_DIR, 'assets');
   if (fs.existsSync(assetsDir)) {
