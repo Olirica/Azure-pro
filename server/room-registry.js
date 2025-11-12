@@ -144,12 +144,21 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     }
     const ttlMs = Math.max((normalized.endsAt || 0) + GRACE_MIN * 60 * 1000 - Date.now(), 0);
     if (redis) {
-      await ensure();
-      const payload = JSON.stringify(normalized);
-      const k = key('room', normalized.slug, 'meta');
-      const pipe = redis.pipeline().set(k, payload);
-      if (ttlMs > 0) pipe.pexpire(k, ttlMs);
-      await pipe.exec();
+      try {
+        await ensure();
+        const payload = JSON.stringify(normalized);
+        const k = key('room', normalized.slug, 'meta');
+        const pipe = redis.pipeline().set(k, payload);
+        if (ttlMs > 0) pipe.pexpire(k, ttlMs);
+        await pipe.exec();
+      } catch (e) {
+        logger?.warn?.(
+          { component: 'room-registry', err: e?.message },
+          'Redis unavailable; falling back to memory for upsert.'
+        );
+        memory.set(normalized.slug, normalized);
+        return cleanMeta(normalized);
+      }
     } else if (useFs) {
       await fsLoad();
       memory.set(normalized.slug, normalized);
@@ -164,15 +173,20 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     const id = String(slug || '').trim().toLowerCase();
     if (!id) return null;
     if (redis) {
-      await ensure();
-      const k = key('room', id, 'meta');
-      const raw = await redis.get(k);
-      if (!raw) return null;
       try {
-        return JSON.parse(raw);
+        await ensure();
+        const k = key('room', id, 'meta');
+        const raw = await redis.get(k);
+        if (!raw) return memory.get(id) || null;
+        try {
+          return JSON.parse(raw);
+        } catch (e) {
+          logger?.warn?.({ component: 'room-registry', slug: id, err: e?.message }, 'Failed to parse meta');
+          return memory.get(id) || null;
+        }
       } catch (e) {
-        logger?.warn?.({ component: 'room-registry', slug: id, err: e?.message }, 'Failed to parse meta');
-        return null;
+        logger?.warn?.({ component: 'room-registry', slug: id, err: e?.message }, 'Redis unavailable; falling back to memory for get.');
+        return memory.get(id) || null;
       }
     }
     if (useFs) {
