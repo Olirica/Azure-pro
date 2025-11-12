@@ -14,6 +14,7 @@ const { createTranslator } = require('./translator');
 const { createTtsQueue } = require('./tts');
 const { createWatchdog } = require('./watchdog');
 const { createStateStore } = require('./state-store');
+const { createRoomRegistry } = require('./room-registry');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -42,6 +43,20 @@ const app = express();
 app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 app.use(metrics.httpMetricsMiddleware);
+
+// Gate admin UI behind ADMIN_TOKEN when set. Accept header or ?token=
+app.use((req, res, next) => {
+  if ((req.path === '/admin.html' || req.path === '/admin') && ADMIN_TOKEN) {
+    const provided = req.get('x-admin-token') || req.query.token;
+    if (!provided || provided !== ADMIN_TOKEN) {
+      return res
+        .status(401)
+        .send('Unauthorized. Provide x-admin-token header or ?token=<ADMIN_TOKEN> to access admin.');
+    }
+  }
+  next();
+});
+
 app.use(express.static(PUBLIC_DIR));
 
 const server = http.createServer(app);
@@ -111,6 +126,20 @@ const stateStore = createStateStore({
   maxUnits: PATCH_LRU_PER_ROOM,
   maxPatches: PATCH_LRU_PER_ROOM
 });
+
+// Minimal room registry (Redis-backed if available)
+const roomRegistry = createRoomRegistry({ logger, redisClient: stateStore?.client });
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+
+function parseMillis(value) {
+  if (value == null) return 0;
+  if (typeof value === 'number') return value;
+  const n = Number(value);
+  if (Number.isFinite(n)) return n;
+  const d = new Date(String(value));
+  const t = d.getTime();
+  return Number.isFinite(t) ? t : 0;
+}
 
 const WS_VERBOSE =
   process.env.WS_VERBOSE_LOG === 'true' ||
@@ -447,6 +476,78 @@ app.get('/healthz', (req, res) => {
 
 app.get('/metrics', metrics.sendMetrics);
 
+// Admin: upsert room metadata (requires ADMIN_TOKEN)
+app.post('/api/admin/rooms', async (req, res) => {
+  try {
+    if (!ADMIN_TOKEN || req.get('x-admin-token') !== ADMIN_TOKEN) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+    const body = req.body || {};
+    const slug = String(body.slug || '').trim().toLowerCase();
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Missing slug' });
+    }
+    const baseCode = String(body.code || '').trim();
+    const listenerCode = String(body.listenerCode || baseCode || '').trim() || undefined;
+    const speakerCode = String(
+      body.speakerCode || (baseCode ? `${baseCode}-speaker` : '') || ''
+    ).trim() || undefined;
+    const meta = {
+      slug,
+      title: String(body.title || '').trim(),
+      startsAt: parseMillis(body.startsAt),
+      endsAt: parseMillis(body.endsAt),
+      sourceLang: String(body.sourceLang || '').trim(),
+      autoDetectLangs: Array.isArray(body.autoDetectLangs)
+        ? body.autoDetectLangs
+        : String(body.autoDetectLangs || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+      defaultTargetLangs: Array.isArray(body.defaultTargetLangs)
+        ? body.defaultTargetLangs
+        : String(body.defaultTargetLangs || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+    };
+    const saved = await roomRegistry.upsert(meta, {
+      speakerCode,
+      listenerCode
+    });
+    return res.json({ ok: true, room: saved });
+  } catch (err) {
+    logger.error({ component: 'admin', err: err?.message }, 'Failed to upsert room');
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
+// Public: fetch room defaults/meta
+app.get('/api/rooms/:slug', async (req, res) => {
+  try {
+    const meta = await roomRegistry.get(req.params.slug);
+    if (!meta) return res.status(404).json({ ok: false, error: 'Not found' });
+    return res.json({ ok: true, room: roomRegistry.cleanMeta(meta) });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
+// Access: resolve a code to { slug, role }
+app.post('/api/access/resolve', async (req, res) => {
+  try {
+    const code = String(req.body?.code || '').trim();
+    if (!code) return res.status(400).json({ ok: false, error: 'Missing code' });
+    const resolved = await roomRegistry.resolveCode(code);
+    if (!resolved) return res.status(404).json({ ok: false, error: 'Code not found' });
+    const meta = await roomRegistry.get(resolved.slug);
+    const win = roomRegistry.windowState(meta);
+    return res.json({ ok: true, ...resolved, window: win.state });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
 app.get('/api/config', (_req, res) => {
   res.json({
     recognitionMode: RECOGNITION_MODE,
@@ -526,6 +627,21 @@ app.post('/api/segments', async (req, res) => {
     metrics.dropPatch(roomId, 'missing_patch');
     return res.status(400).json({ ok: false, error: 'Invalid patch payload.' });
   }
+  // Enforce room window if registry has metadata
+  try {
+    const meta = await roomRegistry.get(roomId);
+    if (meta) {
+      const win = roomRegistry.windowState(meta);
+      if (win.state === 'early') {
+        return res.status(403).json({ ok: false, error: 'Room not yet open' });
+      }
+      if (win.state === 'expired') {
+        return res.status(410).json({ ok: false, error: 'Room expired' });
+      }
+    }
+  } catch (e) {
+    logger.warn({ component: 'admin', err: e?.message }, 'Room window check failed');
+  }
   const room = ensureRoom(roomId);
   if (room.ready) {
     await room.ready;
@@ -567,6 +683,23 @@ wsServer.on('connection', async (socket, request) => {
     const lang = url.searchParams.get('lang') || 'source';
     const wantsTts = url.searchParams.get('tts') === 'true';
     const requestedVoice = url.searchParams.get('voice') || undefined;
+    // Enforce room window if registry has metadata
+    try {
+      const meta = await roomRegistry.get(roomId);
+      if (meta) {
+        const win = roomRegistry.windowState(meta);
+        if (win.state === 'early') {
+          socket.close(4403, 'Room not yet open');
+          return;
+        }
+        if (win.state === 'expired') {
+          socket.close(4410, 'Room expired');
+          return;
+        }
+      }
+    } catch (e) {
+      logger.warn({ component: 'admin', err: e?.message }, 'Room window check failed');
+    }
     const room = ensureRoom(roomId);
     if (room.ready) {
       await room.ready;
@@ -732,6 +865,11 @@ function shutdown(signal) {
   }
   server.close(() => {
     logger.info('HTTP server closed.');
+    if (roomRegistry && typeof roomRegistry.close === 'function') {
+      roomRegistry.close().catch((err) =>
+        logger.warn({ component: 'room-registry', err: err?.message }, 'Failed to close registry.')
+      );
+    }
     if (stateStore && typeof stateStore.close === 'function') {
       stateStore.close().catch((err) =>
         logger.warn({ component: 'state-store', err: err?.message }, 'Failed to close store.')

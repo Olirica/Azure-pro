@@ -68,6 +68,16 @@ Prometheus metrics are served from `http://localhost:3000/metrics`. Health check
 
 Admin dashboard (`/admin.html`) works with all modes. Without persistence, saved rooms vanish after a restart.
 
+## Admin
+
+- Access: when `ADMIN_TOKEN` is set, you must include it as the `x-admin-token` header or append `?token=YOUR_TOKEN` to `/admin.html`.
+- Fields:
+  - Slug: URL-safe room id (auto-generated from Title when left blank).
+  - Title: display name for the room.
+  - Starts/Ends: datetime-local pickers (calendar/time UI).
+  - Languages: enter one value for a fixed source; enter multiple to enable auto-detect across the list.
+  - Default Target Languages: comma-separated list used for default fan-out.
+
 ## Scripts
 
 - `npm run dev` – start server in development mode.

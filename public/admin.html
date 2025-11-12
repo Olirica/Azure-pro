@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Admin • Rooms</title>
+    <title>Admin · Rooms</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -26,39 +26,38 @@
 
       <div class="rounded-lg border border-slate-700 bg-card p-6 shadow">
         <form id="roomForm" class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium mb-1">Admin Token</label>
-            <input id="adminToken" type="password" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring" placeholder="Required to save" />
+          <div class="flex items-center justify-between gap-4">
+            <div class="text-sm text-muted">Access requires ADMIN_TOKEN; append ?token=... to the URL.</div>
+            <div class="flex items-center gap-2">
+              <input id="adminToken" type="password" class="w-52 rounded-md border border-slate-600 bg-transparent px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring" placeholder="Admin token" />
+              <button id="saveTokenBtn" type="button" class="rounded-md bg-sky-500 px-3 py-2 font-semibold text-slate-900 hover:brightness-110">Use Token</button>
+            </div>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label class="block text-sm font-medium mb-1">Slug</label>
-              <input id="slug" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., launch-2025" required />
+              <input id="slug" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., launch-2025" />
+              <p class="mt-1 text-xs text-muted">URL-safe id for the room. Leave blank to auto-generate from Title.</p>
             </div>
             <div>
-              <label class="block text-sm font-medium mb-1">Title</label>
-              <input id="title" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="Optional" />
+              <label class="block text-sm font-medium mb-1">Title (display)</label>
+              <input id="title" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="Conference name, session, etc." />
             </div>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label class="block text-sm font-medium mb-1">Starts At</label>
-              <input id="startsAt" type="datetime-local" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" />
+              <input id="startsAt" type="datetime-local" step="60" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" />
             </div>
             <div>
               <label class="block text-sm font-medium mb-1">Ends At</label>
-              <input id="endsAt" type="datetime-local" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" />
+              <input id="endsAt" type="datetime-local" step="60" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" />
             </div>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm font-medium mb-1">Source Language</label>
-              <input id="sourceLang" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., auto or en-US" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium mb-1">Auto-Detect Languages</label>
-              <input id="autoDetectLangs" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., en-US,fr-FR,es-ES" />
-            </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Languages</label>
+            <input id="languages" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., en-US or en-US,fr-FR,es-ES" />
+            <p class="mt-1 text-xs text-muted">Enter one to set a fixed source language. Enter multiple to enable auto-detect across them.</p>
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">Default Target Languages</label>
@@ -81,33 +80,76 @@
     </main>
 
     <script>
-      function toMillis(dt) {
-        if (!dt) return 0;
-        try { return new Date(dt).getTime() || 0; } catch { return 0; }
+      function toMillis(dt) { if (!dt) return 0; try { return new Date(dt).getTime() || 0; } catch { return 0; } }
+      function slugify(input) {
+        return String(input || '')
+          .toLowerCase()
+          .normalize('NFKD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 64);
       }
+      function parseList(value) { return String(value || '').split(',').map((s) => s.trim()).filter(Boolean); }
+      function getTokenFromUrl() { try { return new URL(window.location.href).searchParams.get('token') || ''; } catch { return ''; } }
+
+      (function initToken() {
+        const urlToken = getTokenFromUrl();
+        if (urlToken) {
+          sessionStorage.setItem('adminToken', urlToken);
+          document.getElementById('adminToken').value = urlToken;
+        } else {
+          const saved = sessionStorage.getItem('adminToken') || '';
+          if (saved) document.getElementById('adminToken').value = saved;
+        }
+      })();
+
+      document.getElementById('saveTokenBtn').addEventListener('click', () => {
+        const token = document.getElementById('adminToken').value.trim();
+        if (token) {
+          sessionStorage.setItem('adminToken', token);
+          const u = new URL(window.location.href);
+          if (u.searchParams.get('token') !== token) {
+            u.searchParams.set('token', token);
+            window.location.replace(u.toString());
+          }
+        }
+      });
+
+      document.getElementById('title').addEventListener('input', (e) => {
+        const slugEl = document.getElementById('slug');
+        if (!slugEl.value.trim()) slugEl.value = slugify(e.target.value);
+      });
 
       document.getElementById('roomForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         const statusEl = document.getElementById('status');
         statusEl.textContent = '';
+
+        const title = document.getElementById('title').value.trim();
+        let slug = document.getElementById('slug').value.trim();
+        if (!slug) slug = slugify(title);
+        if (!slug) { statusEl.textContent = 'Slug or Title required.'; return; }
+
+        const langs = parseList(document.getElementById('languages').value);
+        let sourceLang = '';
+        let autoDetectLangs = [];
+        if (langs.length <= 1) { sourceLang = langs[0] || ''; } else { sourceLang = 'auto'; autoDetectLangs = langs; }
+
         const payload = {
-          slug: document.getElementById('slug').value.trim(),
-          title: document.getElementById('title').value.trim(),
+          slug,
+          title,
           startsAt: toMillis(document.getElementById('startsAt').value),
           endsAt: toMillis(document.getElementById('endsAt').value),
-          sourceLang: document.getElementById('sourceLang').value.trim(),
-          autoDetectLangs: document.getElementById('autoDetectLangs').value,
-          defaultTargetLangs: document.getElementById('defaultTargetLangs').value
+          sourceLang,
+          autoDetectLangs,
+          defaultTargetLangs: parseList(document.getElementById('defaultTargetLangs').value)
         };
         const baseCode = document.getElementById('baseCode').value.trim();
-        if (baseCode) {
-          payload.code = baseCode;
-        }
-        const token = document.getElementById('adminToken').value.trim();
-        if (!token) {
-          statusEl.textContent = 'Admin token required.';
-          return;
-        }
+        if (baseCode) payload.code = baseCode;
+
+        const token = (sessionStorage.getItem('adminToken') || '').trim();
+        if (!token) { statusEl.textContent = 'Admin token required.'; return; }
         try {
           const res = await fetch('/api/admin/rooms', {
             method: 'POST',
@@ -115,9 +157,7 @@
             body: JSON.stringify(payload)
           });
           const body = await res.json();
-          if (!res.ok || !body?.ok) {
-            throw new Error(body?.error || 'Save failed');
-          }
+          if (!res.ok || !body?.ok) throw new Error(body?.error || 'Save failed');
           statusEl.textContent = 'Saved.';
         } catch (err) {
           statusEl.textContent = 'Error: ' + (err?.message || 'unknown');
@@ -126,3 +166,4 @@
     </script>
   </body>
   </html>
+
