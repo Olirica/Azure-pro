@@ -88,6 +88,15 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
     }
     next();
   });
+  // Also serve the same client index for speaker/listener routes
+  for (const route of ['/listener.html', '/speaker.html', '/listener', '/speaker']) {
+    app.get(route, (req, res, next) => {
+      if (fs.existsSync(adminIndex)) {
+        return res.sendFile(adminIndex);
+      }
+      next();
+    });
+  }
 }
 
 app.use(express.static(PUBLIC_DIR));
