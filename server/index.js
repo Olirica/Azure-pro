@@ -39,19 +39,34 @@ const logger = pino({
   base: null
 });
 
+function parseCookies(req) {
+  const header = req.headers?.cookie || '';
+  const out = {};
+  header.split(';').forEach((part) => {
+    const i = part.indexOf('=');
+    if (i > -1) {
+      const k = part.slice(0, i).trim();
+      const v = decodeURIComponent(part.slice(i + 1).trim());
+      if (k) out[k] = v;
+    }
+  });
+  return out;
+}
+
 const app = express();
 app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 app.use(metrics.httpMetricsMiddleware);
 
-// Gate admin UI behind ADMIN_TOKEN when set. Accept header or ?token=
+// Gate admin UI behind ADMIN_TOKEN when set. Allow /admin (login page) without token.
 app.use((req, res, next) => {
-  if ((req.path === '/admin.html' || req.path === '/admin') && ADMIN_TOKEN) {
-    const provided = req.get('x-admin-token') || req.query.token;
-    if (!provided || provided !== ADMIN_TOKEN) {
-      return res
-        .status(401)
-        .send('Unauthorized. Provide x-admin-token header or ?token=<ADMIN_TOKEN> to access admin.');
+  if (ADMIN_TOKEN && req.path === '/admin.html') {
+    const headerToken = req.get('x-admin-token');
+    const queryToken = req.query?.token;
+    const cookieToken = parseCookies(req).admin_token;
+    const provided = headerToken || queryToken || cookieToken;
+    if (provided !== ADMIN_TOKEN) {
+      return res.redirect(302, '/admin');
     }
   }
   next();
@@ -479,7 +494,9 @@ app.get('/metrics', metrics.sendMetrics);
 // Admin: upsert room metadata (requires ADMIN_TOKEN)
 app.post('/api/admin/rooms', async (req, res) => {
   try {
-    if (!ADMIN_TOKEN || req.get('x-admin-token') !== ADMIN_TOKEN) {
+    const cookieToken = parseCookies(req).admin_token;
+    const headerToken = req.get('x-admin-token');
+    if (!ADMIN_TOKEN || (headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN)) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
     const body = req.body || {};
@@ -520,6 +537,34 @@ app.post('/api/admin/rooms', async (req, res) => {
     logger.error({ component: 'admin', err: err?.message }, 'Failed to upsert room');
     return res.status(500).json({ ok: false, error: err?.message });
   }
+});
+
+// Admin: login to set cookie
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    if (!ADMIN_TOKEN) {
+      return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
+    }
+    const token = String(req.body?.token || '').trim();
+    if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
+    if (token !== ADMIN_TOKEN) return res.status(401).json({ ok: false, error: 'Invalid token' });
+    const secure = (req.secure || req.headers['x-forwarded-proto'] === 'https') && process.env.NODE_ENV !== 'development';
+    res.cookie('admin_token', ADMIN_TOKEN, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
+// Admin: logout to clear cookie
+app.post('/api/admin/logout', (req, res) => {
+  const secure = (req.secure || req.headers['x-forwarded-proto'] === 'https') && process.env.NODE_ENV !== 'development';
+  res.cookie('admin_token', '', { httpOnly: true, sameSite: 'lax', secure, expires: new Date(0) });
+  res.json({ ok: true });
 });
 
 // Public: fetch room defaults/meta
