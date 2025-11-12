@@ -509,8 +509,23 @@ function broadcastAudio(room, payload) {
   }
 }
 
-app.get('/healthz', (req, res) => {
-  res.json({ ok: true, rooms: Array.from(rooms.keys()) });
+app.get('/healthz', async (_req, res) => {
+  const roomIds = Array.from(rooms.keys());
+  const status = { configured: Boolean(process.env.REDIS_URL), up: false };
+  try {
+    if (stateStore?.client && typeof stateStore.client.ping === 'function') {
+      const pong = await stateStore.client.ping();
+      status.up = pong === 'PONG';
+    } else if (roomRegistry && typeof roomRegistry.redisStatus === 'function') {
+      const s = await roomRegistry.redisStatus();
+      status.configured = Boolean(s?.configured);
+      status.up = Boolean(s?.up);
+      if (s?.error) status.error = s.error;
+    }
+  } catch (e) {
+    status.error = e?.message;
+  }
+  res.json({ ok: true, rooms: roomIds, redis: status });
 });
 
 app.get('/metrics', metrics.sendMetrics);
