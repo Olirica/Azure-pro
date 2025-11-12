@@ -32,7 +32,8 @@ function parseList(value: string): string[] {
 }
 
 export function AdminApp() {
-  const [authed, setAuthed] = useState<boolean | null>(null)
+  // Default to NOT authed; show login until server confirms
+  const [authed, setAuthed] = useState<boolean>(false)
   const [token, setToken] = useState('')
   const [title, setTitle] = useState('')
   const [slug, setSlug] = useState('')
@@ -44,9 +45,9 @@ export function AdminApp() {
 
   useEffect(() => {
     // Check auth on mount
-    fetch('/api/admin/check').then(async (r) => {
-      setAuthed(r.ok)
-    }).catch(() => setAuthed(false))
+    fetch('/api/admin/check')
+      .then((r) => setAuthed(r.ok))
+      .catch(() => setAuthed(false))
   }, [])
 
   useEffect(() => {
@@ -121,7 +122,7 @@ export function AdminApp() {
     }
   }
 
-  if (authed === false) {
+  if (!authed) {
     return (
       <main className="container mx-auto max-w-md p-6">
         <h1 className="text-2xl font-semibold mb-4">Admin Login</h1>
@@ -143,6 +144,10 @@ export function AdminApp() {
     <main className="container mx-auto max-w-2xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Room Admin</h1>
       <form onSubmit={onSave} className="rounded-lg border border-slate-700 bg-slate-800/60 p-6 shadow space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-slate-400">Authenticated</div>
+          <Button type="button" variant="outline" onClick={async ()=>{ try { await fetch('/api/admin/logout', { method: 'POST' }); } catch {} setAuthed(false); }}>Log out</Button>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
