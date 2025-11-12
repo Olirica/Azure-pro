@@ -593,7 +593,8 @@ app.post('/api/admin/login', async (req, res) => {
     res.cookie('admin_token', ADMIN_TOKEN, {
       httpOnly: true,
       sameSite: 'lax',
-      secure
+      secure,
+      path: '/'
     });
     return res.json({ ok: true });
   } catch (err) {

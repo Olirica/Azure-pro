@@ -83,17 +83,16 @@ export function AdminApp() {
       setStatus('Slug or Title required.')
       return
     }
-    if (!token) {
-      setStatus('Admin token required.')
-      return
-    }
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      // As a fallback, allow header token when not authenticated (dev convenience)
+      if (!authed && token) {
+        headers['x-admin-token'] = token
+      }
       const res = await fetch('/api/admin/rooms', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': token
-        },
+        headers,
+        credentials: 'include',
         body: JSON.stringify(payload)
       })
       const body = await res.json().catch(() => ({}))
@@ -111,6 +110,7 @@ export function AdminApp() {
       const res = await fetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ token })
       })
       const body = await res.json().catch(() => ({}))
