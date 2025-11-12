@@ -2,6 +2,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const express = require('express');
 const pino = require('pino');
@@ -19,6 +20,7 @@ const { createRoomRegistry } = require('./room-registry');
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const CLIENT_DIST_DIR = path.join(__dirname, '..', 'client', 'dist');
 
 function getNumberEnv(keys, fallback) {
   const list = Array.isArray(keys) ? keys : [keys];
@@ -39,23 +41,53 @@ const logger = pino({
   base: null
 });
 
+function parseCookies(req) {
+  const header = req.headers?.cookie || '';
+  const out = {};
+  header.split(';').forEach((part) => {
+    const i = part.indexOf('=');
+    if (i > -1) {
+      const k = part.slice(0, i).trim();
+      const v = decodeURIComponent(part.slice(i + 1).trim());
+      if (k) out[k] = v;
+    }
+  });
+  return out;
+}
+
 const app = express();
 app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 app.use(metrics.httpMetricsMiddleware);
 
-// Gate admin UI behind ADMIN_TOKEN when set. Accept header or ?token=
+// Gate admin UI behind ADMIN_TOKEN when set. Allow /admin (login page) without token.
 app.use((req, res, next) => {
-  if ((req.path === '/admin.html' || req.path === '/admin') && ADMIN_TOKEN) {
-    const provided = req.get('x-admin-token') || req.query.token;
-    if (!provided || provided !== ADMIN_TOKEN) {
-      return res
-        .status(401)
-        .send('Unauthorized. Provide x-admin-token header or ?token=<ADMIN_TOKEN> to access admin.');
+  if (ADMIN_TOKEN && !DISABLE_ADMIN_AUTH && req.path === '/admin.html') {
+    const headerToken = req.get('x-admin-token');
+    const queryToken = req.query?.token;
+    const cookieToken = parseCookies(req).admin_token;
+    const provided = headerToken || queryToken || cookieToken;
+    if (provided !== ADMIN_TOKEN) {
+      return res.redirect(302, '/admin');
     }
   }
   next();
 });
+
+// If the client build exists, serve its assets under /assets and send its index for /admin.html
+if (fs.existsSync(CLIENT_DIST_DIR)) {
+  const adminIndex = path.join(CLIENT_DIST_DIR, 'index.html');
+  const assetsDir = path.join(CLIENT_DIST_DIR, 'assets');
+  if (fs.existsSync(assetsDir)) {
+    app.use('/assets', express.static(assetsDir));
+  }
+  app.get('/admin.html', (req, res, next) => {
+    if (fs.existsSync(adminIndex)) {
+      return res.sendFile(adminIndex);
+    }
+    next();
+  });
+}
 
 app.use(express.static(PUBLIC_DIR));
 
@@ -130,6 +162,8 @@ const stateStore = createStateStore({
 // Minimal room registry (Redis-backed if available)
 const roomRegistry = createRoomRegistry({ logger, redisClient: stateStore?.client });
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const DISABLE_ADMIN_AUTH =
+  process.env.NODE_ENV === 'development' || process.env.DISABLE_ADMIN_AUTH === 'true';
 
 function parseMillis(value) {
   if (value == null) return 0;
@@ -479,7 +513,9 @@ app.get('/metrics', metrics.sendMetrics);
 // Admin: upsert room metadata (requires ADMIN_TOKEN)
 app.post('/api/admin/rooms', async (req, res) => {
   try {
-    if (!ADMIN_TOKEN || req.get('x-admin-token') !== ADMIN_TOKEN) {
+    const cookieToken = parseCookies(req).admin_token;
+    const headerToken = req.get('x-admin-token');
+    if (!DISABLE_ADMIN_AUTH && ADMIN_TOKEN && headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
     const body = req.body || {};
@@ -487,7 +523,9 @@ app.post('/api/admin/rooms', async (req, res) => {
     if (!slug) {
       return res.status(400).json({ ok: false, error: 'Missing slug' });
     }
-    const baseCode = String(body.code || '').trim();
+    // Default: use slug as join code (listener=<slug>, speaker=<slug>-speaker)
+    const baseCodeRaw = String(body.code || '').trim();
+    const baseCode = baseCodeRaw || slug;
     const listenerCode = String(body.listenerCode || baseCode || '').trim() || undefined;
     const speakerCode = String(
       body.speakerCode || (baseCode ? `${baseCode}-speaker` : '') || ''
@@ -520,6 +558,35 @@ app.post('/api/admin/rooms', async (req, res) => {
     logger.error({ component: 'admin', err: err?.message }, 'Failed to upsert room');
     return res.status(500).json({ ok: false, error: err?.message });
   }
+});
+
+// Admin: login to set cookie
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    if (!ADMIN_TOKEN || DISABLE_ADMIN_AUTH) {
+      // Dev mode or not configured: allow access without strict auth
+      return res.json({ ok: true, dev: true });
+    }
+    const token = String(req.body?.token || '').trim();
+    if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
+    if (token !== ADMIN_TOKEN) return res.status(401).json({ ok: false, error: 'Invalid token' });
+    const secure = (req.secure || req.headers['x-forwarded-proto'] === 'https') && process.env.NODE_ENV !== 'development';
+    res.cookie('admin_token', ADMIN_TOKEN, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
+// Admin: logout to clear cookie
+app.post('/api/admin/logout', (req, res) => {
+  const secure = (req.secure || req.headers['x-forwarded-proto'] === 'https') && process.env.NODE_ENV !== 'development';
+  res.cookie('admin_token', '', { httpOnly: true, sameSite: 'lax', secure, expires: new Date(0) });
+  res.json({ ok: true });
 });
 
 // Public: fetch room defaults/meta
