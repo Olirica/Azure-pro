@@ -609,6 +609,25 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+// Admin: list rooms (requires ADMIN_TOKEN in production)
+app.get('/api/admin/rooms', async (req, res) => {
+  try {
+    const cookieToken = parseCookies(req).admin_token;
+    const headerToken = req.get('x-admin-token');
+    if (process.env.NODE_ENV === 'production') {
+      if (!ADMIN_TOKEN) return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
+      if (headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN) {
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+      }
+    }
+    const list = await roomRegistry.list(500);
+    return res.json({ ok: true, rooms: Array.isArray(list) ? list : [] });
+  } catch (err) {
+    logger.error({ component: 'admin', err: err?.message }, 'Failed to list rooms');
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
 // Admin: check auth status
 app.get('/api/admin/check', (req, res) => {
   if (ADMIN_DEV_BYPASS) {

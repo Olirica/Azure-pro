@@ -42,6 +42,7 @@ export function AdminApp() {
   const [languages, setLanguages] = useState('')
   const [defaultTargets, setDefaultTargets] = useState('')
   const [status, setStatus] = useState('')
+  const [rooms, setRooms] = useState<any[]>([])
 
   useEffect(() => {
     // Check auth on mount
@@ -49,6 +50,19 @@ export function AdminApp() {
       .then((r) => setAuthed(r.ok))
       .catch(() => setAuthed(false))
   }, [])
+
+  async function loadRooms() {
+    try {
+      const r = await fetch('/api/admin/rooms', { credentials: 'include' })
+      if (!r.ok) return
+      const data = await r.json().catch(() => ({}))
+      if (data?.rooms && Array.isArray(data.rooms)) setRooms(data.rooms)
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (authed) loadRooms()
+  }, [authed])
 
   useEffect(() => {
     if (!slug && title) setSlug(slugify(title))
@@ -98,6 +112,7 @@ export function AdminApp() {
       const body = await res.json().catch(() => ({}))
       if (!res.ok || !body?.ok) throw new Error(body?.error || 'Save failed')
       setStatus('Saved.')
+      loadRooms()
     } catch (err: any) {
       setStatus('Error: ' + (err?.message || 'unknown'))
     }
@@ -188,8 +203,35 @@ export function AdminApp() {
         <div className="flex items-center gap-3 pt-2">
           <Button type="submit">Save Room</Button>
           <span className={cn('text-sm', status.startsWith('Error') ? 'text-red-400' : 'text-slate-400')}>{status}</span>
+          <Button type="button" variant="outline" onClick={loadRooms}>Refresh</Button>
         </div>
       </form>
+
+      <section className="mt-6 rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold">Rooms</h2>
+          <span className="text-sm text-slate-400">{rooms.length} total</span>
+        </div>
+        <div className="space-y-2">
+          {rooms.map((r) => (
+            <div key={r.slug} className="rounded-md border border-slate-700 p-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">{r.title || r.slug}</div>
+                <code className="text-xs opacity-80">{r.slug}</code>
+              </div>
+              <div className="text-sm text-slate-300 mt-1">
+                <span className="opacity-70">Source:</span> {r.sourceLang || '—'}; <span className="opacity-70">Auto:</span> {(r.autoDetectLangs || []).join(', ') || '—'}; <span className="opacity-70">Targets:</span> {(r.defaultTargetLangs || []).join(', ') || '—'}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                <span className="opacity-70">Window:</span> {r.startsAt ? new Date(r.startsAt).toLocaleString() : '—'} → {r.endsAt ? new Date(r.endsAt).toLocaleString() : '—'}
+              </div>
+            </div>
+          ))}
+          {!rooms.length && (
+            <div className="text-sm text-slate-400">No rooms yet.</div>
+          )}
+        </div>
+      </section>
     </main>
   )
 }
