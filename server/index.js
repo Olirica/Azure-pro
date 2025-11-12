@@ -41,6 +41,16 @@ const logger = pino({
   base: null
 });
 
+// Optional version endpoint for quick verification
+const PKG = (() => {
+  try {
+    // eslint-disable-next-line global-require
+    return require('../package.json');
+  } catch {
+    return { version: '0.0.0-dev' };
+  }
+})();
+
 function parseCookies(req) {
   const header = req.headers?.cookie || '';
   const out = {};
@@ -63,7 +73,7 @@ app.use(metrics.httpMetricsMiddleware);
 // Do not gate the admin UI route here. The React app handles login UX; APIs enforce auth.
 app.use((req, _res, next) => next());
 
-// If the client build exists, serve its assets under /assets and send its index for /admin.html
+// If the client build exists, serve its assets and mount SPA routes (Express 5 safe)
 if (fs.existsSync(CLIENT_DIST_DIR)) {
   logger.info({ component: 'admin-ui', dir: CLIENT_DIST_DIR }, 'Serving admin client from dist.');
   const adminIndex = path.join(CLIENT_DIST_DIR, 'index.html');
@@ -71,22 +81,17 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
   if (fs.existsSync(assetsDir)) {
     app.use('/assets', express.static(assetsDir));
   }
-  // Serve SPA for admin and related routes
-  const serveSpa = (req, res, next) => {
-    if (fs.existsSync(adminIndex)) {
-      return res.sendFile(adminIndex);
-    }
-    next();
+  const serveSpa = (_req, res, next) => {
+    if (fs.existsSync(adminIndex)) return res.sendFile(adminIndex);
+    return next();
   };
-  app.get('/admin', serveSpa);
-  app.get('/admin/:path(*)', serveSpa);
-  app.get('/admin.html', serveSpa);
-  // Also serve the same client index for speaker/listener routes
-  for (const route of ['/listener.html', '/speaker.html', '/listener', '/speaker']) {
-    app.get(route, serveSpa);
-  }
-  app.get('/listener/:path(*)', serveSpa);
-  app.get('/speaker/:path(*)', serveSpa);
+  // Admin SPA (/admin and any subpath)
+  app.get(/^\/admin(?:\/.*)?$/, serveSpa);
+  // Listener/Speaker SPA
+  app.get(/^\/listener(?:\/.*)?$/, serveSpa);
+  app.get(/^\/speaker(?:\/.*)?$/, serveSpa);
+  // Back-compat .html entry points
+  app.get(/^\/(?:admin|listener|speaker)\.html$/, serveSpa);
 }
 
 app.use(express.static(PUBLIC_DIR));
@@ -510,6 +515,12 @@ app.get('/healthz', (req, res) => {
 
 app.get('/metrics', metrics.sendMetrics);
 
+// Version info
+app.get('/version', (req, res) => {
+  const commit = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || '';
+  res.json({ ok: true, version: PKG.version, commit: commit || null });
+});
+
 // Admin: upsert room metadata (requires ADMIN_TOKEN)
 app.post('/api/admin/rooms', async (req, res) => {
   try {
@@ -922,7 +933,8 @@ setInterval(() => {
 }, 5000).unref();
 
 server.listen(PORT, HOST, () => {
-  logger.info({ port: PORT, host: HOST }, 'Server listening.');
+  const COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || '';
+  logger.info({ port: PORT, host: HOST, commit: COMMIT ? COMMIT.slice(0, 7) : 'dev' }, 'Server listening.');
 });
 
 process.on('SIGINT', shutdown);
