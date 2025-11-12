@@ -149,11 +149,17 @@ function createStateStore({ logger, maxUnits, maxPatches }) {
   const fsDir = process.env.FS_STORE_DIR;
 
   if (url) {
-    const redis = new Redis(url, {
-      lazyConnect: true,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: true
-    });
+  const tls =
+    (typeof url === 'string' && url.startsWith('rediss://')) || process.env.REDIS_TLS === 'true'
+      ? { rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false' }
+      : undefined;
+
+  const redis = new Redis(url, {
+    lazyConnect: true,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    ...(tls ? { tls } : {})
+  });
 
     redis.on('error', (err) => {
       logger.error({ component: 'state-store', err: err?.message }, 'Redis error.');

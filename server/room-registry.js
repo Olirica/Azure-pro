@@ -32,7 +32,16 @@ function createRoomRegistry({ logger, redisClient } = {}) {
   let redis = redisClient || null;
   if (!redis && useRedis) {
     const url = process.env.REDIS_URL;
-    redis = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: null, enableReadyCheck: true });
+    const tls =
+      (typeof url === 'string' && url.startsWith('rediss://')) || process.env.REDIS_TLS === 'true'
+        ? { rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false' }
+        : undefined;
+    redis = new Redis(url, {
+      lazyConnect: true,
+      maxRetriesPerRequest: null,
+      enableReadyCheck: true,
+      ...(tls ? { tls } : {})
+    });
     redis.on('error', (err) => logger?.warn?.({ component: 'room-registry', err: err?.message }, 'Redis error.'));
   }
 
