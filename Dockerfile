@@ -24,6 +24,7 @@ COPY package*.json ./
 # App source
 COPY server/ ./server/
 COPY public/ ./public/
+COPY scripts/ ./scripts/
 
 # Built client assets
 COPY --from=client-build /app/client/dist ./client/dist
