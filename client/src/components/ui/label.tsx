@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { cn } from '../../src/lib/utils'
+import { cn } from '../../lib/utils'
 
 export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> {}
 
@@ -13,4 +13,3 @@ const Label = React.forwardRef<HTMLLabelElement, LabelProps>(({ className, ...pr
 Label.displayName = 'Label'
 
 export { Label }
-

@@ -62,7 +62,7 @@ app.use(metrics.httpMetricsMiddleware);
 
 // Gate admin UI behind ADMIN_TOKEN when set. Allow /admin (login page) without token.
 app.use((req, res, next) => {
-  if (ADMIN_TOKEN && req.path === '/admin.html') {
+  if (ADMIN_TOKEN && !DISABLE_ADMIN_AUTH && req.path === '/admin.html') {
     const headerToken = req.get('x-admin-token');
     const queryToken = req.query?.token;
     const cookieToken = parseCookies(req).admin_token;
@@ -162,6 +162,8 @@ const stateStore = createStateStore({
 // Minimal room registry (Redis-backed if available)
 const roomRegistry = createRoomRegistry({ logger, redisClient: stateStore?.client });
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const DISABLE_ADMIN_AUTH =
+  process.env.NODE_ENV === 'development' || process.env.DISABLE_ADMIN_AUTH === 'true';
 
 function parseMillis(value) {
   if (value == null) return 0;
@@ -513,7 +515,7 @@ app.post('/api/admin/rooms', async (req, res) => {
   try {
     const cookieToken = parseCookies(req).admin_token;
     const headerToken = req.get('x-admin-token');
-    if (!ADMIN_TOKEN || (headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN)) {
+    if (!DISABLE_ADMIN_AUTH && ADMIN_TOKEN && headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
     const body = req.body || {};
@@ -561,8 +563,9 @@ app.post('/api/admin/rooms', async (req, res) => {
 // Admin: login to set cookie
 app.post('/api/admin/login', async (req, res) => {
   try {
-    if (!ADMIN_TOKEN) {
-      return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
+    if (!ADMIN_TOKEN || DISABLE_ADMIN_AUTH) {
+      // Dev mode or not configured: allow access without strict auth
+      return res.json({ ok: true, dev: true });
     }
     const token = String(req.body?.token || '').trim();
     if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
