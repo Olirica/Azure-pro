@@ -79,12 +79,14 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
     next();
   };
   app.get('/admin', serveSpa);
-  app.get('/admin/*', serveSpa);
+  app.get('/admin/:path(*)', serveSpa);
   app.get('/admin.html', serveSpa);
   // Also serve the same client index for speaker/listener routes
   for (const route of ['/listener.html', '/speaker.html', '/listener', '/speaker']) {
     app.get(route, serveSpa);
   }
+  app.get('/listener/:path(*)', serveSpa);
+  app.get('/speaker/:path(*)', serveSpa);
 }
 
 app.use(express.static(PUBLIC_DIR));
