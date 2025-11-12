@@ -56,7 +56,6 @@ export function AdminApp() {
   const [endsAt, setEndsAt] = useState('')
   const [languages, setLanguages] = useState('')
   const [defaultTargets, setDefaultTargets] = useState('')
-  const [baseCode, setBaseCode] = useState('')
   const [status, setStatus] = useState('')
 
   useEffect(() => {
@@ -81,9 +80,8 @@ export function AdminApp() {
       autoDetectLangs,
       defaultTargetLangs: parseList(defaultTargets)
     } as any
-    if (baseCode) out.code = baseCode
     return out
-  }, [slug, title, startsAt, endsAt, languages, defaultTargets, baseCode])
+  }, [slug, title, startsAt, endsAt, languages, defaultTargets])
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault()
@@ -170,11 +168,7 @@ export function AdminApp() {
           <Input value={defaultTargets} onChange={(e) => setDefaultTargets(e.target.value)} placeholder="e.g., fr-CA,es-ES" />
         </div>
 
-        <div>
-          <Label className="mb-1 block">Base Code</Label>
-          <Input value={baseCode} onChange={(e) => setBaseCode(e.target.value)} placeholder="e.g., launch-2025" />
-          <p className="mt-1 text-xs text-slate-400">Listener code = Base Code; Speaker code = Base Code + "-speaker"</p>
-        </div>
+        <p className="text-xs text-slate-400">Join codes: listener = <code>slug</code>, speaker = <code>slug-speaker</code>.</p>
 
         <div className="flex items-center gap-3 pt-2">
           <Button type="submit">Save Room</Button>
@@ -184,4 +178,3 @@ export function AdminApp() {
     </main>
   )
 }
-

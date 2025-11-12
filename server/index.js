@@ -521,7 +521,9 @@ app.post('/api/admin/rooms', async (req, res) => {
     if (!slug) {
       return res.status(400).json({ ok: false, error: 'Missing slug' });
     }
-    const baseCode = String(body.code || '').trim();
+    // Default: use slug as join code (listener=<slug>, speaker=<slug>-speaker)
+    const baseCodeRaw = String(body.code || '').trim();
+    const baseCode = baseCodeRaw || slug;
     const listenerCode = String(body.listenerCode || baseCode || '').trim() || undefined;
     const speakerCode = String(
       body.speakerCode || (baseCode ? `${baseCode}-speaker` : '') || ''

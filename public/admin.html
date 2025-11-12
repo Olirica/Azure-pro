@@ -27,11 +27,7 @@
       <div class="rounded-lg border border-slate-700 bg-card p-6 shadow">
         <form id="roomForm" class="space-y-4">
           <div class="flex items-center justify-between gap-4">
-            <div class="text-sm text-muted">Access requires ADMIN_TOKEN; append ?token=... to the URL.</div>
-            <div class="flex items-center gap-2">
-              <input id="adminToken" type="password" class="w-52 rounded-md border border-slate-600 bg-transparent px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring" placeholder="Admin token" />
-              <button id="saveTokenBtn" type="button" class="rounded-md bg-sky-500 px-3 py-2 font-semibold text-slate-900 hover:brightness-110">Use Token</button>
-            </div>
+            <div class="text-sm text-muted">You are logged in. <button id="logoutBtn" type="button" class="underline text-sky-400">Log out</button></div>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -63,11 +59,9 @@
             <label class="block text-sm font-medium mb-1">Default Target Languages</label>
             <input id="defaultTargetLangs" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., fr-CA,es-ES" />
           </div>
-          <div>
-            <label class="block text-sm font-medium mb-1">Base Code</label>
-            <input id="baseCode" type="text" class="w-full rounded-md border border-slate-600 bg-transparent px-3 py-2" placeholder="e.g., launch-2025" />
-            <p class="mt-1 text-xs text-muted">Listener code = Base Code; Speaker code = Base Code + "-speaker"</p>
-          </div>
+      <div>
+            <p class="mt-1 text-xs text-muted">Join codes: listener = <code>slug</code>, speaker = <code>slug-speaker</code>.</p>
+      </div>
 
           <div class="flex items-center gap-3 pt-2">
             <button type="submit" class="inline-flex items-center rounded-md bg-sky-500 px-4 py-2 font-semibold text-slate-900 hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-ring">Save Room</button>
@@ -81,39 +75,12 @@
 
     <script>
       function toMillis(dt) { if (!dt) return 0; try { return new Date(dt).getTime() || 0; } catch { return 0; } }
-      function slugify(input) {
-        return String(input || '')
-          .toLowerCase()
-          .normalize('NFKD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '')
-          .slice(0, 64);
-      }
+      function slugify(input) { return String(input || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64); }
       function parseList(value) { return String(value || '').split(',').map((s) => s.trim()).filter(Boolean); }
-      function getTokenFromUrl() { try { return new URL(window.location.href).searchParams.get('token') || ''; } catch { return ''; } }
 
-      (function initToken() {
-        const urlToken = getTokenFromUrl();
-        if (urlToken) {
-          sessionStorage.setItem('adminToken', urlToken);
-          document.getElementById('adminToken').value = urlToken;
-        } else {
-          const saved = sessionStorage.getItem('adminToken') || '';
-          if (saved) document.getElementById('adminToken').value = saved;
-        }
-      })();
-
-      document.getElementById('saveTokenBtn').addEventListener('click', () => {
-        const token = document.getElementById('adminToken').value.trim();
-        if (token) {
-          sessionStorage.setItem('adminToken', token);
-          const u = new URL(window.location.href);
-          if (u.searchParams.get('token') !== token) {
-            u.searchParams.set('token', token);
-            window.location.replace(u.toString());
-          }
-        }
+      document.getElementById('logoutBtn').addEventListener('click', async () => {
+        try { await fetch('/api/admin/logout', { method: 'POST' }); } catch {}
+        window.location.href = '/admin';
       });
 
       document.getElementById('title').addEventListener('input', (e) => {
@@ -145,15 +112,11 @@
           autoDetectLangs,
           defaultTargetLangs: parseList(document.getElementById('defaultTargetLangs').value)
         };
-        const baseCode = document.getElementById('baseCode').value.trim();
-        if (baseCode) payload.code = baseCode;
 
-        const token = (sessionStorage.getItem('adminToken') || '').trim();
-        if (!token) { statusEl.textContent = 'Admin token required.'; return; }
         try {
           const res = await fetch('/api/admin/rooms', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
           const body = await res.json();
