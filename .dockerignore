@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+client/node_modules
+client/dist
+npm-debug.log*
+Dockerfile*
+.DS_Store
+*.local
+*.env
+*.log
+coverage
+tmp
+

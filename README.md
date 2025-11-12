@@ -78,6 +78,26 @@ Admin dashboard (`/admin.html`) works with all modes. Without persistence, saved
   - Languages: enter one value for a fixed source; enter multiple to enable auto-detect across the list.
   - Default Target Languages: comma-separated list used for default fan-out.
 
+## Deploy to Railway (Single Service, No Dev Deps)
+
+- Recommended: use the provided `Dockerfile` (multi-stage build):
+  - Builds the React/shadcn client in a builder stage
+  - Installs server production deps only in the final runtime image
+  - Serves the built client at `/admin`, `/listener`, `/speaker` (and their `.html` variants)
+
+- Steps:
+  - In Railway, switch the service to “Deploy from Dockerfile” (root `Dockerfile`).
+  - Set env vars:
+    - `ADMIN_TOKEN` (required in prod for admin access)
+    - `SPEECH_KEY`, `SPEECH_REGION` (speaker token + TTS)
+    - `TRANSLATOR_KEY`, `TRANSLATOR_REGION` (optional)
+    - `REDIS_URL` (optional)
+  - Redeploy. Logs should include: `Serving admin client from dist.`
+
+- Result:
+  - No client devDependencies in runtime
+  - Single service on port 3000
+
 ## Scripts
 
 - `npm run dev` – start server in development mode.
