@@ -24,11 +24,9 @@ COPY package*.json ./
 # App source
 COPY server/ ./server/
 COPY public/ ./public/
-COPY docs/ ./docs/
 
 # Built client assets
 COPY --from=client-build /app/client/dist ./client/dist
 
 EXPOSE 3000
 CMD ["node", "server/index.js"]
-
