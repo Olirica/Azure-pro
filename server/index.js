@@ -2,6 +2,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const express = require('express');
 const pino = require('pino');
@@ -19,6 +20,7 @@ const { createRoomRegistry } = require('./room-registry');
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const CLIENT_DIST_DIR = path.join(__dirname, '..', 'client', 'dist');
 
 function getNumberEnv(keys, fallback) {
   const list = Array.isArray(keys) ? keys : [keys];
@@ -71,6 +73,21 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// If the client build exists, serve its assets under /assets and send its index for /admin.html
+if (fs.existsSync(CLIENT_DIST_DIR)) {
+  const adminIndex = path.join(CLIENT_DIST_DIR, 'index.html');
+  const assetsDir = path.join(CLIENT_DIST_DIR, 'assets');
+  if (fs.existsSync(assetsDir)) {
+    app.use('/assets', express.static(assetsDir));
+  }
+  app.get('/admin.html', (req, res, next) => {
+    if (fs.existsSync(adminIndex)) {
+      return res.sendFile(adminIndex);
+    }
+    next();
+  });
+}
 
 app.use(express.static(PUBLIC_DIR));
 
