@@ -128,8 +128,7 @@
 
       function redirectToRole(slug, role) {
         const base = role === 'speaker' ? '/speaker' : '/listener';
-        // Support SPA and back-compat .html
-        const path = `${base}.html?room=${encodeURIComponent(slug)}`;
+        const path = `${base}?room=${encodeURIComponent(slug)}`;
         window.location.href = path;
       }
 

@@ -93,8 +93,11 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
   };
   // Admin SPA (/admin and any subpath)
   app.get(/^\/admin(?:\/.*)?$/, serveSpa);
-  // Serve only admin.html via SPA; listener/speaker use static public pages
-  app.get(/^\/admin\.html$/, serveSpa);
+  // Listener/Speaker SPA
+  app.get(/^\/listener(?:\/.*)?$/, serveSpa);
+  app.get(/^\/speaker(?:\/.*)?$/, serveSpa);
+  // Back-compat .html entry points
+  app.get(/^\/(?:admin|listener|speaker)\.html$/, serveSpa);
 }
 
 app.use(express.static(PUBLIC_DIR));
