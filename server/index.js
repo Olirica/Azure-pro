@@ -854,6 +854,17 @@ app.post('/api/segments', async (req, res) => {
     room.watchdog.markEvent();
 
     const listenerTargets = defaultRoomTargets(room);
+    // Include Admin defaults if present so Speaker doesn't need to pass targets
+    try {
+      const meta2 = await roomRegistry.get(roomId);
+      if (meta2 && Array.isArray(meta2.defaultTargetLangs)) {
+        for (const t of meta2.defaultTargetLangs) {
+          if (t && t !== 'source') listenerTargets.add(t);
+        }
+      }
+    } catch (e) {
+      logger.debug({ component: 'admin', roomId, err: e?.message }, 'Failed to read room meta for default targets.');
+    }
     for (const target of targets) {
       listenerTargets.add(target);
     }
