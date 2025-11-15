@@ -30,6 +30,7 @@ export function SpeakerApp() {
   const [srcLang, setSrcLang] = useState('en-US')
   const [targets, setTargets] = useState('fr-CA')
   const [status, setStatus] = useState('Idle')
+  const [roomMeta, setRoomMeta] = useState<any>(null)
   const recogRef = useRef<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSoftAt = useRef(0)
@@ -79,6 +80,7 @@ export function SpeakerApp() {
         const r = await fetch(`/api/rooms/${encodeURIComponent(room)}`, { cache: 'no-store' })
         const j = await r.json().catch(() => ({} as any))
         if (r.ok && j?.ok && j?.room) meta = j.room
+        if (meta) setRoomMeta(meta)
       } catch {}
 
       const audioConfig = SDK.AudioConfig.fromDefaultMicrophoneInput()
@@ -189,7 +191,11 @@ export function SpeakerApp() {
         </div>
         <div>
           <Label className="mb-1 block">Source language</Label>
-          <Input value={srcLang} onChange={(e)=>setSrcLang(e.target.value)} />
+          {roomMeta?.sourceLang === 'auto' ? (
+            <Input value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(',')})`} readOnly />
+          ) : (
+            <Input value={srcLang} onChange={(e)=>setSrcLang(e.target.value)} />
+          )}
         </div>
         <div>
           <Label className="mb-1 block">Targets</Label>
@@ -204,3 +210,37 @@ export function SpeakerApp() {
     </main>
   )
 }
+  // Initialize room from URL query (?room=slug) once
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href)
+      const r = url.searchParams.get('room')
+      if (r && r.trim()) setRoom(r)
+    } catch {}
+  }, [])
+
+  // When room changes, fetch its meta to populate fields
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        if (!room || !room.trim()) return
+        const res = await fetch(`/api/rooms/${encodeURIComponent(room)}`, { cache: 'no-store' })
+        const body = await res.json().catch(() => ({} as any))
+        if (!cancelled && res.ok && body?.ok && body?.room) {
+          const meta = body.room
+          setRoomMeta(meta)
+          // If fixed source, reflect in input
+          if (meta.sourceLang && meta.sourceLang !== 'auto') {
+            setSrcLang(meta.sourceLang)
+          }
+          // Default targets from meta
+          if (Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
+            setTargets(meta.defaultTargetLangs.join(','))
+          }
+        }
+      } catch {}
+    }
+    load()
+    return () => { cancelled = true }
+  }, [room])
