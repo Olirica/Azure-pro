@@ -178,7 +178,7 @@ function createRoomRegistryPg({ logger } = {}) {
   }
 
   async function get(slug) {
-    const id = String(slug || '').trim().toLowerCase();
+    const id = String(slug || '').trim();
     if (!id) return null;
     const { rows } = await pool.query(
       `SELECT slug, title, source_lang, auto_detect_langs, default_target_langs,
@@ -187,7 +187,7 @@ function createRoomRegistryPg({ logger } = {}) {
               status,
               EXTRACT(EPOCH FROM created_at)*1000 AS created_at_ms,
               EXTRACT(EPOCH FROM updated_at)*1000 AS updated_at_ms
-       FROM rooms WHERE slug = $1 LIMIT 1`,
+       FROM rooms WHERE LOWER(slug) = LOWER($1) LIMIT 1`,
       [id]
     );
     if (!rows.length) return null;
@@ -243,7 +243,7 @@ function createRoomRegistryPg({ logger } = {}) {
     const parsed = parseAccessCode(code);
     if (parsed) {
       const { slug, role } = parsed;
-      const { rows } = await pool.query(`SELECT slug FROM rooms WHERE slug=$1 LIMIT 1`, [slug]);
+      const { rows } = await pool.query(`SELECT slug FROM rooms WHERE LOWER(slug)=LOWER($1) LIMIT 1`, [slug]);
       if (rows.length) return { slug: rows[0].slug, role };
     }
     // Backward compatibility: if deterministic fails, try hashed table
