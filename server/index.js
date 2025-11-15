@@ -588,6 +588,10 @@ app.post('/api/admin/rooms', async (req, res) => {
     }
     const body = req.body || {};
     const slug = String(body.slug || '').trim().toLowerCase();
+    // Prevent ambiguous slugs that collide with role suffix
+    if (/-speaker$/i.test(slug)) {
+      return res.status(400).json({ ok: false, error: "Invalid slug: '-speaker' suffix is reserved for access codes" });
+    }
     if (!slug) {
       return res.status(400).json({ ok: false, error: 'Missing slug' });
     }

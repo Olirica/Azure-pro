@@ -8,6 +8,15 @@ function sha256(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
 }
 
+function parseAccessCode(code) {
+  const raw = String(code || '').trim();
+  if (!raw) return null;
+  const isSpeaker = /-speaker$/i.test(raw);
+  const slug = raw.replace(/-speaker$/i, '').trim().toLowerCase();
+  if (!slug) return null;
+  return { slug, role: isSpeaker ? 'speaker' : 'listener' };
+}
+
 function parseNumber(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -268,20 +277,17 @@ function createRoomRegistry({ logger, redisClient } = {}) {
   }
 
   async function resolveCode(code) {
-    const value = String(code || '').trim();
-    if (!value) return null;
-    // Heuristic: codes may be <slug>-speaker or <slug> for listener
-    const maybeSpeaker = value.toLowerCase().endsWith('-speaker');
-    const slugGuess = maybeSpeaker ? value.slice(0, -8) : value;
-    const meta = await get(slugGuess);
-    if (meta) {
-      // Prefer deterministic mapping when hashes are not present
-      if (!meta.speakerCodeHash && !meta.listenerCodeHash) {
-        return { slug: meta.slug, role: maybeSpeaker ? 'speaker' : 'listener' };
+    const parsed = parseAccessCode(code);
+    if (parsed) {
+      const meta = await get(parsed.slug);
+      if (meta) {
+        if (!meta.speakerCodeHash && !meta.listenerCodeHash) {
+          return { slug: meta.slug, role: parsed.role };
+        }
+        const hashed = sha256(String(code || ''));
+        const role = hashed === meta.speakerCodeHash ? 'speaker' : hashed === meta.listenerCodeHash ? 'listener' : null;
+        if (role) return { slug: meta.slug, role };
       }
-      const hashed = sha256(value);
-      const role = hashed === meta.speakerCodeHash ? 'speaker' : hashed === meta.listenerCodeHash ? 'listener' : null;
-      if (role) return { slug: meta.slug, role };
     }
     return null;
   }

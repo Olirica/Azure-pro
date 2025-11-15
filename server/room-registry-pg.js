@@ -5,6 +5,15 @@ function sha256(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
 }
 
+function parseAccessCode(code) {
+  const raw = String(code || '').trim();
+  if (!raw) return null;
+  const isSpeaker = /-speaker$/i.test(raw);
+  const slug = raw.replace(/-speaker$/i, '').trim().toLowerCase();
+  if (!slug) return null;
+  return { slug, role: isSpeaker ? 'speaker' : 'listener' };
+}
+
 function parseNumber(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -231,21 +240,15 @@ function createRoomRegistryPg({ logger } = {}) {
   }
 
   async function resolveCode(code) {
-    const value = String(code || '').trim();
-    if (!value) return null;
-    // Deterministic codes: <slug> (listener) or <slug>-speaker (speaker)
-    const maybeSpeaker = value.toLowerCase().endsWith('-speaker');
-    const slugGuessRaw = maybeSpeaker ? value.slice(0, -8) : value;
-    const slugGuess = String(slugGuessRaw || '').trim().toLowerCase();
-    if (slugGuess) {
-      const { rows: r1 } = await pool.query(`SELECT slug FROM rooms WHERE slug=$1 LIMIT 1`, [slugGuess]);
-      if (r1.length) {
-        return { slug: r1[0].slug, role: maybeSpeaker ? 'speaker' : 'listener' };
-      }
+    const parsed = parseAccessCode(code);
+    if (parsed) {
+      const { slug, role } = parsed;
+      const { rows } = await pool.query(`SELECT slug FROM rooms WHERE slug=$1 LIMIT 1`, [slug]);
+      if (rows.length) return { slug: rows[0].slug, role };
     }
     // Backward compatibility: if deterministic fails, try hashed table
     try {
-      const hash = sha256(value);
+      const hash = sha256(String(code || ''));
       const { rows } = await pool.query(`SELECT slug, role FROM room_codes WHERE code_hash = $1 LIMIT 1`, [hash]);
       if (rows.length) return { slug: rows[0].slug, role: rows[0].role };
     } catch {}
