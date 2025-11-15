@@ -42,8 +42,10 @@ export function AdminApp() {
   const [endsAt, setEndsAt] = useState('')
   const [languages, setLanguages] = useState('')
   const [defaultTargets, setDefaultTargets] = useState('')
-  const [langSuggestions, setLangSuggestions] = useState<{ type: 'src' | 'tgt'; q: string; items: { code: string; name: string }[] } | null>(null)
+  const [langSuggestions, setLangSuggestions] = useState<{ type: 'src' | 'tgt'; q: string; items: { code: string; name: string }[]; index?: number } | null>(null)
   const [quickLangs, setQuickLangs] = useState<string[]>([])
+  const [langsUnknown, setLangsUnknown] = useState<string[]>([])
+  const [targetsUnknown, setTargetsUnknown] = useState<string[]>([])
   const [status, setStatus] = useState('')
   const [rooms, setRooms] = useState<any[]>([])
   const [health, setHealth] = useState<{
@@ -136,12 +138,12 @@ export function AdminApp() {
   function onTypeLanguages(next: string) {
     setLanguages(next)
     const q = lastToken(next)
-    setLangSuggestions({ type: 'src', q, items: matchLangs(q) })
+    setLangSuggestions({ type: 'src', q, items: matchLangs(q), index: 0 })
   }
   function onTypeTargets(next: string) {
     setDefaultTargets(next)
     const q = lastToken(next)
-    setLangSuggestions({ type: 'tgt', q, items: matchLangs(q) })
+    setLangSuggestions({ type: 'tgt', q, items: matchLangs(q), index: 0 })
   }
   function applySuggestion(code: string) {
     if (!langSuggestions) return
@@ -152,6 +154,20 @@ export function AdminApp() {
     }
     setLangSuggestions(null)
     recordLangUse(code)
+  }
+
+  // Validation for unknown codes on blur
+  const KNOWN = new Set(LANGS.map(l => l.code.toLowerCase()))
+  function validateCsv(value: string): string[] {
+    const raw = String(value || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+    const unknown: string[] = []
+    for (const code of raw) {
+      if (!KNOWN.has(code.toLowerCase())) unknown.push(code)
+    }
+    return unknown
   }
 
   // Persist most-used languages (quick picks)
@@ -191,7 +207,26 @@ export function AdminApp() {
     refreshQuickPicks(m)
   }
   useEffect(() => {
-    refreshQuickPicks(loadLangUsage())
+    // Seed quick picks on first load if empty
+    const existing = loadLangUsage()
+    if (existing.size === 0) {
+      const seeds = new Set<string>([
+        'en-US', 'fr-CA', 'es-MX', 'es-ES', 'pt-BR', 'de-DE', 'it-IT', 'ja-JP', 'zh-CN', 'ko-KR'
+      ])
+      // Add browser preferred locales if they match our curated list
+      try {
+        const prefs: string[] = (navigator as any)?.languages || ((navigator as any)?.language ? [(navigator as any).language] : [])
+        for (const p of prefs) {
+          const match = LANGS.find(l => l.code.toLowerCase() === String(p).toLowerCase())
+          if (match) seeds.add(match.code)
+        }
+      } catch {}
+      for (const code of seeds) {
+        existing.set(code, 1)
+      }
+      saveLangUsage(existing)
+    }
+    refreshQuickPicks(existing)
   }, [])
 
   async function onSave(e: React.FormEvent) {
@@ -346,12 +381,38 @@ export function AdminApp() {
         <div>
           <Label className="mb-1 block">Languages</Label>
           <div className="relative">
-            <Input value={languages} onChange={(e) => onTypeLanguages(e.target.value)} placeholder="Type to search… e.g., en-US or en-US,fr-FR,es-ES" />
+            <Input
+              value={languages}
+              onChange={(e) => onTypeLanguages(e.target.value)}
+              onKeyDown={(e)=>{
+                if (!langSuggestions || (langSuggestions.type !== 'src')) return
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  const dir = e.key === 'ArrowDown' ? 1 : -1
+                  const len = langSuggestions.items.length
+                  const idx = ((langSuggestions.index ?? 0) + dir + len) % len
+                  setLangSuggestions({ ...langSuggestions, index: idx })
+                } else if (e.key === 'Enter') {
+                  const idx = langSuggestions.index ?? 0
+                  const item = langSuggestions.items[idx]
+                  if (item) applySuggestion(item.code)
+                } else if (e.key === 'Escape') {
+                  setLangSuggestions(null)
+                }
+              }}
+              onBlur={() => setLangsUnknown(validateCsv(languages))}
+              placeholder="Type to search… e.g., en-US or en-US,fr-FR,es-ES"
+            />
             {langSuggestions?.type === 'src' && (langSuggestions.items?.length || 0) > 0 && (
               <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-600 bg-slate-900/95 shadow">
-                {langSuggestions.items.map((l) => (
-                  <button type="button" key={l.code} className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-slate-800"
-                    onClick={() => applySuggestion(l.code)}>
+                {langSuggestions.items.map((l, i) => (
+                  <button
+                    type="button"
+                    key={l.code}
+                    className={cn('flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-slate-800', i === (langSuggestions.index ?? -1) ? 'bg-slate-800' : '')}
+                    onMouseEnter={() => setLangSuggestions({ ...langSuggestions, index: i })}
+                    onClick={() => applySuggestion(l.code)}
+                  >
                     <span>{l.name}</span>
                     <code className="text-xs opacity-80">{l.code}</code>
                   </button>
@@ -359,6 +420,9 @@ export function AdminApp() {
               </div>
             )}
           </div>
+          {langsUnknown.length > 0 && (
+            <p className="mt-1 text-xs text-amber-400">Unknown codes: {langsUnknown.join(', ')}</p>
+          )}
           {quickLangs.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
               {quickLangs.slice(0, 8).map((code) => (
@@ -379,12 +443,38 @@ export function AdminApp() {
         <div>
           <Label className="mb-1 block">Default Target Languages</Label>
           <div className="relative">
-            <Input value={defaultTargets} onChange={(e) => onTypeTargets(e.target.value)} placeholder="Type to search… e.g., fr-CA,es-ES" />
+            <Input
+              value={defaultTargets}
+              onChange={(e) => onTypeTargets(e.target.value)}
+              onKeyDown={(e)=>{
+                if (!langSuggestions || (langSuggestions.type !== 'tgt')) return
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  const dir = e.key === 'ArrowDown' ? 1 : -1
+                  const len = langSuggestions.items.length
+                  const idx = ((langSuggestions.index ?? 0) + dir + len) % len
+                  setLangSuggestions({ ...langSuggestions, index: idx })
+                } else if (e.key === 'Enter') {
+                  const idx = langSuggestions.index ?? 0
+                  const item = langSuggestions.items[idx]
+                  if (item) applySuggestion(item.code)
+                } else if (e.key === 'Escape') {
+                  setLangSuggestions(null)
+                }
+              }}
+              onBlur={() => setTargetsUnknown(validateCsv(defaultTargets))}
+              placeholder="Type to search… e.g., fr-CA,es-ES"
+            />
             {langSuggestions?.type === 'tgt' && (langSuggestions.items?.length || 0) > 0 && (
               <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-600 bg-slate-900/95 shadow">
-                {langSuggestions.items.map((l) => (
-                  <button type="button" key={l.code} className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-slate-800"
-                    onClick={() => applySuggestion(l.code)}>
+                {langSuggestions.items.map((l, i) => (
+                  <button
+                    type="button"
+                    key={l.code}
+                    className={cn('flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-slate-800', i === (langSuggestions.index ?? -1) ? 'bg-slate-800' : '')}
+                    onMouseEnter={() => setLangSuggestions({ ...langSuggestions, index: i })}
+                    onClick={() => applySuggestion(l.code)}
+                  >
                     <span>{l.name}</span>
                     <code className="text-xs opacity-80">{l.code}</code>
                   </button>
@@ -392,6 +482,9 @@ export function AdminApp() {
               </div>
             )}
           </div>
+          {targetsUnknown.length > 0 && (
+            <p className="mt-1 text-xs text-amber-400">Unknown codes: {targetsUnknown.join(', ')}</p>
+          )}
           {quickLangs.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
               {quickLangs.slice(0, 8).map((code) => (
