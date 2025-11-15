@@ -43,6 +43,7 @@ export function AdminApp() {
   const [languages, setLanguages] = useState('')
   const [defaultTargets, setDefaultTargets] = useState('')
   const [langSuggestions, setLangSuggestions] = useState<{ type: 'src' | 'tgt'; q: string; items: { code: string; name: string }[] } | null>(null)
+  const [quickLangs, setQuickLangs] = useState<string[]>([])
   const [status, setStatus] = useState('')
   const [rooms, setRooms] = useState<any[]>([])
   const [health, setHealth] = useState<{
@@ -120,6 +121,18 @@ export function AdminApp() {
     const before = idx >= 0 ? value.slice(0, idx).trim() : ''
     return before ? `${before}, ${token}` : token
   }
+  function appendToken(value: string, token: string): string {
+    const trimmed = String(value || '').trim()
+    if (!trimmed) return token
+    // If ends with comma, just append token
+    if (/[,]$/.test(trimmed)) return `${trimmed} ${token}`
+    // If last token is partial, replace it
+    const lt = lastToken(trimmed)
+    if (lt && lt !== trimmed) {
+      return replaceLastToken(trimmed, token)
+    }
+    return `${trimmed}, ${token}`
+  }
   function onTypeLanguages(next: string) {
     setLanguages(next)
     const q = lastToken(next)
@@ -138,7 +151,48 @@ export function AdminApp() {
       setDefaultTargets((cur) => replaceLastToken(cur, code))
     }
     setLangSuggestions(null)
+    recordLangUse(code)
   }
+
+  // Persist most-used languages (quick picks)
+  function loadLangUsage(): Map<string, number> {
+    try {
+      const raw = localStorage.getItem('langUsage')
+      if (!raw) return new Map()
+      const obj = JSON.parse(raw) || {}
+      const m = new Map<string, number>()
+      for (const [k, v] of Object.entries(obj)) {
+        const n = Number(v)
+        if (k && Number.isFinite(n)) m.set(k, n)
+      }
+      return m
+    } catch {
+      return new Map()
+    }
+  }
+  function saveLangUsage(map: Map<string, number>) {
+    const obj: Record<string, number> = {}
+    for (const [k, v] of map.entries()) obj[k] = v
+    try { localStorage.setItem('langUsage', JSON.stringify(obj)) } catch {}
+  }
+  function refreshQuickPicks(map: Map<string, number>) {
+    const entries = Array.from(map.entries())
+    entries.sort((a, b) => b[1] - a[1])
+    const top = entries.map(([k]) => k)
+    // Ensure codes exist in our curated list; fall back to the same code even if not listed
+    setQuickLangs(top.slice(0, 10))
+  }
+  function recordLangUse(code: string) {
+    const m = loadLangUsage()
+    const key = String(code || '').trim()
+    if (!key) return
+    m.set(key, (m.get(key) || 0) + 1)
+    saveLangUsage(m)
+    refreshQuickPicks(m)
+  }
+  useEffect(() => {
+    refreshQuickPicks(loadLangUsage())
+  }, [])
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault()
@@ -305,6 +359,20 @@ export function AdminApp() {
               </div>
             )}
           </div>
+          {quickLangs.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {quickLangs.slice(0, 8).map((code) => (
+                <button type="button" key={'src-'+code} className="rounded border border-slate-600 px-2 py-0.5 text-xs hover:bg-slate-800"
+                  title={(LANGS.find(l=>l.code===code)?.name)||code}
+                  onClick={() => {
+                    setLanguages((cur) => appendToken(cur, code))
+                    recordLangUse(code)
+                  }}>
+                  <code>{code}</code>
+                </button>
+              ))}
+            </div>
+          )}
           <p className="mt-1 text-xs text-slate-400">One = fixed source; multiple = auto-detect across the list.</p>
         </div>
 
@@ -324,6 +392,20 @@ export function AdminApp() {
               </div>
             )}
           </div>
+          {quickLangs.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {quickLangs.slice(0, 8).map((code) => (
+                <button type="button" key={'tgt-'+code} className="rounded border border-slate-600 px-2 py-0.5 text-xs hover:bg-slate-800"
+                  title={(LANGS.find(l=>l.code===code)?.name)||code}
+                  onClick={() => {
+                    setDefaultTargets((cur) => appendToken(cur, code))
+                    recordLangUse(code)
+                  }}>
+                  <code>{code}</code>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <p className="text-xs text-slate-400">Join codes: listener = <code>slug</code>, speaker = <code>slug-speaker</code>.</p>
