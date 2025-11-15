@@ -80,7 +80,14 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
   const adminIndex = path.join(CLIENT_DIST_DIR, 'index.html');
   const assetsDir = path.join(CLIENT_DIST_DIR, 'assets');
   if (fs.existsSync(assetsDir)) {
-    app.use('/assets', express.static(assetsDir));
+    app.use(
+      '/assets',
+      express.static(assetsDir, {
+        setHeaders: (res) => {
+          try { res.set('Cache-Control', 'no-store'); } catch {}
+        }
+      })
+    );
   }
   const serveSpa = (_req, res, next) => {
     if (fs.existsSync(adminIndex)) {

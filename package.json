@@ -5,7 +5,7 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "NODE_ENV=development node server/index.js",
+    "dev": "cross-env NODE_ENV=development node server/index.js",
     "build:client": "npm --prefix client install && npm --prefix client run build",
     "prestart": "npm --prefix client install && npm --prefix client run build",
     "lint": "node scripts/patch-fuzzer.js --lint-check",
@@ -28,6 +28,7 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "@playwright/test": "^1.56.0",
     "playwright": "^1.56.0"
   }
