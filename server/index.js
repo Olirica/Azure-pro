@@ -83,7 +83,12 @@ if (fs.existsSync(CLIENT_DIST_DIR)) {
     app.use('/assets', express.static(assetsDir));
   }
   const serveSpa = (_req, res, next) => {
-    if (fs.existsSync(adminIndex)) return res.sendFile(adminIndex);
+    if (fs.existsSync(adminIndex)) {
+      try {
+        res.set('Cache-Control', 'no-store');
+      } catch {}
+      return res.sendFile(adminIndex);
+    }
     return next();
   };
   // Admin SPA (/admin and any subpath)
