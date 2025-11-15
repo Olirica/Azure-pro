@@ -138,24 +138,9 @@ function createRoomRegistryPg({ logger } = {}) {
         [slug, title, sourceLang, autoDetectLangs, defaultTargetLangs, startsAtMs, endsAtMs, status]
       );
 
-      if (speakerCode) {
-        const h = sha256(speakerCode);
-        await client.query(
-          `INSERT INTO room_codes (code_hash, slug, role)
-           VALUES ($1, $2, 'speaker')
-           ON CONFLICT (slug, role) DO UPDATE SET code_hash = EXCLUDED.code_hash`,
-          [h, slug]
-        );
-      }
-      if (listenerCode) {
-        const h = sha256(listenerCode);
-        await client.query(
-          `INSERT INTO room_codes (code_hash, slug, role)
-           VALUES ($1, $2, 'listener')
-           ON CONFLICT (slug, role) DO UPDATE SET code_hash = EXCLUDED.code_hash`,
-          [h, slug]
-        );
-      }
+      // Intentionally skip writing room_codes by default.
+      // Codes are deterministic (listener=slug, speaker=slug+'-speaker').
+      // For backward compatibility we keep the room_codes table and resolveCode() can still read it if present.
       await client.query('COMMIT');
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch {}
@@ -248,13 +233,22 @@ function createRoomRegistryPg({ logger } = {}) {
   async function resolveCode(code) {
     const value = String(code || '').trim();
     if (!value) return null;
-    const hash = sha256(value);
-    const { rows } = await pool.query(
-      `SELECT slug, role FROM room_codes WHERE code_hash = $1 LIMIT 1`,
-      [hash]
-    );
-    if (!rows.length) return null;
-    return { slug: rows[0].slug, role: rows[0].role };
+    // Deterministic codes: <slug> (listener) or <slug>-speaker (speaker)
+    const maybeSpeaker = value.toLowerCase().endsWith('-speaker');
+    const slugGuess = maybeSpeaker ? value.slice(0, -8) : value;
+    if (slugGuess) {
+      const { rows: r1 } = await pool.query(`SELECT slug FROM rooms WHERE slug=$1 LIMIT 1`, [slugGuess]);
+      if (r1.length) {
+        return { slug: r1[0].slug, role: maybeSpeaker ? 'speaker' : 'listener' };
+      }
+    }
+    // Backward compatibility: if deterministic fails, try hashed table
+    try {
+      const hash = sha256(value);
+      const { rows } = await pool.query(`SELECT slug, role FROM room_codes WHERE code_hash = $1 LIMIT 1`, [hash]);
+      if (rows.length) return { slug: rows[0].slug, role: rows[0].role };
+    } catch {}
+    return null;
   }
 
   async function dbStatus() {

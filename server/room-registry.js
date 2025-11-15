@@ -275,6 +275,10 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     const slugGuess = maybeSpeaker ? value.slice(0, -8) : value;
     const meta = await get(slugGuess);
     if (meta) {
+      // Prefer deterministic mapping when hashes are not present
+      if (!meta.speakerCodeHash && !meta.listenerCodeHash) {
+        return { slug: meta.slug, role: maybeSpeaker ? 'speaker' : 'listener' };
+      }
       const hashed = sha256(value);
       const role = hashed === meta.speakerCodeHash ? 'speaker' : hashed === meta.listenerCodeHash ? 'listener' : null;
       if (role) return { slug: meta.slug, role };
