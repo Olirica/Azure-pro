@@ -235,7 +235,8 @@ function createRoomRegistryPg({ logger } = {}) {
     if (!value) return null;
     // Deterministic codes: <slug> (listener) or <slug>-speaker (speaker)
     const maybeSpeaker = value.toLowerCase().endsWith('-speaker');
-    const slugGuess = maybeSpeaker ? value.slice(0, -8) : value;
+    const slugGuessRaw = maybeSpeaker ? value.slice(0, -8) : value;
+    const slugGuess = String(slugGuessRaw || '').trim().toLowerCase();
     if (slugGuess) {
       const { rows: r1 } = await pool.query(`SELECT slug FROM rooms WHERE slug=$1 LIMIT 1`, [slugGuess]);
       if (r1.length) {
