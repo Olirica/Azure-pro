@@ -43,7 +43,10 @@ export function AdminApp() {
   const [defaultTargets, setDefaultTargets] = useState('')
   const [status, setStatus] = useState('')
   const [rooms, setRooms] = useState<any[]>([])
-  const [health, setHealth] = useState<{ redis?: { configured?: boolean; up?: boolean; error?: string } } | null>(null)
+  const [health, setHealth] = useState<{
+    redis?: { configured?: boolean; up?: boolean; error?: string }
+    db?: { configured?: boolean; up?: boolean; error?: string }
+  } | null>(null)
 
   useEffect(() => {
     // Check auth on mount
@@ -173,24 +176,44 @@ export function AdminApp() {
     <main className="container mx-auto max-w-2xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Room Admin</h1>
       {(
-        <div className="mb-4 rounded-md border p-3 "
-          style={{
-            borderColor: health?.redis?.up ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)',
-            background: health?.redis?.up ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.08)'
-          }}>
-          <div className="flex items-center justify-between">
-            <div className="text-sm">
-              <span className="font-medium">Redis:</span>{' '}
-              {!health?.redis?.configured && <span className="opacity-80">not configured (using memory)</span>}
-              {health?.redis?.configured && health?.redis?.up && <span className="text-emerald-400">up</span>}
-              {health?.redis?.configured && health?.redis && health.redis.up === false && (
-                <span className="text-red-400">down</span>
-              )}
-              {health?.redis?.error && (
-                <span className="ml-2 text-xs opacity-80">{health.redis.error}</span>
-              )}
-            </div>
+        <div className="mb-4 rounded-md border p-3 ">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">Infrastructure</div>
             <Button type="button" variant="outline" onClick={loadHealth}>Check</Button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="rounded-md border p-3" style={{
+              borderColor: health?.db?.up ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)',
+              background: health?.db?.up ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.08)'
+            }}>
+              <div className="text-sm">
+                <span className="font-medium">Postgres:</span>{' '}
+                {!health?.db?.configured && <span className="opacity-80">not configured</span>}
+                {health?.db?.configured && health?.db?.up && <span className="text-emerald-400">up</span>}
+                {health?.db?.configured && health?.db && health.db.up === false && (
+                  <span className="text-red-400">down</span>
+                )}
+                {health?.db?.error && (
+                  <span className="ml-2 text-xs opacity-80">{health.db.error}</span>
+                )}
+              </div>
+            </div>
+            <div className="rounded-md border p-3" style={{
+              borderColor: health?.redis?.up ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)',
+              background: health?.redis?.up ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.08)'
+            }}>
+              <div className="text-sm">
+                <span className="font-medium">Redis:</span>{' '}
+                {!health?.redis?.configured && <span className="opacity-80">not configured (using memory)</span>}
+                {health?.redis?.configured && health?.redis?.up && <span className="text-emerald-400">up</span>}
+                {health?.redis?.configured && health?.redis && health.redis.up === false && (
+                  <span className="text-red-400">down</span>
+                )}
+                {health?.redis?.error && (
+                  <span className="ml-2 text-xs opacity-80">{health.redis.error}</span>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

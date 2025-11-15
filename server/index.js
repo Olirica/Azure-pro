@@ -16,6 +16,7 @@ const { createTtsQueue } = require('./tts');
 const { createWatchdog } = require('./watchdog');
 const { createStateStore } = require('./state-store');
 const { createRoomRegistry } = require('./room-registry');
+const { createRoomRegistryPg } = require('./room-registry-pg');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -164,8 +165,19 @@ const stateStore = createStateStore({
   maxPatches: PATCH_LRU_PER_ROOM
 });
 
-// Minimal room registry (Redis-backed if available)
-const roomRegistry = createRoomRegistry({ logger, redisClient: stateStore?.client });
+// Room registry: prefer Postgres when DATABASE_URL is configured; else Redis/FS
+let roomRegistry = null;
+if (process.env.DATABASE_URL) {
+  roomRegistry = createRoomRegistryPg({ logger });
+  if (roomRegistry && typeof roomRegistry.migrate === 'function') {
+    roomRegistry
+      .migrate()
+      .catch((err) => logger.error({ component: 'room-registry', err: err?.message }, 'PG migration failed.'));
+  }
+} else {
+  // Redis-backed if REDIS_URL is set; otherwise in-memory/FS
+  roomRegistry = createRoomRegistry({ logger, redisClient: stateStore?.client });
+}
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 // Dev-only bypass: enabled only when not in production
 const ADMIN_DEV_BYPASS = process.env.NODE_ENV !== 'production';
@@ -511,21 +523,31 @@ function broadcastAudio(room, payload) {
 
 app.get('/healthz', async (_req, res) => {
   const roomIds = Array.from(rooms.keys());
-  const status = { configured: Boolean(process.env.REDIS_URL), up: false };
+  const redis = { configured: Boolean(process.env.REDIS_URL), up: false };
+  const db = { configured: Boolean(process.env.DATABASE_URL), up: false };
   try {
+    // Prefer DB readiness for overall health
+    if (roomRegistry && typeof roomRegistry.dbStatus === 'function') {
+      const s = await roomRegistry.dbStatus();
+      db.configured = Boolean(s?.configured);
+      db.up = Boolean(s?.up);
+      if (s?.error) db.error = s.error;
+    }
+    // Still report Redis state for visibility
     if (stateStore?.client && typeof stateStore.client.ping === 'function') {
       const pong = await stateStore.client.ping();
-      status.up = pong === 'PONG';
+      redis.up = pong === 'PONG';
     } else if (roomRegistry && typeof roomRegistry.redisStatus === 'function') {
       const s = await roomRegistry.redisStatus();
-      status.configured = Boolean(s?.configured);
-      status.up = Boolean(s?.up);
-      if (s?.error) status.error = s.error;
+      redis.configured = Boolean(s?.configured);
+      redis.up = Boolean(s?.up);
+      if (s?.error) redis.error = s.error;
     }
   } catch (e) {
-    status.error = e?.message;
+    db.error = db.error || e?.message;
   }
-  res.json({ ok: true, rooms: roomIds, redis: status });
+  const ready = db.configured ? db.up : true;
+  res.status(ready ? 200 : 503).json({ ok: ready, rooms: roomIds, db, redis });
 });
 
 app.get('/metrics', metrics.sendMetrics);

@@ -195,6 +195,41 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     return memory.get(id) || null;
   }
 
+  async function list(limit = 200) {
+    // Return array of cleaned metas (no code hashes)
+    const take = (arr) => (typeof limit === 'number' && limit > 0 ? arr.slice(0, limit) : arr);
+    if (redis) {
+      try {
+        await ensure();
+        const pattern = key('room', '*', 'meta');
+        // Note: KEYS can be heavy; acceptable for small admin usage. Swap to SCAN if needed.
+        const keys = await redis.keys(pattern);
+        if (!keys.length) {
+          if (useFs) await fsLoad();
+          return take(Array.from(memory.values()).map((m) => cleanMeta(m))).filter(Boolean);
+        }
+        const selected = take(keys);
+        const pipe = redis.pipeline();
+        for (const k of selected) pipe.get(k);
+        const rows = await pipe.exec();
+        const out = [];
+        for (const [, raw] of rows) {
+          if (!raw) continue;
+          try {
+            out.push(cleanMeta(JSON.parse(raw)));
+          } catch (e) {
+            logger?.warn?.({ component: 'room-registry', err: e?.message }, 'Failed to parse meta');
+          }
+        }
+        return out;
+      } catch (e) {
+        logger?.warn?.({ component: 'room-registry', err: e?.message }, 'Redis unavailable; listing from memory.');
+      }
+    }
+    if (useFs) await fsLoad();
+    return take(Array.from(memory.values()).map((m) => cleanMeta(m))).filter(Boolean);
+  }
+
   async function resolveCode(code) {
     const value = String(code || '').trim();
     if (!value) return null;
@@ -219,6 +254,7 @@ function createRoomRegistry({ logger, redisClient } = {}) {
   return {
     upsert,
     get,
+    list,
     cleanMeta,
     resolveCode,
     windowState,
