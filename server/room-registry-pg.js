@@ -176,6 +176,13 @@ function createRoomRegistryPg({ logger } = {}) {
     });
   }
 
+  async function remove(slug) {
+    const id = String(slug || '').trim().toLowerCase();
+    if (!id) return false;
+    const { rowCount } = await pool.query('DELETE FROM rooms WHERE slug=$1', [id]);
+    return rowCount > 0;
+  }
+
   async function get(slug) {
     const id = String(slug || '').trim().toLowerCase();
     if (!id) return null;
@@ -233,6 +240,11 @@ function createRoomRegistryPg({ logger } = {}) {
     }));
   }
 
+  async function count() {
+    const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM rooms');
+    return Number(rows?.[0]?.c || 0);
+  }
+
   async function resolveCode(code) {
     const value = String(code || '').trim();
     if (!value) return null;
@@ -262,6 +274,8 @@ function createRoomRegistryPg({ logger } = {}) {
     upsert,
     get,
     list,
+    remove,
+    count,
     cleanMeta,
     resolveCode,
     windowState,
@@ -276,4 +290,3 @@ function createRoomRegistryPg({ logger } = {}) {
 module.exports = {
   createRoomRegistryPg
 };
-

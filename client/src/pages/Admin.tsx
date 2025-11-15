@@ -46,6 +46,8 @@ export function AdminApp() {
   const [health, setHealth] = useState<{
     redis?: { configured?: boolean; up?: boolean; error?: string }
     db?: { configured?: boolean; up?: boolean; error?: string }
+    roomsActive?: number
+    roomsDb?: number | null
   } | null>(null)
 
   useEffect(() => {
@@ -179,7 +181,15 @@ export function AdminApp() {
         <div className="mb-4 rounded-md border p-3 ">
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm font-medium">Infrastructure</div>
-            <Button type="button" variant="outline" onClick={loadHealth}>Check</Button>
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-slate-400">
+                Rooms: <span className="text-slate-200">{health?.roomsDb ?? rooms.length}</span>
+                {typeof health?.roomsActive === 'number' && (
+                  <span> · Active: <span className="text-slate-200">{health?.roomsActive}</span></span>
+                )}
+              </div>
+              <Button type="button" variant="outline" onClick={()=>{ loadHealth(); loadRooms(); }}>Check</Button>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div className="rounded-md border p-3" style={{
@@ -198,22 +208,23 @@ export function AdminApp() {
                 )}
               </div>
             </div>
-            <div className="rounded-md border p-3" style={{
-              borderColor: health?.redis?.up ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)',
-              background: health?.redis?.up ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.08)'
-            }}>
-              <div className="text-sm">
-                <span className="font-medium">Redis:</span>{' '}
-                {!health?.redis?.configured && <span className="opacity-80">not configured (using memory)</span>}
-                {health?.redis?.configured && health?.redis?.up && <span className="text-emerald-400">up</span>}
-                {health?.redis?.configured && health?.redis && health.redis.up === false && (
-                  <span className="text-red-400">down</span>
-                )}
-                {health?.redis?.error && (
-                  <span className="ml-2 text-xs opacity-80">{health.redis.error}</span>
-                )}
+            {health?.redis?.configured && (
+              <div className="rounded-md border p-3" style={{
+                borderColor: health?.redis?.up ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)',
+                background: health?.redis?.up ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.08)'
+              }}>
+                <div className="text-sm">
+                  <span className="font-medium">Redis:</span>{' '}
+                  {health?.redis?.configured && health?.redis?.up && <span className="text-emerald-400">up</span>}
+                  {health?.redis?.configured && health?.redis && health.redis.up === false && (
+                    <span className="text-red-400">down</span>
+                  )}
+                  {health?.redis?.error && (
+                    <span className="ml-2 text-xs opacity-80">{health.redis.error}</span>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -276,7 +287,22 @@ export function AdminApp() {
             <div key={r.slug} className="rounded-md border border-slate-700 p-3">
               <div className="flex items-center justify-between">
                 <div className="font-medium">{r.title || r.slug}</div>
-                <code className="text-xs opacity-80">{r.slug}</code>
+                <div className="flex items-center gap-2">
+                  <code className="text-xs opacity-80">{r.slug}</code>
+                  <Button type="button" variant="outline" className="text-red-400 border-red-500 hover:bg-red-500/10"
+                    onClick={async ()=>{
+                      try {
+                        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(r.slug)}`, { method: 'DELETE', credentials: 'include' })
+                        const body = await res.json().catch(()=>({}))
+                        if (!res.ok || !body?.ok) throw new Error(body?.error || 'Delete failed')
+                        setStatus('Deleted.')
+                        loadRooms()
+                        loadHealth()
+                      } catch (err:any) {
+                        setStatus('Error: ' + (err?.message || 'unknown'))
+                      }
+                    }}>Delete</Button>
+                </div>
               </div>
               <div className="text-sm text-slate-300 mt-1">
                 <span className="opacity-70">Source:</span> {r.sourceLang || '—'}; <span className="opacity-70">Auto:</span> {(r.autoDetectLangs || []).join(', ') || '—'}; <span className="opacity-70">Targets:</span> {(r.defaultTargetLangs || []).join(', ') || '—'}

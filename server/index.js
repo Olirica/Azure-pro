@@ -525,6 +525,7 @@ app.get('/healthz', async (_req, res) => {
   const roomIds = Array.from(rooms.keys());
   const redis = { configured: Boolean(process.env.REDIS_URL), up: false };
   const db = { configured: Boolean(process.env.DATABASE_URL), up: false };
+  let roomsDbCount = null;
   try {
     // Prefer DB readiness for overall health
     if (roomRegistry && typeof roomRegistry.dbStatus === 'function') {
@@ -532,6 +533,13 @@ app.get('/healthz', async (_req, res) => {
       db.configured = Boolean(s?.configured);
       db.up = Boolean(s?.up);
       if (s?.error) db.error = s.error;
+    }
+    if (roomRegistry && typeof roomRegistry.count === 'function') {
+      try {
+        roomsDbCount = await roomRegistry.count();
+      } catch (err) {
+        // ignore count errors; report readiness above
+      }
     }
     // Still report Redis state for visibility
     if (stateStore?.client && typeof stateStore.client.ping === 'function') {
@@ -547,7 +555,14 @@ app.get('/healthz', async (_req, res) => {
     db.error = db.error || e?.message;
   }
   const ready = db.configured ? db.up : true;
-  res.status(ready ? 200 : 503).json({ ok: ready, rooms: roomIds, db, redis });
+  res.status(ready ? 200 : 503).json({
+    ok: ready,
+    rooms: roomIds,
+    roomsActive: roomIds.length,
+    roomsDb: roomsDbCount,
+    db,
+    redis
+  });
 });
 
 app.get('/metrics', metrics.sendMetrics);
@@ -661,6 +676,31 @@ app.get('/api/admin/rooms', async (req, res) => {
     return res.json({ ok: true, rooms: Array.isArray(list) ? list : [] });
   } catch (err) {
     logger.error({ component: 'admin', err: err?.message }, 'Failed to list rooms');
+    return res.status(500).json({ ok: false, error: err?.message });
+  }
+});
+
+// Admin: delete a room (requires ADMIN_TOKEN in production)
+app.delete('/api/admin/rooms/:slug', async (req, res) => {
+  try {
+    const cookieToken = parseCookies(req).admin_token;
+    const headerToken = req.get('x-admin-token');
+    if (process.env.NODE_ENV === 'production') {
+      if (!ADMIN_TOKEN) return res.status(500).json({ ok: false, error: 'ADMIN_TOKEN not configured' });
+      if (headerToken !== ADMIN_TOKEN && cookieToken !== ADMIN_TOKEN) {
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+      }
+    }
+    const slug = String(req.params.slug || '').trim().toLowerCase();
+    if (!slug) return res.status(400).json({ ok: false, error: 'Missing slug' });
+    if (!roomRegistry || typeof roomRegistry.remove !== 'function') {
+      return res.status(500).json({ ok: false, error: 'Delete not supported' });
+    }
+    const removed = await roomRegistry.remove(slug);
+    if (!removed) return res.status(404).json({ ok: false, error: 'Not found' });
+    return res.json({ ok: true });
+  } catch (err) {
+    logger.error({ component: 'admin', err: err?.message }, 'Failed to delete room');
     return res.status(500).json({ ok: false, error: err?.message });
   }
 });

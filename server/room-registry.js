@@ -230,6 +230,43 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     return take(Array.from(memory.values()).map((m) => cleanMeta(m))).filter(Boolean);
   }
 
+  async function count() {
+    if (redis) {
+      try {
+        await ensure();
+        const keys = await redis.keys(key('room', '*', 'meta'));
+        return keys.length;
+      } catch (e) {
+        logger?.warn?.({ component: 'room-registry', err: e?.message }, 'Redis unavailable; count from memory.');
+      }
+    }
+    if (useFs) await fsLoad();
+    return memory.size;
+  }
+
+  async function remove(slug) {
+    const id = String(slug || '').trim().toLowerCase();
+    if (!id) return false;
+    if (redis) {
+      try {
+        await ensure();
+        const k = key('room', id, 'meta');
+        const res = await redis.del(k);
+        // also forget from memory cache
+        memory.delete(id);
+        return res > 0;
+      } catch (e) {
+        logger?.warn?.({ component: 'room-registry', err: e?.message }, 'Redis unavailable; removing from memory.');
+        const existed = memory.delete(id);
+        if (useFs) await fsSave();
+        return existed;
+      }
+    }
+    const existed = memory.delete(id);
+    if (useFs) await fsSave();
+    return existed;
+  }
+
   async function resolveCode(code) {
     const value = String(code || '').trim();
     if (!value) return null;
@@ -255,6 +292,8 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     upsert,
     get,
     list,
+    count,
+    remove,
     cleanMeta,
     resolveCode,
     windowState,
