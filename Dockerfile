@@ -9,9 +9,8 @@ RUN npm run build
 # --- Server production deps ---
 FROM node:20-alpine AS server-deps
 WORKDIR /app
-COPY package*.json ./
-RUN npm install --no-audit --no-fund \
-  && npm prune --production
+COPY package.json ./
+RUN npm install --production --no-audit --no-fund
 
 # --- Final runtime image ---
 FROM node:20-alpine
