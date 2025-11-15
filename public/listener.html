@@ -159,16 +159,8 @@
   <body>
     <main>
       <section>
-        <h1>Listener Console</h1>
-        <p>
-          Connects to the Node server via WebSocket, replaces each sentence in-place, and optionally
-          plays Text-to-Speech for hard finals.
-        </p>
         <div class="stack">
-          <div>
-            <label for="roomId">Room ID</label>
-            <input id="roomId" type="text" value="demo-room" />
-          </div>
+          <!-- Room ID field removed; room is read from ?room= in the URL -->
           <div>
             <label for="targetLang">Language</label>
             <select id="targetLang">
@@ -223,9 +215,16 @@
 
         const WS_READY = 1;
 
+        function roomFromUrl() {
+          try {
+            const u = new URL(window.location.href);
+            return (u.searchParams.get('room') || '').trim();
+          } catch { return ''; }
+        }
+
         const state = {
           ws: null,
-          roomId: 'demo-room',
+          roomId: roomFromUrl() || 'demo-room',
           lang: 'fr-FR',
           wantsTts: true,
           itemsByUnit: new Map(),
@@ -238,8 +237,10 @@
         };
 
         function parseInputs() {
-          state.roomId = document.getElementById('roomId').value.trim() || 'demo-room';
-        state.lang = document.getElementById('targetLang').value.trim() || 'fr-CA';
+          // Room is taken from URL (?room=slug)
+          const r = roomFromUrl();
+          if (r) state.roomId = r;
+          state.lang = document.getElementById('targetLang').value.trim() || 'fr-CA';
           state.wantsTts = ttsToggle.checked;
         }
 
