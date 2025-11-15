@@ -71,10 +71,58 @@ export function SpeakerApp() {
       setStatus('Fetching token…')
       const { token, region } = await fetchToken()
       const speechConfig = SDK.SpeechConfig.fromAuthorizationToken(token, region)
-      speechConfig.speechRecognitionLanguage = srcLang
       speechConfig.outputFormat = SDK.OutputFormat.Detailed
+
+      // Load room metadata to configure fixed vs. auto-detect languages
+      let meta: any = null
+      try {
+        const r = await fetch(`/api/rooms/${encodeURIComponent(room)}`, { cache: 'no-store' })
+        const j = await r.json().catch(() => ({} as any))
+        if (r.ok && j?.ok && j?.room) meta = j.room
+      } catch {}
+
       const audioConfig = SDK.AudioConfig.fromDefaultMicrophoneInput()
-      const recognizer = new SDK.SpeechRecognizer(speechConfig, audioConfig)
+      let recognizer: any = null
+
+      // Helper to read detected language from SDK result
+      function detectedLangFrom(result: any): string | undefined {
+        try {
+          if (SDK.AutoDetectSourceLanguageResult?.fromResult) {
+            const det = SDK.AutoDetectSourceLanguageResult.fromResult(result)
+            if (det?.language) return String(det.language)
+          }
+          const propId = SDK.PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult
+          const raw = result?.properties?.getProperty?.(propId)
+          if (raw) return String(raw)
+        } catch {}
+        return undefined
+      }
+
+      // Configure recognizer from room meta
+      if (meta && meta.sourceLang === 'auto' && Array.isArray(meta.autoDetectLangs) && meta.autoDetectLangs.length) {
+        const candidates: string[] = meta.autoDetectLangs.slice(0, 4)
+        // If multiple languages, use continuous language ID to allow switching
+        if (candidates.length >= 2) {
+          speechConfig.setProperty(
+            SDK.PropertyId.SpeechServiceConnection_LanguageIdMode,
+            'Continuous'
+          )
+        }
+        const autoCfg = SDK.AutoDetectSourceLanguageConfig.fromLanguages(candidates)
+        recognizer = SDK.SpeechRecognizer.FromConfig(speechConfig, autoCfg, audioConfig)
+        // If targets were not set manually, default from room meta
+        if ((!targets || !targets.trim()) && Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
+          setTargets(meta.defaultTargetLangs.join(','))
+        }
+      } else {
+        const fixed = meta && meta.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang
+        speechConfig.speechRecognitionLanguage = fixed
+        recognizer = new SDK.SpeechRecognizer(speechConfig, audioConfig)
+        if ((!targets || !targets.trim()) && Array.isArray(meta?.defaultTargetLangs) && meta.defaultTargetLangs.length) {
+          setTargets(meta.defaultTargetLangs.join(','))
+        }
+      }
+
       recogRef.current = recognizer
       startHeartbeat()
       setStatus('Listening')
@@ -91,7 +139,8 @@ export function SpeakerApp() {
           lastSoftText.current = text
           lastSoftAt.current = now
           version.current += 1
-          await postPatch({ unitId: unitId(), stage: 'soft', op: 'replace', version: version.current, text, srcLang, ts: timestamps(e.result) })
+          const detected = detectedLangFrom(e.result) || (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
+          await postPatch({ unitId: unitId(), stage: 'soft', op: 'replace', version: version.current, text, srcLang: detected, ts: timestamps(e.result) })
         }
       }
 
@@ -101,7 +150,8 @@ export function SpeakerApp() {
           const text = e.result.text.trim()
           if (!text) return
           version.current += 1
-          await postPatch({ unitId: unitId(), stage: 'hard', op: 'replace', version: version.current, text, srcLang, ts: timestamps(e.result) })
+          const detected = detectedLangFrom(e.result) || (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
+          await postPatch({ unitId: unitId(), stage: 'hard', op: 'replace', version: version.current, text, srcLang: detected, ts: timestamps(e.result) })
           unitIndex.current += 1
           version.current = 0
           lastSoftText.current = ''
@@ -154,4 +204,3 @@ export function SpeakerApp() {
     </main>
   )
 }
-
