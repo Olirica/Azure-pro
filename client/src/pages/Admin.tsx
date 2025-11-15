@@ -3,6 +3,7 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import { cn } from '../lib/utils'
+import { LANGS, matchLangs } from '../data/languages'
 
 function toMillis(dt: string): number {
   if (!dt) return 0
@@ -41,6 +42,7 @@ export function AdminApp() {
   const [endsAt, setEndsAt] = useState('')
   const [languages, setLanguages] = useState('')
   const [defaultTargets, setDefaultTargets] = useState('')
+  const [langSuggestions, setLangSuggestions] = useState<{ type: 'src' | 'tgt'; q: string; items: { code: string; name: string }[] } | null>(null)
   const [status, setStatus] = useState('')
   const [rooms, setRooms] = useState<any[]>([])
   const [health, setHealth] = useState<{
@@ -107,6 +109,36 @@ export function AdminApp() {
     } as any
     return out
   }, [slug, title, startsAt, endsAt, languages, defaultTargets])
+
+  // Suggestion helpers for CSV fields
+  function lastToken(value: string): string {
+    const idx = value.lastIndexOf(',')
+    return idx >= 0 ? value.slice(idx + 1).trim() : value.trim()
+  }
+  function replaceLastToken(value: string, token: string): string {
+    const idx = value.lastIndexOf(',')
+    const before = idx >= 0 ? value.slice(0, idx).trim() : ''
+    return before ? `${before}, ${token}` : token
+  }
+  function onTypeLanguages(next: string) {
+    setLanguages(next)
+    const q = lastToken(next)
+    setLangSuggestions({ type: 'src', q, items: matchLangs(q) })
+  }
+  function onTypeTargets(next: string) {
+    setDefaultTargets(next)
+    const q = lastToken(next)
+    setLangSuggestions({ type: 'tgt', q, items: matchLangs(q) })
+  }
+  function applySuggestion(code: string) {
+    if (!langSuggestions) return
+    if (langSuggestions.type === 'src') {
+      setLanguages((cur) => replaceLastToken(cur, code))
+    } else {
+      setDefaultTargets((cur) => replaceLastToken(cur, code))
+    }
+    setLangSuggestions(null)
+  }
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault()
@@ -259,13 +291,39 @@ export function AdminApp() {
 
         <div>
           <Label className="mb-1 block">Languages</Label>
-          <Input value={languages} onChange={(e) => setLanguages(e.target.value)} placeholder="e.g., en-US or en-US,fr-FR,es-ES" />
+          <div className="relative">
+            <Input value={languages} onChange={(e) => onTypeLanguages(e.target.value)} placeholder="Type to search… e.g., en-US or en-US,fr-FR,es-ES" />
+            {langSuggestions?.type === 'src' && (langSuggestions.items?.length || 0) > 0 && (
+              <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-600 bg-slate-900/95 shadow">
+                {langSuggestions.items.map((l) => (
+                  <button type="button" key={l.code} className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-slate-800"
+                    onClick={() => applySuggestion(l.code)}>
+                    <span>{l.name}</span>
+                    <code className="text-xs opacity-80">{l.code}</code>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <p className="mt-1 text-xs text-slate-400">One = fixed source; multiple = auto-detect across the list.</p>
         </div>
 
         <div>
           <Label className="mb-1 block">Default Target Languages</Label>
-          <Input value={defaultTargets} onChange={(e) => setDefaultTargets(e.target.value)} placeholder="e.g., fr-CA,es-ES" />
+          <div className="relative">
+            <Input value={defaultTargets} onChange={(e) => onTypeTargets(e.target.value)} placeholder="Type to search… e.g., fr-CA,es-ES" />
+            {langSuggestions?.type === 'tgt' && (langSuggestions.items?.length || 0) > 0 && (
+              <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-600 bg-slate-900/95 shadow">
+                {langSuggestions.items.map((l) => (
+                  <button type="button" key={l.code} className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-slate-800"
+                    onClick={() => applySuggestion(l.code)}>
+                    <span>{l.name}</span>
+                    <code className="text-xs opacity-80">{l.code}</code>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <p className="text-xs text-slate-400">Join codes: listener = <code>slug</code>, speaker = <code>slug-speaker</code>.</p>
