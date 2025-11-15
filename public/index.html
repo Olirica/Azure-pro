@@ -111,14 +111,29 @@
       const input = document.getElementById('accessCode');
       const errorBox = document.getElementById('error');
 
-      const SPEAKER_CODE = 'demo2025-speaker';
-      const LISTENER_CODE = 'demo2025';
+      async function resolveAccess(code) {
+        try {
+          const res = await fetch('/api/access/resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code })
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok || !body?.ok) return null;
+          return body; // { ok:true, slug, role, window }
+        } catch {
+          return null;
+        }
+      }
 
-      function redirectTo(path) {
+      function redirectToRole(slug, role) {
+        const base = role === 'speaker' ? '/speaker' : '/listener';
+        // Support SPA and back-compat .html
+        const path = `${base}.html?room=${encodeURIComponent(slug)}`;
         window.location.href = path;
       }
 
-      form.addEventListener('submit', (event) => {
+      form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const value = input.value.trim();
         if (!value) {
@@ -126,15 +141,14 @@
           input.focus();
           return;
         }
-        const code = value.toLowerCase();
-        if (code === SPEAKER_CODE) {
-          redirectTo('/speaker.html?room=demo-room');
-        } else if (code === LISTENER_CODE) {
-          redirectTo('/listener.html?room=demo-room');
-        } else {
+        errorBox.textContent = '';
+        const resolved = await resolveAccess(value);
+        if (!resolved || !resolved.slug || !resolved.role) {
           errorBox.textContent = 'That access code was not recognized.';
           input.select();
+          return;
         }
+        redirectToRole(resolved.slug, resolved.role);
       });
 
       input.addEventListener('input', () => {
