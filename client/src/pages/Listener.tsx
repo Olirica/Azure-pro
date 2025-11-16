@@ -12,8 +12,20 @@ type Patch = {
   srcLang?: string
 }
 
+// Helper to read room from URL params
+function getRoomFromUrl(): string {
+  try {
+    if (typeof window === 'undefined') return 'demo-room'
+    const url = new URL(window.location.href)
+    const r = url.searchParams.get('room')
+    return (r && r.trim()) ? r : 'demo-room'
+  } catch {
+    return 'demo-room'
+  }
+}
+
 export function ListenerApp() {
-  const [room, setRoom] = useState('demo-room')
+  const [room, setRoom] = useState(getRoomFromUrl())
   const [lang, setLang] = useState('fr-CA')
   const [tts, setTts] = useState(false)
   const [status, setStatus] = useState('Idle')
@@ -32,15 +44,6 @@ export function ListenerApp() {
     if (!audioRef.current) {
       audioRef.current = new Audio()
     }
-  }, [])
-
-  // Initialize room from URL query (?room=slug) once
-  useEffect(() => {
-    try {
-      const url = new URL(window.location.href)
-      const r = url.searchParams.get('room')
-      if (r && r.trim()) setRoom(r)
-    } catch {}
   }, [])
 
   // Fetch room metadata when room changes

@@ -25,8 +25,20 @@ async function fetchToken() {
   return body as { token: string; region: string }
 }
 
+// Helper to read room from URL params
+function getRoomFromUrl(): string {
+  try {
+    if (typeof window === 'undefined') return 'demo-room'
+    const url = new URL(window.location.href)
+    const r = url.searchParams.get('room')
+    return (r && r.trim()) ? r : 'demo-room'
+  } catch {
+    return 'demo-room'
+  }
+}
+
 export function SpeakerApp() {
-  const [room, setRoom] = useState('demo-room')
+  const [room, setRoom] = useState(getRoomFromUrl())
   const [srcLang, setSrcLang] = useState('en-US')
   const [targets, setTargets] = useState('fr-CA')
   const [status, setStatus] = useState('Idle')
@@ -260,15 +272,6 @@ export function SpeakerApp() {
     recogRef.current = null
     setStatus('Idle')
   }
-
-  // Initialize room from URL query (?room=slug) once
-  useEffect(() => {
-    try {
-      const url = new URL(window.location.href)
-      const r = url.searchParams.get('room')
-      if (r && r.trim()) setRoom(r)
-    } catch {}
-  }, [])
 
   // When room changes, fetch its meta to populate fields
   useEffect(() => {
