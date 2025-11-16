@@ -38,8 +38,73 @@ export function SpeakerApp() {
   const unitIndex = useRef(0)
   const version = useRef(0)
   const sessionId = useRef(crypto.randomUUID())
+  const isAutoDetect = useRef(false)  // Track if using auto-detect mode
+
+  // Language stability tracking (for auto-detect mode)
+  const langStability = useRef({
+    current: '',  // Currently active language
+    detectedAt: 0,  // Timestamp when language was locked
+    switchCandidate: null as string | null,  // Candidate new language
+    switchCount: 0  // Consecutive detections of candidate
+  })
 
   function unitId() { return `${sessionId.current}|${srcLang}|${unitIndex.current}` }
+
+  // Get stable language with persistence (15s lock + 2 consecutive threshold)
+  function getStableLanguage(detected: string | undefined, fallback: string): string {
+    // If not in auto-detect mode or no detection, use fallback
+    if (!isAutoDetect.current || !detected) {
+      return fallback
+    }
+
+    const now = Date.now()
+    const stability = langStability.current
+
+    // Initialize on first detection
+    if (!stability.current) {
+      stability.current = detected
+      stability.detectedAt = now
+      return detected
+    }
+
+    const timeSinceLock = now - stability.detectedAt
+
+    // Lock language for 15 seconds after detection (configurable via SPEECH_LANG_STABILITY_SEC)
+    const lockDurationMs = 15000  // TODO: Make configurable
+    if (timeSinceLock < lockDurationMs) {
+      return stability.current
+    }
+
+    // After lock period, allow switching but require 2 consecutive detections
+    if (detected !== stability.current) {
+      if (detected === stability.switchCandidate) {
+        stability.switchCount++
+
+        // Require 2 consecutive detections before switching (configurable via SPEECH_LANG_SWITCH_THRESHOLD)
+        const switchThreshold = 2  // TODO: Make configurable
+        if (stability.switchCount >= switchThreshold) {
+          // Switch to new language
+          stability.current = detected
+          stability.detectedAt = now
+          stability.switchCandidate = null
+          stability.switchCount = 0
+          return detected
+        }
+      } else {
+        // New candidate language
+        stability.switchCandidate = detected
+        stability.switchCount = 1
+      }
+
+      // Keep current language while evaluating candidate
+      return stability.current
+    }
+
+    // Same language detected, reset switch tracking
+    stability.switchCandidate = null
+    stability.switchCount = 0
+    return detected
+  }
 
   function timestamps(result: any) {
     if (!result) return undefined
@@ -103,6 +168,7 @@ export function SpeakerApp() {
       // Configure recognizer from room meta
       if (meta && meta.sourceLang === 'auto' && Array.isArray(meta.autoDetectLangs) && meta.autoDetectLangs.length) {
         const candidates: string[] = meta.autoDetectLangs.slice(0, 4)
+        isAutoDetect.current = true  // Mark as auto-detect mode
         // If multiple languages, use continuous language ID to allow switching
         if (candidates.length >= 2) {
           speechConfig.setProperty(
@@ -117,6 +183,7 @@ export function SpeakerApp() {
           setTargets(meta.defaultTargetLangs.join(','))
         }
       } else {
+        isAutoDetect.current = false  // Fixed language mode
         const fixed = meta && meta.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang
         speechConfig.speechRecognitionLanguage = fixed
         recognizer = new SDK.SpeechRecognizer(speechConfig, audioConfig)
@@ -131,6 +198,15 @@ export function SpeakerApp() {
 
       recognizer.recognizing = async (_s: any, e: any) => {
         if (!e?.result?.text) return
+
+        // In auto-detect mode, require minimum 2 seconds of audio for accurate detection
+        if (isAutoDetect.current && e.result?.duration) {
+          const audioDurationMs = e.result.duration / 10000  // Convert from 100ns ticks to ms
+          if (audioDurationMs < 2000) {
+            return  // Wait for more audio before attempting language detection
+          }
+        }
+
         const now = Date.now()
         const text = e.result.text.trim()
         const delta = text.length - lastSoftText.current.length
@@ -141,8 +217,10 @@ export function SpeakerApp() {
           lastSoftText.current = text
           lastSoftAt.current = now
           version.current += 1
-          const detected = detectedLangFrom(e.result) || (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
-          await postPatch({ unitId: unitId(), stage: 'soft', op: 'replace', version: version.current, text, srcLang: detected, ts: timestamps(e.result) })
+          const rawDetected = detectedLangFrom(e.result)
+          const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
+          const stableLang = getStableLanguage(rawDetected, fallback)
+          await postPatch({ unitId: unitId(), stage: 'soft', op: 'replace', version: version.current, text, srcLang: stableLang, ts: timestamps(e.result) })
         }
       }
 
@@ -152,8 +230,10 @@ export function SpeakerApp() {
           const text = e.result.text.trim()
           if (!text) return
           version.current += 1
-          const detected = detectedLangFrom(e.result) || (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
-          await postPatch({ unitId: unitId(), stage: 'hard', op: 'replace', version: version.current, text, srcLang: detected, ts: timestamps(e.result) })
+          const rawDetected = detectedLangFrom(e.result)
+          const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
+          const stableLang = getStableLanguage(rawDetected, fallback)
+          await postPatch({ unitId: unitId(), stage: 'hard', op: 'replace', version: version.current, text, srcLang: stableLang, ts: timestamps(e.result) })
           unitIndex.current += 1
           version.current = 0
           lastSoftText.current = ''

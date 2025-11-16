@@ -5,6 +5,9 @@ import { Label } from '../components/ui/label'
 import { cn } from '../lib/utils'
 import { LANGS, matchLangs } from '../data/languages'
 
+// Valid Azure locale codes for validation
+const VALID_CODES = new Set(LANGS.map(l => l.code.toLowerCase()))
+
 function toMillis(dt: string): number {
   if (!dt) return 0
   try {
@@ -157,7 +160,6 @@ export function AdminApp() {
   }
 
   // Validation for unknown codes on blur
-  const KNOWN = new Set(LANGS.map(l => l.code.toLowerCase()))
   function validateCsv(value: string): string[] {
     const raw = String(value || '')
       .split(',')
@@ -165,7 +167,7 @@ export function AdminApp() {
       .filter(Boolean)
     const unknown: string[] = []
     for (const code of raw) {
-      if (!KNOWN.has(code.toLowerCase())) unknown.push(code)
+      if (!VALID_CODES.has(code.toLowerCase())) unknown.push(code)
     }
     return unknown
   }
@@ -235,6 +237,17 @@ export function AdminApp() {
     const finalSlug = payload.slug
     if (!finalSlug) {
       setStatus('Slug or Title required.')
+      return
+    }
+    // Validate language codes before saving
+    const invalidLangs = validateCsv(languages)
+    const invalidTargets = validateCsv(defaultTargets)
+    if (invalidLangs.length > 0) {
+      setStatus(`Invalid source language codes: ${invalidLangs.join(', ')}`)
+      return
+    }
+    if (invalidTargets.length > 0) {
+      setStatus(`Invalid target language codes: ${invalidTargets.join(', ')}`)
       return
     }
     try {
