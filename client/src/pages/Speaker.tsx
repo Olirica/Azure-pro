@@ -181,35 +181,6 @@ export function SpeakerApp() {
     setStatus('Idle')
   }
 
-  return (
-    <main className="container mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold mb-4">Speaker</h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-        <div>
-          <Label className="mb-1 block">Room</Label>
-          <Input value={room} onChange={(e)=>setRoom(e.target.value)} />
-        </div>
-        <div>
-          <Label className="mb-1 block">Source language</Label>
-          {roomMeta?.sourceLang === 'auto' ? (
-            <Input value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(',')})`} readOnly />
-          ) : (
-            <Input value={srcLang} onChange={(e)=>setSrcLang(e.target.value)} />
-          )}
-        </div>
-        <div>
-          <Label className="mb-1 block">Targets</Label>
-          <Input value={targets} onChange={(e)=>setTargets(e.target.value)} />
-        </div>
-      </div>
-      <div className="flex items-center gap-2 mb-3">
-        <Button onClick={start}>Start</Button>
-        <Button variant="outline" onClick={stop}>Stop</Button>
-        <span className="text-sm text-slate-400">{status}</span>
-      </div>
-    </main>
-  )
-}
   // Initialize room from URL query (?room=slug) once
   useEffect(() => {
     try {
@@ -244,3 +215,33 @@ export function SpeakerApp() {
     load()
     return () => { cancelled = true }
   }, [room])
+
+  return (
+    <main className="container mx-auto max-w-3xl p-6">
+      <h1 className="text-2xl font-semibold mb-4">Speaker</h1>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div>
+          <Label className="mb-1 block">Room</Label>
+          <Input value={room} onChange={(e)=>setRoom(e.target.value)} />
+        </div>
+        <div>
+          <Label className="mb-1 block">Source language</Label>
+          {roomMeta?.sourceLang === 'auto' ? (
+            <Input value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(',')})`} readOnly />
+          ) : (
+            <Input value={srcLang} onChange={(e)=>setSrcLang(e.target.value)} />
+          )}
+        </div>
+        <div>
+          <Label className="mb-1 block">Targets</Label>
+          <Input value={targets} onChange={(e)=>setTargets(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex items-center gap-2 mb-3">
+        <Button onClick={start}>Start</Button>
+        <Button variant="outline" onClick={stop}>Stop</Button>
+        <span className="text-sm text-slate-400">{status}</span>
+      </div>
+    </main>
+  )
+}
