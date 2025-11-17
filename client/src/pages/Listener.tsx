@@ -26,6 +26,14 @@ function getRoomFromUrl(): string {
   }
 }
 
+type TtsEvent = {
+  timestamp: number
+  type: 'received' | 'playing' | 'played' | 'error'
+  format?: string
+  audioSize?: number
+  error?: string
+}
+
 export function ListenerApp() {
   const [room, setRoom] = useState(getRoomFromUrl())
   const [lang, setLang] = useState('fr-CA')
@@ -35,7 +43,31 @@ export function ListenerApp() {
   const [userInteracted, setUserInteracted] = useState(false)  // Track user interaction for autoplay
   const wsRef = useRef<WebSocket | null>(null)
   const [patches, setPatches] = useState<Map<string, Patch>>(new Map())
+  // Batch incoming patches per animation frame to reduce re-renders
+  const patchBufferRef = useRef<Patch[]>([])
+  const rafFlushRef = useRef<number | null>(null)
+  function flushPatchBuffer() {
+    setPatches((prev) => {
+      const map = new Map(prev)
+      for (const p of patchBufferRef.current) {
+        const cur = map.get(p.unitId)
+        if (!cur || p.version >= cur.version) {
+          map.set(p.unitId, p)
+        }
+      }
+      patchBufferRef.current = []
+      return map
+    })
+    rafFlushRef.current = null
+  }
+  function schedulePatchFlush() {
+    if (rafFlushRef.current == null) {
+      rafFlushRef.current = requestAnimationFrame(flushPatchBuffer)
+    }
+  }
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [ttsEvents, setTtsEvents] = useState<TtsEvent[]>([])  // Track TTS events for monitoring
+  const [currentlyPlaying, setCurrentlyPlaying] = useState(false)  // Track if audio is currently playing
 
   // Set page title
   useEffect(() => {
@@ -58,9 +90,66 @@ export function ListenerApp() {
     return lang?.name || code
   }
 
+  // Setup audio element with comprehensive event listeners
   useEffect(() => {
     if (!audioRef.current) {
-      audioRef.current = new Audio()
+      const audio = new Audio()
+      audioRef.current = audio
+
+      // Add comprehensive event listeners for monitoring
+      audio.addEventListener('loadstart', () => {
+        console.log('[TTS Audio] Load started')
+      })
+
+      audio.addEventListener('canplay', () => {
+        console.log('[TTS Audio] Can play - audio ready')
+      })
+
+      audio.addEventListener('play', () => {
+        console.log('[TTS Audio] Playback started')
+        setCurrentlyPlaying(true)
+        setTtsEvents(prev => [...prev, {
+          timestamp: Date.now(),
+          type: 'playing'
+        }])
+      })
+
+      audio.addEventListener('playing', () => {
+        console.log('[TTS Audio] Playing (after buffering)')
+      })
+
+      audio.addEventListener('pause', () => {
+        console.log('[TTS Audio] Paused')
+        setCurrentlyPlaying(false)
+      })
+
+      audio.addEventListener('ended', () => {
+        console.log('[TTS Audio] Playback ended')
+        setCurrentlyPlaying(false)
+        setTtsEvents(prev => [...prev, {
+          timestamp: Date.now(),
+          type: 'played'
+        }])
+      })
+
+      audio.addEventListener('error', (e) => {
+        const errorMsg = audio.error ? `Error code: ${audio.error.code}, message: ${audio.error.message}` : 'Unknown error'
+        console.error('[TTS Audio] Error:', errorMsg, e)
+        setCurrentlyPlaying(false)
+        setTtsEvents(prev => [...prev, {
+          timestamp: Date.now(),
+          type: 'error',
+          error: errorMsg
+        }])
+      })
+
+      audio.addEventListener('stalled', () => {
+        console.warn('[TTS Audio] Download stalled')
+      })
+
+      audio.addEventListener('waiting', () => {
+        console.log('[TTS Audio] Waiting for data')
+      })
     }
   }, [])
 
@@ -86,18 +175,18 @@ export function ListenerApp() {
     return () => { cancelled = true }
   }, [room])
 
-  // Auto-connect on page load after initial room metadata is fetched
-  // Wait for both roomMeta AND lang to be properly set
+  // Auto-connect immediately after roomMeta and lang are ready (no artificial delay)
+  const lastAutoConnectKeyRef = useRef<string | null>(null)
   useEffect(() => {
     if (roomMeta && lang && status === 'Idle') {
-      // Delay to ensure state updates have settled
-      const timer = setTimeout(() => {
+      const key = `${room}|${lang}`
+      if (lastAutoConnectKeyRef.current !== key) {
+        lastAutoConnectKeyRef.current = key
         console.log('[Listener] Auto-connecting with lang:', lang, 'tts:', tts)
         connect()
-      }, 800)
-      return () => clearTimeout(timer)
+      }
     }
-  }, [roomMeta, lang])
+  }, [roomMeta, lang, status])
 
   function connect() {
     try { wsRef.current?.close() } catch {}
@@ -132,22 +221,42 @@ export function ListenerApp() {
             version: p.version
           })
 
-          setPatches((prev) => {
-            const map = new Map(prev)
-            const cur = map.get(p.unitId)
-            if (!cur || p.version >= cur.version) {
-              map.set(p.unitId, p)
-            }
-            return map
-          })
+          // Buffer and flush on next animation frame
+          patchBufferRef.current.push(p)
+          schedulePatchFlush()
         } else if (msg?.type === 'tts' && msg?.payload) {
           const { audio, format } = msg.payload as { audio: string; format?: string }
           const mime = format || 'audio/mpeg'
+          const audioSizeKB = audio ? (audio.length * 0.75 / 1024).toFixed(2) : '0'  // Base64 is ~4/3 original size
+
+          console.log('[TTS] Received audio:', {
+            format: mime,
+            sizeKB: audioSizeKB,
+            base64Length: audio?.length || 0
+          })
+
+          // Track TTS received event
+          setTtsEvents(prev => [...prev, {
+            timestamp: Date.now(),
+            type: 'received',
+            format: mime,
+            audioSize: audio?.length || 0
+          }])
+
           const src = `data:${mime};base64,${audio}`
           const el = audioRef.current
           if (el) {
             el.src = src
-            el.play().catch(() => {})
+            el.play().catch((err) => {
+              console.error('[TTS] Play failed:', err)
+              setTtsEvents(prev => [...prev, {
+                timestamp: Date.now(),
+                type: 'error',
+                error: err?.message || 'Play failed'
+              }])
+            })
+          } else {
+            console.error('[TTS] Audio element not available')
           }
         }
       } catch {}
@@ -157,6 +266,12 @@ export function ListenerApp() {
   function disconnect() {
     try { wsRef.current?.close() } catch {}
     setStatus('Idle')
+    // Cancel any pending patch flush and clear buffer
+    if (rafFlushRef.current != null) {
+      try { cancelAnimationFrame(rafFlushRef.current) } catch {}
+      rafFlushRef.current = null
+    }
+    patchBufferRef.current = []
   }
 
   function handleUserInteraction() {
@@ -167,6 +282,15 @@ export function ListenerApp() {
       audioRef.current.pause()
     }
   }
+
+  // Compute TTS metrics for monitoring
+  const ttsMetrics = useMemo(() => {
+    const received = ttsEvents.filter(e => e.type === 'received').length
+    const playing = ttsEvents.filter(e => e.type === 'playing').length
+    const played = ttsEvents.filter(e => e.type === 'played').length
+    const errors = ttsEvents.filter(e => e.type === 'error').length
+    return { received, playing, played, errors }
+  }, [ttsEvents])
 
   // Group patches into natural paragraphs based on pauses, sentences, and length
   const paragraphs = useMemo(() => {
@@ -313,12 +437,80 @@ export function ListenerApp() {
             Receiving: {getLangName(lang)} ({lang})
           </span>
         )}
+        {currentlyPlaying && (
+          <span className="text-blue-400 flex items-center gap-1">
+            <span className="inline-block w-2 h-2 bg-blue-400 rounded-full animate-pulse"></span>
+            Playing audio
+          </span>
+        )}
         {status === 'Closed' && (
           <Button size="sm" onClick={connect} variant="outline">
             Reconnect
           </Button>
         )}
       </div>
+
+      {/* TTS Monitor - always visible when TTS is enabled */}
+      {tts && (
+        <div className="mb-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+          <div className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wide">
+            TTS Audio Monitor
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div>
+              <div className="text-slate-500 text-xs">Received</div>
+              <div className="text-slate-100 font-semibold">{ttsMetrics.received}</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-xs">Played</div>
+              <div className="text-green-400 font-semibold">{ttsMetrics.played}</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-xs">Playing</div>
+              <div className="text-blue-400 font-semibold">{ttsMetrics.playing}</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-xs">Errors</div>
+              <div className={`font-semibold ${ttsMetrics.errors > 0 ? 'text-red-400' : 'text-slate-500'}`}>
+                {ttsMetrics.errors}
+              </div>
+            </div>
+          </div>
+          {ttsMetrics.received > 0 && ttsMetrics.played === 0 && ttsMetrics.errors === 0 && (
+            <div className="mt-2 text-xs text-yellow-400">
+              ⚠️ Audio received but not playing. Check browser console for details.
+            </div>
+          )}
+          {ttsMetrics.errors > 0 && (
+            <div className="mt-2 text-xs text-red-400">
+              ❌ Audio playback errors detected. Check browser console for details.
+            </div>
+          )}
+          {debugMode && ttsEvents.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-slate-700">
+              <div className="text-xs text-slate-500 mb-1">Recent TTS Events:</div>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {ttsEvents.slice(-10).reverse().map((event, idx) => (
+                  <div key={idx} className="text-xs text-slate-400 font-mono">
+                    <span className={
+                      event.type === 'received' ? 'text-blue-300' :
+                      event.type === 'playing' ? 'text-green-300' :
+                      event.type === 'played' ? 'text-green-500' :
+                      'text-red-400'
+                    }>
+                      {event.type.toUpperCase()}
+                    </span>
+                    {' '}
+                    {event.format && `[${event.format}]`}
+                    {event.audioSize && ` ${(event.audioSize * 0.75 / 1024).toFixed(1)}KB`}
+                    {event.error && ` - ${event.error}`}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Paragraph-based display with natural breaks - chronological order (oldest first, newest at bottom) */}
       <div className="space-y-3">
@@ -343,4 +535,3 @@ export function ListenerApp() {
     </main>
   )
 }
-
