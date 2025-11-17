@@ -52,15 +52,18 @@ const RunSessionSchema = z.object({
 // Merge provided selector overrides with defaults
 function mergedSelectors(overrides = {}) {
   return {
-    startButton: "#startBtn",
-    connectButton: "#connectBtn",
-    roomInput: "#roomId",
-    sourceLangInput: "#sourceLang",
-    targetLangsInput: "#targetLangs",
-    singleTargetSelect: "#targetLang",
-    ttsToggle: "#ttsToggle",
-    speakerListeningStatus: "#recognitionStatus",
-    listenerConnectionStatus: "#connectionStatus",
+    // Prefer text-based selectors to match SPA
+    startButton: 'button:has-text("Start")',
+    connectButton: 'button:has-text("Connect")',
+    // Not used for SPA; room is passed via URL
+    roomInput: '',
+    sourceLangInput: '',
+    targetLangsInput: '',
+    singleTargetSelect: '',
+    // First checkbox is TTS toggle in both layouts
+    ttsToggle: 'input[type="checkbox"]',
+    speakerListeningStatus: '#recognitionStatus',
+    listenerConnectionStatus: '#connectionStatus',
     ...overrides,
   };
 }
@@ -108,6 +111,17 @@ async function runFakeMicSession(input, server) {
   } = RunSessionSchema.parse(input);
 
   const sel = mergedSelectors(selectorOverrides);
+
+  function langNameFromCode(code) {
+    const m = String(code || '').toLowerCase();
+    if (m === 'fr-ca') return 'French (Canada)';
+    if (m === 'fr-fr') return 'French (France)';
+    if (m === 'en-us') return 'English (United States)';
+    if (m === 'en-ca') return 'English (Canada)';
+    if (m === 'es-es') return 'Spanish (Spain)';
+    if (m === 'es-mx') return 'Spanish (Mexico)';
+    return code;
+  }
 
   // Validate audio file exists
   const audioPath = path.resolve(process.cwd(), audioFile);
@@ -263,21 +277,17 @@ async function runFakeMicSession(input, server) {
   });
 
   // Navigate
-  await speakerPage.goto(`${serverUrl}/speaker.html`);
-  await listenerPage.goto(`${serverUrl}/listener.html`);
+  // Use SPA routes and pass room via URL
+  await speakerPage.goto(`${serverUrl}/speaker?room=${encodeURIComponent(roomId)}`);
+  await listenerPage.goto(`${serverUrl}/listener?room=${encodeURIComponent(roomId)}`);
 
   // Configure forms
-  await speakerPage.fill(sel.roomInput, roomId);
-  await speakerPage.fill(sel.sourceLangInput, sourceLang);
-  // Try both multi-target field and single-select
+  // Speaker SPA config is driven by room meta; just start
+  // Listener SPA: click target language button if available; else skip
   try {
-    await speakerPage.fill(sel.targetLangsInput, targetLang);
-  } catch {
-    try { await speakerPage.selectOption(sel.singleTargetSelect, targetLang); } catch {}
-  }
-
-  await listenerPage.fill(sel.roomInput, roomId);
-  try { await listenerPage.selectOption(sel.singleTargetSelect, targetLang); } catch {}
+    const label = langNameFromCode(targetLang);
+    await listenerPage.click(`button:has-text("${label}")`, { timeout: 2000 });
+  } catch {}
   try { await listenerPage.check(sel.ttsToggle); } catch {}
 
   // Start capture and connect listener
@@ -286,7 +296,8 @@ async function runFakeMicSession(input, server) {
   try { await speakerPage.waitForSelector(`${sel.speakerListeningStatus}:has-text("Listening")`, { timeout: 10000 }); } catch {}
 
   await listenerPage.click(sel.connectButton);
-  try { await listenerPage.waitForSelector(`${sel.listenerConnectionStatus}:has-text("Connected")`, { timeout: 10000 }); } catch {}
+  // Prefer text match for SPA status
+  try { await listenerPage.waitForSelector('text=Status: Connected', { timeout: 10000 }); } catch {}
 
   // Watch for some time, or until we have some translations
   const started = now();
