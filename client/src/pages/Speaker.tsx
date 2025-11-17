@@ -43,6 +43,7 @@ export function SpeakerApp() {
   const [targets, setTargets] = useState('fr-CA')
   const [status, setStatus] = useState('Idle')
   const [roomMeta, setRoomMeta] = useState<any>(null)
+  const [transcriptHistory, setTranscriptHistory] = useState<string[]>([])  // Store recent transcriptions
   const recogRef = useRef<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSoftAt = useRef(0)
@@ -241,6 +242,13 @@ export function SpeakerApp() {
         if (e.result.reason === SDK.ResultReason.RecognizedSpeech) {
           const text = e.result.text.trim()
           if (!text) return
+
+          // Update transcript history (keep last 7 sentences)
+          setTranscriptHistory(prev => {
+            const updated = [...prev, text]
+            return updated.slice(-7)  // Keep only last 7 sentences
+          })
+
           version.current += 1
           const rawDetected = detectedLangFrom(e.result)
           const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
@@ -271,6 +279,7 @@ export function SpeakerApp() {
     }
     recogRef.current = null
     setStatus('Idle')
+    setTranscriptHistory([])  // Clear transcript history when stopping
   }
 
   // When room changes, fetch its meta to populate fields
@@ -325,6 +334,32 @@ export function SpeakerApp() {
         <Button variant="outline" onClick={stop}>Stop</Button>
         <span className="text-sm text-slate-400">{status}</span>
       </div>
+
+      {/* Live Transcription Monitor */}
+      {transcriptHistory.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-sm font-semibold text-slate-400 mb-2">Live Transcription (Original)</h2>
+          <div className="bg-slate-800/50 rounded-lg p-4 space-y-1 max-h-48 overflow-y-auto">
+            {transcriptHistory.map((text, idx) => (
+              <div key={idx} className="text-sm text-slate-200">
+                {text}
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-slate-500 mt-1">Showing last {transcriptHistory.length} sentence{transcriptHistory.length !== 1 ? 's' : ''}</p>
+        </div>
+      )}
+
+      {/* Debug Info */}
+      {status.startsWith('Error') && (
+        <div className="mt-4 p-3 bg-red-900/20 border border-red-500/30 rounded-md">
+          <p className="text-sm text-red-300">
+            {status.includes('Token failed') ?
+              'Failed to get Azure Speech token. Please check your SPEECH_KEY and SPEECH_REGION in .env file.' :
+              status}
+          </p>
+        </div>
+      )}
     </main>
   )
 }
