@@ -32,6 +32,7 @@ export function ListenerApp() {
   const [tts, setTts] = useState(false)
   const [status, setStatus] = useState('Idle')
   const [roomMeta, setRoomMeta] = useState<any>(null)
+  const [userInteracted, setUserInteracted] = useState(false)  // Track user interaction for autoplay
   const wsRef = useRef<WebSocket | null>(null)
   const [patches, setPatches] = useState<Map<string, Patch>>(new Map())
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -85,14 +86,32 @@ export function ListenerApp() {
     return () => { cancelled = true }
   }, [room])
 
+  // Auto-connect on page load after initial room metadata is fetched
+  useEffect(() => {
+    if (roomMeta && status === 'Idle') {
+      // Small delay to ensure all state is ready
+      const timer = setTimeout(() => {
+        connect()
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [roomMeta])
+
   function connect() {
     try { wsRef.current?.close() } catch {}
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const url = `${proto}://${window.location.host}/ws?role=listener&room=${encodeURIComponent(room)}&lang=${encodeURIComponent(lang)}&tts=${tts}`
+
+    // Debug log to verify language is being sent
+    console.log('[Listener] Connecting to WebSocket:', { room, lang, tts, url })
+
     const ws = new WebSocket(url)
     wsRef.current = ws
     setStatus('Connecting')
-    ws.onopen = () => setStatus('Connected')
+    ws.onopen = () => {
+      setStatus('Connected')
+      console.log('[Listener] WebSocket connected:', { room, lang, tts })
+    }
     ws.onclose = () => setStatus('Closed')
     ws.onerror = () => setStatus('Error')
     ws.onmessage = (ev) => {
@@ -101,6 +120,16 @@ export function ListenerApp() {
         if (msg?.type === 'patch' && msg?.payload) {
           const p = msg.payload as Patch
           p.receivedAt = Date.now()  // Add timestamp when received
+
+          // Debug log to verify translations are being received
+          console.log('[Listener] Received patch:', {
+            text: p.text?.substring(0, 50),
+            srcLang: p.srcLang,
+            targetLang: lang,
+            stage: p.stage,
+            version: p.version
+          })
+
           setPatches((prev) => {
             const map = new Map(prev)
             const cur = map.get(p.unitId)
@@ -126,6 +155,15 @@ export function ListenerApp() {
   function disconnect() {
     try { wsRef.current?.close() } catch {}
     setStatus('Idle')
+  }
+
+  function handleUserInteraction() {
+    setUserInteracted(true)
+    // Prime the audio element for playback on mobile
+    if (audioRef.current) {
+      audioRef.current.play().catch(() => {})
+      audioRef.current.pause()
+    }
   }
 
   // Group patches into natural paragraphs based on pauses, sentences, and length
@@ -207,7 +245,21 @@ export function ListenerApp() {
   }, [patches])
 
   return (
-    <main className="container mx-auto max-w-3xl p-6">
+    <main className="container mx-auto max-w-3xl p-6 relative">
+      {/* Tap-to-start overlay for mobile autoplay */}
+      {tts && !userInteracted && (
+        <div
+          className="fixed inset-0 bg-slate-900/95 z-50 flex items-center justify-center cursor-pointer"
+          onClick={handleUserInteraction}
+        >
+          <div className="text-center p-8">
+            <div className="text-6xl mb-4">🔊</div>
+            <h2 className="text-2xl font-semibold mb-2">Tap to Enable Audio</h2>
+            <p className="text-slate-400">Tap anywhere to start listening with text-to-speech</p>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 mb-4">
         <div>
           <Label className="mb-1 block">Room</Label>
@@ -252,7 +304,19 @@ export function ListenerApp() {
           </div>
         </div>
       </div>
-      <div className="text-sm text-slate-400 mb-2">Status: {status}</div>
+      <div className="text-sm text-slate-400 mb-2 flex items-center gap-4">
+        <span>Status: {status}</span>
+        {status === 'Connected' && (
+          <span className="text-green-400">
+            Receiving: {getLangName(lang)} ({lang})
+          </span>
+        )}
+        {status === 'Closed' && (
+          <Button size="sm" onClick={connect} variant="outline">
+            Reconnect
+          </Button>
+        )}
+      </div>
 
       {/* Paragraph-based display with natural breaks - chronological order (oldest first, newest at bottom) */}
       <div className="space-y-3">
