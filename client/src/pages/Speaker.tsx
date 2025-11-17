@@ -174,21 +174,28 @@ export function SpeakerApp() {
         : SDK.AudioConfig.fromDefaultMicrophoneInput()
       let recognizer: any = null
 
-      // Helper to read detected language from SDK result
+            // Helper to read detected language from SDK result (robust to SDK variants)
       function detectedLangFrom(result: any): string | undefined {
         try {
-          if (result?.language) return String(result.language)\n          if (SDK.AutoDetectSourceLanguageResult?.fromResult) {
-            const det = SDK.AutoDetectSourceLanguageResult.fromResult(result)
+          if ((result as any)?.language) return String((result as any).language)
+          if ((SDK as any).AutoDetectSourceLanguageResult?.fromResult) {
+            const det = (SDK as any).AutoDetectSourceLanguageResult.fromResult(result)
             if (det?.language) return String(det.language)
           }
-          const propId = SDK.PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult
-          const raw = result?.properties?.getProperty?.(propId)
-          if (raw) { try { const parsed = JSON.parse(raw as any); if ((parsed as any)?.language) return String((parsed as any).language) } catch {} return String(raw) }
+          const propId = (SDK as any).PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult
+          const raw: any = (result as any)?.properties?.getProperty?.(propId)
+          if (raw) {
+            try {
+              const parsed: any = JSON.parse(raw)
+              if (parsed?.language) return String(parsed.language)
+            } catch {}
+            return String(raw)
+          }
         } catch {}
         return undefined
       }
 
-      // Configure recognizer from room meta
+      // Configure recognizer from room meta from room meta
       if (meta && meta.sourceLang === 'auto' && Array.isArray(meta.autoDetectLangs) && meta.autoDetectLangs.length) {
         const candidates: string[] = meta.autoDetectLangs.slice(0, 4)
         isAutoDetect.current = true  // Mark as auto-detect mode
