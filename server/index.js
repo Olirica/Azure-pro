@@ -545,17 +545,7 @@ async function broadcastPatch(room, result) {
 }
 
 function broadcastAudio(room, payload) {
-  if (!payload || !payload.audio) {
-    if (room.logger && typeof room.logger.warn === 'function') {
-      room.logger.warn(
-        { component: 'tts', unitId: payload?.unitId, lang: payload?.lang },
-        'Skipping TTS broadcast â€“ missing audio payload.'
-      );
-    }
-    return;
-  }
-
-  const targetClients = Array.from(room.clients).filter(c => c.wantsTts && c.lang === payload.lang);
+  if (!payload || !payload.audio || (Buffer.isBuffer(payload.audio) && payload.audio.length === 0)) {\n    if (room.logger && typeof room.logger.warn === 'function') {\n      room.logger.warn({ component: 'tts', unitId: payload?.unitId, lang: payload?.lang }, 'Skipping TTS broadcast – missing or empty audio payload.');\n    }\n    return;\n  }\nconst targetClients = Array.from(room.clients).filter(c => c.wantsTts && c.lang === payload.lang);
   room.logger.debug(
     { component: 'tts', lang: payload.lang, unitId: payload.unitId, textLength: payload.text?.length, audioSize: payload.audio?.length, targetClients: targetClients.length },
     '[TTS Broadcast] Broadcasting audio to clients'
