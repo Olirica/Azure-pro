@@ -36,6 +36,11 @@ export function ListenerApp() {
   const [patches, setPatches] = useState<Map<string, Patch>>(new Map())
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
+  // Set page title
+  useEffect(() => {
+    document.title = 'Simo'
+  }, [])
+
   // Check for debug mode via URL parameter (?debug=true)
   const debugMode = useMemo(() => {
     try {
@@ -203,7 +208,6 @@ export function ListenerApp() {
 
   return (
     <main className="container mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold mb-4">Listener</h1>
       <div className="grid grid-cols-1 gap-4 mb-4">
         <div>
           <Label className="mb-1 block">Room</Label>

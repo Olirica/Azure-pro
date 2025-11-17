@@ -44,6 +44,8 @@ export function SpeakerApp() {
   const [status, setStatus] = useState('Idle')
   const [roomMeta, setRoomMeta] = useState<any>(null)
   const [transcriptHistory, setTranscriptHistory] = useState<string[]>([])  // Store recent transcriptions
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const recogRef = useRef<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSoftAt = useRef(0)
@@ -52,6 +54,11 @@ export function SpeakerApp() {
   const version = useRef(0)
   const sessionId = useRef(crypto.randomUUID())
   const isAutoDetect = useRef(false)  // Track if using auto-detect mode
+
+  // Set page title
+  useEffect(() => {
+    document.title = 'Simo'
+  }, [])
 
   // Language stability tracking (for auto-detect mode)
   const langStability = useRef({
@@ -161,7 +168,10 @@ export function SpeakerApp() {
         if (meta) setRoomMeta(meta)
       } catch {}
 
-      const audioConfig = SDK.AudioConfig.fromDefaultMicrophoneInput()
+      // Use selected device or default microphone
+      const audioConfig = selectedDeviceId
+        ? SDK.AudioConfig.fromMicrophoneInput(selectedDeviceId)
+        : SDK.AudioConfig.fromDefaultMicrophoneInput()
       let recognizer: any = null
 
       // Helper to read detected language from SDK result
@@ -282,6 +292,26 @@ export function SpeakerApp() {
     setTranscriptHistory([])  // Clear transcript history when stopping
   }
 
+  // Enumerate audio input devices on mount
+  useEffect(() => {
+    async function getDevices() {
+      try {
+        // Request microphone permission first
+        await navigator.mediaDevices.getUserMedia({ audio: true })
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioInputs = devices.filter(d => d.kind === 'audioinput')
+        setAudioDevices(audioInputs)
+        // Auto-select default device
+        if (audioInputs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(audioInputs[0].deviceId)
+        }
+      } catch (err) {
+        console.error('Failed to enumerate devices:', err)
+      }
+    }
+    getDevices()
+  }, [])
+
   // When room changes, fetch its meta to populate fields
   useEffect(() => {
     let cancelled = false
@@ -328,6 +358,25 @@ export function SpeakerApp() {
           <Label className="mb-1 block">Targets</Label>
           <Input value={targets} onChange={(e)=>setTargets(e.target.value)} />
         </div>
+      </div>
+
+      {/* Audio device selector */}
+      <div className="mb-4">
+        <Label className="mb-1 block">Audio Input Device</Label>
+        <select
+          value={selectedDeviceId}
+          onChange={(e) => setSelectedDeviceId(e.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          {audioDevices.map(device => (
+            <option key={device.deviceId} value={device.deviceId}>
+              {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
+            </option>
+          ))}
+        </select>
+        {audioDevices.length === 0 && (
+          <p className="text-xs text-slate-500 mt-1">No audio devices found. Allow microphone access to see devices.</p>
+        )}
       </div>
       <div className="flex items-center gap-2 mb-3">
         <Button onClick={start}>Start</Button>
