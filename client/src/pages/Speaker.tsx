@@ -177,13 +177,13 @@ export function SpeakerApp() {
       // Helper to read detected language from SDK result
       function detectedLangFrom(result: any): string | undefined {
         try {
-          if (SDK.AutoDetectSourceLanguageResult?.fromResult) {
+          if (result?.language) return String(result.language)\n          if (SDK.AutoDetectSourceLanguageResult?.fromResult) {
             const det = SDK.AutoDetectSourceLanguageResult.fromResult(result)
             if (det?.language) return String(det.language)
           }
           const propId = SDK.PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult
           const raw = result?.properties?.getProperty?.(propId)
-          if (raw) return String(raw)
+          if (raw) { try { const parsed = JSON.parse(raw as any); if ((parsed as any)?.language) return String((parsed as any).language) } catch {} return String(raw) }
         } catch {}
         return undefined
       }
