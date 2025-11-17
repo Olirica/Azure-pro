@@ -120,7 +120,26 @@ export function ListenerApp() {
     setStatus('Idle')
   }
 
-  const items = useMemo(() => Array.from(patches.values()).sort((a,b)=>a.unitId.localeCompare(b.unitId)), [patches])
+  // Group patches by session (speaker) and create paragraph-style display
+  const paragraphs = useMemo(() => {
+    const items = Array.from(patches.values()).sort((a, b) => a.unitId.localeCompare(b.unitId))
+
+    // Group patches by sessionId (first part of unitId before |)
+    const groups = new Map<string, Patch[]>()
+    items.forEach(patch => {
+      const sessionId = patch.unitId.split('|')[0]
+      if (!groups.has(sessionId)) {
+        groups.set(sessionId, [])
+      }
+      groups.get(sessionId)!.push(patch)
+    })
+
+    // Convert groups to paragraph data
+    return Array.from(groups.entries()).map(([sessionId, patches]) => ({
+      sessionId,
+      patches: patches.sort((a, b) => a.unitId.localeCompare(b.unitId))
+    }))
+  }, [patches])
 
   return (
     <main className="container mx-auto max-w-3xl p-6">
@@ -170,18 +189,29 @@ export function ListenerApp() {
         </div>
       </div>
       <div className="text-sm text-slate-400 mb-2">Status: {status}</div>
-      <ul className="space-y-2">
-        {items.map((p)=> (
-          <li key={p.unitId} className={`rounded-md border px-4 py-3 ${p.stage==='hard' ? 'border-sky-500/50 bg-slate-800/60' : 'border-slate-600/50 bg-slate-800/30 opacity-75'}`}>
-            {debugMode && (
-              <div className="text-xs uppercase tracking-wide opacity-70 mb-1">
-                {p.stage} v{p.version} {p.srcLang && <span className="ml-2 text-slate-500">({p.srcLang})</span>}
-              </div>
-            )}
-            <div className="text-base">{p.text}</div>
-          </li>
+
+      {/* Paragraph-based display */}
+      <div className="space-y-4">
+        {paragraphs.map(({ sessionId, patches: sessionPatches }) => (
+          <div key={sessionId} className="rounded-md border border-slate-600/30 bg-slate-800/20 px-5 py-4">
+            <p className="text-base leading-relaxed">
+              {sessionPatches.map((p, idx) => (
+                <span key={p.unitId}>
+                  {debugMode && (
+                    <span className="text-xs uppercase tracking-wide opacity-50 mr-1">
+                      [{p.stage} v{p.version} {p.srcLang && `${p.srcLang}`}]
+                    </span>
+                  )}
+                  <span className={p.stage === 'hard' ? 'text-slate-100' : 'text-slate-400'}>
+                    {p.text}
+                  </span>
+                  {idx < sessionPatches.length - 1 && ' '}
+                </span>
+              ))}
+            </p>
+          </div>
         ))}
-      </ul>
+      </div>
     </main>
   )
 }
