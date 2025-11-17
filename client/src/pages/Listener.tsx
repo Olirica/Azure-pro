@@ -11,6 +11,7 @@ type Patch = {
   text: string
   srcLang?: string
   ts?: { t0: number; t1: number }  // Timestamps in milliseconds
+  receivedAt?: number  // When this patch was received (for ordering)
 }
 
 // Helper to read room from URL params
@@ -94,6 +95,7 @@ export function ListenerApp() {
         const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data))
         if (msg?.type === 'patch' && msg?.payload) {
           const p = msg.payload as Patch
+          p.receivedAt = Date.now()  // Add timestamp when received
           setPatches((prev) => {
             const map = new Map(prev)
             const cur = map.get(p.unitId)
@@ -123,19 +125,34 @@ export function ListenerApp() {
 
   // Group patches into natural paragraphs based on pauses, sentences, and length
   const paragraphs = useMemo(() => {
-    const items = Array.from(patches.values()).sort((a, b) => a.unitId.localeCompare(b.unitId))
+    // Sort patches by receivedAt (newest first) then by unitId for stable ordering
+    const items = Array.from(patches.values()).sort((a, b) => {
+      // If both have receivedAt, sort by that (newest first)
+      if (a.receivedAt && b.receivedAt) {
+        return b.receivedAt - a.receivedAt
+      }
+      // Fallback to unitId comparison
+      return b.unitId.localeCompare(a.unitId)
+    })
 
-    const paragraphGroups: { id: string; patches: Patch[] }[] = []
+    // Group consecutive patches into paragraphs
+    const paragraphGroups: { id: string; patches: Patch[]; latestTime: number }[] = []
     let currentGroup: Patch[] = []
     let lastSessionId = ''
     let lastEndTime = 0
     let currentWordCount = 0
     let completeSentences = 0
+    let groupStartTime = 0
 
     items.forEach((patch) => {
       const sessionId = patch.unitId.split('|')[0]
       const wordCount = patch.text.split(/\s+/).length
       const isCompleteSentence = patch.stage === 'hard' && /[.!?]$/.test(patch.text)
+
+      // Track the latest receivedAt for this group
+      if (currentGroup.length === 0) {
+        groupStartTime = patch.receivedAt || 0
+      }
 
       // Calculate time gap if timestamps available
       const timeGap = patch.ts?.t0 && lastEndTime ? patch.ts.t0 - lastEndTime : 0
@@ -154,11 +171,13 @@ export function ListenerApp() {
       if (shouldBreak && currentGroup.length > 0) {
         paragraphGroups.push({
           id: `${lastSessionId}-${paragraphGroups.length}`,
-          patches: [...currentGroup]
+          patches: [...currentGroup],
+          latestTime: groupStartTime
         })
         currentGroup = []
         currentWordCount = 0
         completeSentences = 0
+        groupStartTime = patch.receivedAt || 0
       }
 
       currentGroup.push(patch)
@@ -173,11 +192,13 @@ export function ListenerApp() {
     if (currentGroup.length > 0) {
       paragraphGroups.push({
         id: `${lastSessionId}-${paragraphGroups.length}`,
-        patches: currentGroup
+        patches: currentGroup,
+        latestTime: groupStartTime
       })
     }
 
-    return paragraphGroups
+    // Sort paragraphs by latest time (newest first)
+    return paragraphGroups.sort((a, b) => b.latestTime - a.latestTime)
   }, [patches])
 
   return (
@@ -229,7 +250,7 @@ export function ListenerApp() {
       </div>
       <div className="text-sm text-slate-400 mb-2">Status: {status}</div>
 
-      {/* Paragraph-based display with natural breaks */}
+      {/* Paragraph-based display with natural breaks - newest first */}
       <div className="space-y-3">
         {paragraphs.map(({ id, patches: paragraphPatches }) => (
           <div key={id} className="text-base leading-relaxed">
