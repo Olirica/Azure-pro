@@ -162,9 +162,8 @@ export function ListenerApp() {
       <div className="text-sm text-slate-400 mb-2">Status: {status}</div>
       <ul className="space-y-2">
         {items.map((p)=> (
-          <li key={p.unitId} className={`rounded-md border px-3 py-2 ${p.stage==='hard' ? 'border-sky-500/50 bg-slate-800/60' : 'border-slate-600/50 bg-slate-800/30'}`}>
-            <div className="text-xs uppercase tracking-wide opacity-70">{p.stage} v{p.version}</div>
-            <div>{p.text}</div>
+          <li key={p.unitId} className={`rounded-md border px-4 py-3 ${p.stage==='hard' ? 'border-sky-500/50 bg-slate-800/60' : 'border-slate-600/50 bg-slate-800/30 opacity-75'}`}>
+            <div className="text-base">{p.text}</div>
           </li>
         ))}
       </ul>
