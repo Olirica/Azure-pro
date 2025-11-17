@@ -130,14 +130,14 @@ export function ListenerApp() {
 
   // Group patches into natural paragraphs based on pauses, sentences, and length
   const paragraphs = useMemo(() => {
-    // Sort patches by receivedAt (newest first) then by unitId for stable ordering
+    // Sort patches by receivedAt (oldest first - chronological order) then by unitId for stable ordering
     const items = Array.from(patches.values()).sort((a, b) => {
-      // If both have receivedAt, sort by that (newest first)
+      // If both have receivedAt, sort by that (oldest first - chronological)
       if (a.receivedAt && b.receivedAt) {
-        return b.receivedAt - a.receivedAt
+        return a.receivedAt - b.receivedAt
       }
       // Fallback to unitId comparison
-      return b.unitId.localeCompare(a.unitId)
+      return a.unitId.localeCompare(b.unitId)
     })
 
     // Group consecutive patches into paragraphs
@@ -202,8 +202,8 @@ export function ListenerApp() {
       })
     }
 
-    // Sort paragraphs by latest time (newest first)
-    return paragraphGroups.sort((a, b) => b.latestTime - a.latestTime)
+    // Sort paragraphs by latest time (oldest first - chronological order)
+    return paragraphGroups.sort((a, b) => a.latestTime - b.latestTime)
   }, [patches])
 
   return (
@@ -254,7 +254,7 @@ export function ListenerApp() {
       </div>
       <div className="text-sm text-slate-400 mb-2">Status: {status}</div>
 
-      {/* Paragraph-based display with natural breaks - newest first */}
+      {/* Paragraph-based display with natural breaks - chronological order (oldest first, newest at bottom) */}
       <div className="space-y-3">
         {paragraphs.map(({ id, patches: paragraphPatches }) => (
           <div key={id} className="text-base leading-relaxed">
