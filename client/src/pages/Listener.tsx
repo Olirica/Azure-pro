@@ -34,6 +34,16 @@ export function ListenerApp() {
   const [patches, setPatches] = useState<Map<string, Patch>>(new Map())
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
+  // Check for debug mode via URL parameter (?debug=true)
+  const debugMode = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      return params.get('debug') === 'true'
+    } catch {
+      return false
+    }
+  }, [])
+
   // Helper to get language name from code
   const getLangName = (code: string): string => {
     const lang = LANGS.find(l => l.code.toLowerCase() === code.toLowerCase())
@@ -163,6 +173,11 @@ export function ListenerApp() {
       <ul className="space-y-2">
         {items.map((p)=> (
           <li key={p.unitId} className={`rounded-md border px-4 py-3 ${p.stage==='hard' ? 'border-sky-500/50 bg-slate-800/60' : 'border-slate-600/50 bg-slate-800/30 opacity-75'}`}>
+            {debugMode && (
+              <div className="text-xs uppercase tracking-wide opacity-70 mb-1">
+                {p.stage} v{p.version} {p.srcLang && <span className="ml-2 text-slate-500">({p.srcLang})</span>}
+              </div>
+            )}
             <div className="text-base">{p.text}</div>
           </li>
         ))}
