@@ -29,7 +29,7 @@ function getRoomFromUrl(): string {
 export function ListenerApp() {
   const [room, setRoom] = useState(getRoomFromUrl())
   const [lang, setLang] = useState('fr-CA')
-  const [tts, setTts] = useState(false)
+  const [tts, setTts] = useState(true)  // Default TTS to enabled for listeners
   const [status, setStatus] = useState('Idle')
   const [roomMeta, setRoomMeta] = useState<any>(null)
   const [userInteracted, setUserInteracted] = useState(false)  // Track user interaction for autoplay
@@ -87,15 +87,17 @@ export function ListenerApp() {
   }, [room])
 
   // Auto-connect on page load after initial room metadata is fetched
+  // Wait for both roomMeta AND lang to be properly set
   useEffect(() => {
-    if (roomMeta && status === 'Idle') {
-      // Small delay to ensure all state is ready
+    if (roomMeta && lang && status === 'Idle') {
+      // Delay to ensure state updates have settled
       const timer = setTimeout(() => {
+        console.log('[Listener] Auto-connecting with lang:', lang, 'tts:', tts)
         connect()
-      }, 500)
+      }, 800)
       return () => clearTimeout(timer)
     }
-  }, [roomMeta])
+  }, [roomMeta, lang])
 
   function connect() {
     try { wsRef.current?.close() } catch {}
