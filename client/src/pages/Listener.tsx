@@ -10,6 +10,7 @@ type Patch = {
   stage: 'soft' | 'hard'
   text: string
   srcLang?: string
+  ts?: { t0: number; t1: number }  // Timestamps in milliseconds
 }
 
 // Helper to read room from URL params
@@ -120,25 +121,63 @@ export function ListenerApp() {
     setStatus('Idle')
   }
 
-  // Group patches by session (speaker) and create paragraph-style display
+  // Group patches into natural paragraphs based on pauses, sentences, and length
   const paragraphs = useMemo(() => {
     const items = Array.from(patches.values()).sort((a, b) => a.unitId.localeCompare(b.unitId))
 
-    // Group patches by sessionId (first part of unitId before |)
-    const groups = new Map<string, Patch[]>()
-    items.forEach(patch => {
+    const paragraphGroups: { id: string; patches: Patch[] }[] = []
+    let currentGroup: Patch[] = []
+    let lastSessionId = ''
+    let lastEndTime = 0
+    let currentWordCount = 0
+    let completeSentences = 0
+
+    items.forEach((patch) => {
       const sessionId = patch.unitId.split('|')[0]
-      if (!groups.has(sessionId)) {
-        groups.set(sessionId, [])
+      const wordCount = patch.text.split(/\s+/).length
+      const isCompleteSentence = patch.stage === 'hard' && /[.!?]$/.test(patch.text)
+
+      // Calculate time gap if timestamps available
+      const timeGap = patch.ts?.t0 && lastEndTime ? patch.ts.t0 - lastEndTime : 0
+
+      // Start new paragraph if:
+      // 1. Different speaker/session
+      // 2. Significant pause (3+ seconds)
+      // 3. After 2-3 complete sentences
+      // 4. Exceeded ~120 words and found a complete sentence
+      const shouldBreak =
+        sessionId !== lastSessionId ||
+        (timeGap > 3000 && currentGroup.length > 0) ||
+        (completeSentences >= 2 && isCompleteSentence) ||
+        (currentWordCount > 120 && isCompleteSentence)
+
+      if (shouldBreak && currentGroup.length > 0) {
+        paragraphGroups.push({
+          id: `${lastSessionId}-${paragraphGroups.length}`,
+          patches: [...currentGroup]
+        })
+        currentGroup = []
+        currentWordCount = 0
+        completeSentences = 0
       }
-      groups.get(sessionId)!.push(patch)
+
+      currentGroup.push(patch)
+      currentWordCount += wordCount
+      if (isCompleteSentence) completeSentences++
+
+      lastSessionId = sessionId
+      if (patch.ts?.t1) lastEndTime = patch.ts.t1
     })
 
-    // Convert groups to paragraph data
-    return Array.from(groups.entries()).map(([sessionId, patches]) => ({
-      sessionId,
-      patches: patches.sort((a, b) => a.unitId.localeCompare(b.unitId))
-    }))
+    // Add remaining patches
+    if (currentGroup.length > 0) {
+      paragraphGroups.push({
+        id: `${lastSessionId}-${paragraphGroups.length}`,
+        patches: currentGroup
+      })
+    }
+
+    return paragraphGroups
   }, [patches])
 
   return (
@@ -190,25 +229,23 @@ export function ListenerApp() {
       </div>
       <div className="text-sm text-slate-400 mb-2">Status: {status}</div>
 
-      {/* Paragraph-based display */}
-      <div className="space-y-4">
-        {paragraphs.map(({ sessionId, patches: sessionPatches }) => (
-          <div key={sessionId} className="rounded-md border border-slate-600/30 bg-slate-800/20 px-5 py-4">
-            <p className="text-base leading-relaxed">
-              {sessionPatches.map((p, idx) => (
-                <span key={p.unitId}>
-                  {debugMode && (
-                    <span className="text-xs uppercase tracking-wide opacity-50 mr-1">
-                      [{p.stage} v{p.version} {p.srcLang && `${p.srcLang}`}]
-                    </span>
-                  )}
-                  <span className={p.stage === 'hard' ? 'text-slate-100' : 'text-slate-400'}>
-                    {p.text}
+      {/* Paragraph-based display with natural breaks */}
+      <div className="space-y-3">
+        {paragraphs.map(({ id, patches: paragraphPatches }) => (
+          <div key={id} className="text-base leading-relaxed">
+            {paragraphPatches.map((p, idx) => (
+              <span key={p.unitId}>
+                {debugMode && (
+                  <span className="text-xs uppercase tracking-wide opacity-40 mr-1">
+                    [{p.stage} v{p.version} {p.srcLang && `${p.srcLang}`}]
                   </span>
-                  {idx < sessionPatches.length - 1 && ' '}
+                )}
+                <span className={p.stage === 'hard' ? 'text-slate-100' : 'text-slate-300/70'}>
+                  {p.text}
                 </span>
-              ))}
-            </p>
+                {idx < paragraphPatches.length - 1 && ' '}
+              </span>
+            ))}
           </div>
         ))}
       </div>
