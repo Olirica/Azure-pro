@@ -445,6 +445,39 @@ async function broadcastPatch(room, result) {
     'Broadcasting patch.'
   );
 
+  // Optional debug: show recipient counts per language
+  if (process.env.BROADCAST_DEBUG === 'true') {
+    try {
+      const recipientsByLang = {};
+      let recipientsTotal = 0;
+      const sourceLangKey = sourcePatch?.srcLang || 'source';
+      for (const client of room.clients) {
+        let langKey = null;
+        if (client.lang && patchesByLang.has(client.lang)) {
+          langKey = client.lang;
+        } else if (sourcePatch && !client.lang) {
+          langKey = sourceLangKey;
+        }
+        if (langKey) {
+          recipientsByLang[langKey] = (recipientsByLang[langKey] || 0) + 1;
+          recipientsTotal += 1;
+        }
+      }
+      room.logger.debug(
+        {
+          component: 'broadcast',
+          unitId: sourcePatch?.unitId,
+          totalClients: room.clients.size,
+          recipients: recipientsTotal,
+          recipientsByLang
+        },
+        'Broadcast recipients summary.'
+      );
+    } catch (e) {
+      room.logger.debug({ component: 'broadcast', err: e?.message }, 'Broadcast debug summary failed.');
+    }
+  }
+
   if (stateStore) {
     for (const [langKey, message] of patchesByLang.entries()) {
       stateStore
@@ -493,10 +526,19 @@ async function broadcastPatch(room, result) {
           : Array.isArray(incomingSentLen)
           ? incomingSentLen
           : null;
+        room.logger.debug(
+          { component: 'tts', lang: client.lang, unitId: message.payload.unitId, textLength: message.payload.text?.length },
+          '[TTS Enqueue] Enqueueing text for synthesis'
+        );
         queue.enqueue(client.lang, message.payload.unitId, message.payload.text, {
           voice: client.voice,
           sentLen: targetSentLen
         });
+      } else {
+        room.logger.warn(
+          { component: 'tts', lang: client.lang, unitId: message.payload.unitId },
+          '[TTS Enqueue] No TTS queue available for language'
+        );
       }
     }
   }
@@ -512,10 +554,14 @@ function broadcastAudio(room, payload) {
     }
     return;
   }
-  for (const client of room.clients) {
-    if (!client.wantsTts || client.lang !== payload.lang) {
-      continue;
-    }
+
+  const targetClients = Array.from(room.clients).filter(c => c.wantsTts && c.lang === payload.lang);
+  room.logger.debug(
+    { component: 'tts', lang: payload.lang, unitId: payload.unitId, textLength: payload.text?.length, audioSize: payload.audio?.length, targetClients: targetClients.length },
+    '[TTS Broadcast] Broadcasting audio to clients'
+  );
+
+  for (const client of targetClients) {
     safeSend(client.socket, {
       type: 'tts',
       payload: {
