@@ -1,4 +1,4 @@
-// Load environment variables FIRST before any other modules
+﻿// Load environment variables FIRST before any other modules
 require('dotenv').config();
 
 const path = require('path');
@@ -307,13 +307,13 @@ function ensureRoom(roomId) {
       queue.on('throttle', (payload) => {
         roomLogger.warn(
           { component: 'tts', lang: payload.lang, backlog: payload.backlog },
-          'TTS backlog high – applying throttle.'
+          'TTS backlog high â€“ applying throttle.'
         );
       });
       queue.on('resume', (payload) => {
         roomLogger.info(
           { component: 'tts', lang: payload.lang, backlog: payload.backlog },
-          'TTS backlog recovered – resuming normal voice.'
+          'TTS backlog recovered â€“ resuming normal voice.'
         );
       });
       ttsQueues.set(lang, queue);
@@ -545,7 +545,13 @@ async function broadcastPatch(room, result) {
 }
 
 function broadcastAudio(room, payload) {
-  if (!payload || !payload.audio || (Buffer.isBuffer(payload.audio) && payload.audio.length === 0)) {\n    if (room.logger && typeof room.logger.warn === 'function') {\n      room.logger.warn({ component: 'tts', unitId: payload?.unitId, lang: payload?.lang }, 'Skipping TTS broadcast � missing or empty audio payload.');\n    }\n    return;\n  }\nconst targetClients = Array.from(room.clients).filter(c => c.wantsTts && c.lang === payload.lang);
+  if (!payload || !payload.audio || (Buffer.isBuffer(payload.audio) && payload.audio.length === 0)) {
+    if (room.logger && typeof room.logger.warn === 'function') {
+      room.logger.warn({ component: 'tts', unitId: payload?.unitId, lang: payload?.lang }, 'Skipping TTS broadcast - missing or empty audio payload.');
+    }
+    return;
+  }
+  const targetClients = Array.from(room.clients).filter(c => c.wantsTts && c.lang === payload.lang);
   room.logger.debug(
     { component: 'tts', lang: payload.lang, unitId: payload.unitId, textLength: payload.text?.length, audioSize: payload.audio?.length, targetClients: targetClients.length },
     '[TTS Broadcast] Broadcasting audio to clients'
@@ -1142,3 +1148,6 @@ function shutdown(signal) {
   });
   setTimeout(() => process.exit(1), 5000).unref();
 }
+
+
+
