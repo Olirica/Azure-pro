@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import { Button } from '../components/ui/button'
+import { cn } from '../lib/utils'
 
 declare global { interface Window { SpeechSDK?: any } }
 
@@ -39,6 +40,9 @@ function getRoomFromUrl(): string {
 
 export function SpeakerApp() {
   const [room, setRoom] = useState(getRoomFromUrl())
+  const [roomInput, setRoomInput] = useState('')
+  const [roomUnlocked, setRoomUnlocked] = useState(false)
+  const [unlockError, setUnlockError] = useState('')
   const [srcLang, setSrcLang] = useState('en-US')
   const [targets, setTargets] = useState('fr-CA')
   const [status, setStatus] = useState('Idle')
@@ -319,6 +323,39 @@ export function SpeakerApp() {
     getDevices()
   }, [])
 
+  // Unlock room with access code
+  async function unlockRoom(e: React.FormEvent) {
+    e.preventDefault()
+    setUnlockError('')
+    const code = roomInput.trim()
+    if (!code) {
+      setUnlockError('Please enter a room code')
+      return
+    }
+    try {
+      const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`, { cache: 'no-store' })
+      const body = await res.json().catch(() => ({} as any))
+      if (!res.ok || !body?.ok || !body?.room) {
+        setUnlockError('Invalid room code. Please check and try again.')
+        return
+      }
+      const meta = body.room
+      setRoom(code)
+      setRoomMeta(meta)
+      setRoomUnlocked(true)
+      // If fixed source, reflect in input
+      if (meta.sourceLang && meta.sourceLang !== 'auto') {
+        setSrcLang(meta.sourceLang)
+      }
+      // Default targets from meta
+      if (Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
+        setTargets(meta.defaultTargetLangs.join(','))
+      }
+    } catch (err) {
+      setUnlockError('Failed to validate room code. Please try again.')
+    }
+  }
+
   // When room changes, fetch its meta to populate fields
   useEffect(() => {
     let cancelled = false
@@ -330,6 +367,7 @@ export function SpeakerApp() {
         if (!cancelled && res.ok && body?.ok && body?.room) {
           const meta = body.room
           setRoomMeta(meta)
+          setRoomUnlocked(true)
           // If fixed source, reflect in input
           if (meta.sourceLang && meta.sourceLang !== 'auto') {
             setSrcLang(meta.sourceLang)
@@ -345,77 +383,181 @@ export function SpeakerApp() {
     return () => { cancelled = true }
   }, [room])
 
-  return (
-    <main className="container mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold mb-4">Speaker</h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-        <div>
-          <Label className="mb-1 block">Room</Label>
-          <Input value={room} onChange={(e)=>setRoom(e.target.value)} />
+  // Access gate - show unlock screen if not authenticated
+  if (!roomUnlocked) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-blue-500/20 border border-emerald-500/30 flex items-center justify-center">
+              <svg className="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+            </div>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-blue-400 bg-clip-text text-transparent mb-2">Speaker Access</h1>
+            <p className="text-slate-400">Enter your room code to begin</p>
+          </div>
+          <form onSubmit={unlockRoom} className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-8 shadow-2xl space-y-4">
+            <div>
+              <Label className="mb-2 block text-slate-300">Room Code</Label>
+              <Input
+                value={roomInput}
+                onChange={(e) => setRoomInput(e.target.value)}
+                placeholder="Enter your room code"
+                className="bg-slate-900/50 border-slate-700 focus:border-emerald-500 transition-colors text-center text-lg tracking-wider"
+                autoFocus
+              />
+            </div>
+            <div className="pt-2">
+              <Button type="submit" className="w-full bg-gradient-to-r from-emerald-500 to-blue-500 hover:from-emerald-600 hover:to-blue-600 transition-all">
+                Access Room
+              </Button>
+              {unlockError && (
+                <p className="text-sm mt-3 text-center text-red-400">{unlockError}</p>
+              )}
+            </div>
+          </form>
         </div>
-        <div>
-          <Label className="mb-1 block">Source language</Label>
-          {roomMeta?.sourceLang === 'auto' ? (
-            <Input value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(',')})`} readOnly />
-          ) : (
-            <Input value={srcLang} onChange={(e)=>setSrcLang(e.target.value)} />
+      </main>
+    )
+  }
+
+  return (
+    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 px-4 py-8">
+      <div className="container mx-auto max-w-4xl">
+        <div className="mb-8">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-blue-400 bg-clip-text text-transparent mb-2">Speaker</h1>
+              <p className="text-slate-400">Configure your audio input and start translating</p>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-slate-500 mb-1">Room</div>
+              <code className="text-sm text-slate-300 bg-slate-800/50 px-3 py-1 rounded-lg border border-slate-700/50">{room}</code>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-6 shadow-xl mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div>
+            <Label className="mb-2 block text-slate-300">Source Language</Label>
+            {roomMeta?.sourceLang === 'auto' ? (
+              <Input
+                value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(',')})`}
+                readOnly
+                className="bg-slate-900/30 border-slate-700 text-slate-400"
+              />
+            ) : (
+              <Input
+                value={srcLang}
+                onChange={(e)=>setSrcLang(e.target.value)}
+                className="bg-slate-900/50 border-slate-700 focus:border-emerald-500 transition-colors"
+              />
+            )}
+          </div>
+          <div>
+            <Label className="mb-2 block text-slate-300">Target Languages</Label>
+            <Input
+              value={targets}
+              onChange={(e)=>setTargets(e.target.value)}
+              className="bg-slate-900/50 border-slate-700 focus:border-emerald-500 transition-colors"
+              placeholder="e.g., fr-CA, es-ES"
+            />
+          </div>
+        </div>
+
+        <div className="mb-6">
+          <Label className="mb-2 block text-slate-300">Audio Input Device</Label>
+          <select
+            value={selectedDeviceId}
+            onChange={(e) => setSelectedDeviceId(e.target.value)}
+            className="flex h-10 w-full rounded-lg border border-slate-700 bg-slate-900/50 text-slate-100 px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:border-emerald-500 [&>option]:bg-slate-800 [&>option]:text-slate-100"
+          >
+            {audioDevices.map(device => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
+              </option>
+            ))}
+          </select>
+          {audioDevices.length === 0 && (
+            <p className="text-xs text-slate-500 mt-2">No audio devices found. Allow microphone access to see devices.</p>
           )}
         </div>
-        <div>
-          <Label className="mb-1 block">Targets</Label>
-          <Input value={targets} onChange={(e)=>setTargets(e.target.value)} />
-        </div>
-      </div>
 
-      {/* Audio device selector */}
-      <div className="mb-4">
-        <Label className="mb-1 block">Audio Input Device</Label>
-        <select
-          value={selectedDeviceId}
-          onChange={(e) => setSelectedDeviceId(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-slate-800 text-slate-100 px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&>option]:bg-slate-800 [&>option]:text-slate-100"
-        >
-          {audioDevices.map(device => (
-            <option key={device.deviceId} value={device.deviceId}>
-              {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
-            </option>
-          ))}
-        </select>
-        {audioDevices.length === 0 && (
-          <p className="text-xs text-slate-500 mt-1">No audio devices found. Allow microphone access to see devices.</p>
-        )}
-      </div>
-      <div className="flex items-center gap-2 mb-3">
-        <Button onClick={start}>Start</Button>
-        <Button variant="outline" onClick={stop}>Stop</Button>
-        <span className="text-sm text-slate-400">{status}</span>
+        <div className="flex items-center gap-3 pt-4 border-t border-slate-700/50">
+          <Button
+            onClick={start}
+            className="bg-gradient-to-r from-emerald-500 to-blue-500 hover:from-emerald-600 hover:to-blue-600 transition-all"
+          >
+            <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            Start Recording
+          </Button>
+          <Button
+            variant="outline"
+            onClick={stop}
+            className="border-slate-700 hover:bg-slate-800"
+          >
+            <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M6 6h12v12H6z" />
+            </svg>
+            Stop
+          </Button>
+          <div className="flex items-center gap-2">
+            <div className={cn(
+              'w-2 h-2 rounded-full',
+              status === 'Listening' || status === 'Session started' ? 'bg-emerald-400 animate-pulse' :
+              status.startsWith('Error') ? 'bg-red-400' :
+              'bg-slate-600'
+            )}></div>
+            <span className="text-sm text-slate-400">{status}</span>
+          </div>
+        </div>
       </div>
 
       {/* Live Transcription Monitor */}
       {transcriptHistory.length > 0 && (
-        <div className="mt-6">
-          <h2 className="text-sm font-semibold text-slate-400 mb-2">Live Transcription (Original)</h2>
-          <div className="bg-slate-800/50 rounded-lg p-4 space-y-1 max-h-48 overflow-y-auto">
+        <div className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-6 shadow-xl">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+            <h2 className="text-lg font-semibold text-slate-200">Live Transcription</h2>
+            <span className="text-xs text-slate-500 ml-auto">Original audio</span>
+          </div>
+          <div className="bg-slate-900/50 rounded-lg p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
             {transcriptHistory.map((text, idx) => (
-              <div key={idx} className="text-sm text-slate-200">
+              <div
+                key={idx}
+                className="text-sm text-slate-200 bg-slate-800/50 rounded-md p-3 border border-slate-700/50 hover:bg-slate-800/70 transition-colors"
+              >
                 {text}
               </div>
             ))}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Showing last {transcriptHistory.length} sentence{transcriptHistory.length !== 1 ? 's' : ''}</p>
+          <p className="text-xs text-slate-500 mt-3">
+            Showing last {transcriptHistory.length} sentence{transcriptHistory.length !== 1 ? 's' : ''}
+          </p>
         </div>
       )}
 
       {/* Debug Info */}
       {status.startsWith('Error') && (
-        <div className="mt-4 p-3 bg-red-900/20 border border-red-500/30 rounded-md">
-          <p className="text-sm text-red-300">
+        <div className="rounded-xl border border-red-500/50 bg-red-900/20 backdrop-blur-sm p-4 shadow-xl">
+          <div className="flex items-center gap-2 mb-2">
+            <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="font-semibold text-red-300">Error</span>
+          </div>
+          <p className="text-sm text-red-200">
             {status.includes('Token failed') ?
               'Failed to get Azure Speech token. Please check your SPEECH_KEY and SPEECH_REGION in .env file.' :
               status}
           </p>
         </div>
       )}
+      </div>
     </main>
   )
 }
