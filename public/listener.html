@@ -14,20 +14,20 @@
       body {
         margin: 0;
         padding: 1.5rem;
-        background: #020617;
-        color: #e2e8f0;
+        background: #0f172a;
+        color: #f1f5f9;
       }
       main {
         max-width: 960px;
         margin: 0 auto;
       }
       section {
-        background: rgba(2, 6, 23, 0.75);
+        background: rgba(15, 23, 42, 0.6);
         border-radius: 12px;
         padding: 1.5rem;
         margin-bottom: 1.5rem;
+        box-shadow: 0 25px 30px -24px rgba(15, 23, 42, 0.8);
         border: 1px solid rgba(148, 163, 184, 0.2);
-        box-shadow: 0 20px 35px -30px rgba(2, 132, 199, 0.8);
       }
       h1,
       h2 {
@@ -41,18 +41,18 @@
       input,
       select {
         width: 100%;
-        padding: 0.65rem 0.8rem;
+        padding: 0.6rem 0.8rem;
         margin-top: 0.35rem;
         border-radius: 8px;
         border: 1px solid rgba(148, 163, 184, 0.3);
-        background: rgba(2, 6, 23, 0.45);
+        background: rgba(15, 23, 42, 0.35);
         color: inherit;
       }
       button {
         display: inline-flex;
         align-items: center;
         gap: 0.5rem;
-        padding: 0.65rem 1.1rem;
+        padding: 0.6rem 1rem;
         border-radius: 8px;
         border: none;
         font-weight: 600;
@@ -63,12 +63,12 @@
         transition: transform 120ms ease, box-shadow 120ms ease;
       }
       button[disabled] {
-        opacity: 0.6;
+        opacity: 0.5;
         cursor: not-allowed;
       }
       button:hover:not([disabled]) {
         transform: translateY(-1px);
-        box-shadow: 0 12px 18px -12px rgba(56, 189, 248, 0.9);
+        box-shadow: 0 10px 18px -10px rgba(56, 189, 248, 0.9);
       }
       ul {
         list-style: none;
@@ -77,19 +77,17 @@
       }
       li {
         padding: 0.75rem 1rem;
-        margin-bottom: 0.55rem;
-        border-radius: 10px;
+        margin-bottom: 0.5rem;
+        border-radius: 8px;
         border: 1px solid rgba(148, 163, 184, 0.25);
-        background: rgba(15, 23, 42, 0.45);
-        transition: background 180ms ease, border-color 180ms ease;
+        background: rgba(15, 23, 42, 0.3);
       }
       li[data-stage="soft"] {
-        border-color: rgba(94, 234, 212, 0.25);
-        background: rgba(22, 78, 99, 0.35);
+        border-color: rgba(94, 234, 212, 0.2);
       }
       li[data-stage="hard"] {
-        border-color: rgba(147, 197, 253, 0.5);
-        background: rgba(59, 130, 246, 0.18);
+        border-color: rgba(186, 230, 253, 0.45);
+        background: rgba(14, 116, 144, 0.2);
       }
       .stack {
         display: flex;
@@ -97,15 +95,12 @@
         gap: 1rem;
         align-items: center;
       }
-      .stack > div {
-        min-width: 200px;
-        flex: 1 1 220px;
-      }
       .status {
         display: inline-flex;
         align-items: center;
         gap: 0.35rem;
         font-size: 0.95rem;
+        margin-right: 1.25rem;
       }
       .badge {
         padding: 0.15rem 0.55rem;
@@ -123,17 +118,8 @@
         gap: 1rem;
         margin-top: 1.25rem;
       }
-      label.checkbox {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-      }
-      label.checkbox input {
-        width: auto;
-        margin: 0;
-      }
       small {
-        color: rgba(148, 163, 184, 0.75);
+        color: rgba(148, 163, 184, 0.8);
       }
       /* Translation quality indicators (dev mode) */
       .segment {
@@ -159,6 +145,8 @@
   <body>
     <main>
       <section>
+        <h1>Listener Console</h1>
+        <p>Choose your target language, connect to a room, and follow the live transcript or audio.</p>
         <div class="stack">
           <!-- Room ID field removed; room is read from ?room= in the URL -->
           <div>
@@ -171,6 +159,9 @@
               <option value="es-ES">Spanish (Spain)</option>
               <option value="es-MX">Spanish (Mexico)</option>
             </select>
+          </div>
+          <div>
+            <small>Room is derived from the ?room= URL parameter.</small>
           </div>
         </div>
         <div class="controls">
@@ -400,20 +391,46 @@
             }
           }
 
-          // Get or create the current paragraph
-          let currentParagraph = transcriptEl.lastElementChild;
+          // Build paragraphs newest-first. Only break on a pause AND terminal punctuation
+          // so we avoid fragmenting mid-sentence while still keeping paragraphs reasonably short.
+          let currentParagraph = transcriptEl.firstElementChild;
 
-          // Create new paragraph if none exists or if this is a new speaking session
-          // (detect pause by checking if last update was > 5 seconds ago)
           const lastUpdate = currentParagraph?.dataset.lastUpdate ? parseInt(currentParagraph.dataset.lastUpdate) : 0;
           const timeSinceLastUpdate = now - lastUpdate;
+          let shouldCreateNewParagraph = false;
 
-          if (!currentParagraph || timeSinceLastUpdate > 5000) {
+          if (!currentParagraph) {
+            shouldCreateNewParagraph = true;
+          } else if (timeSinceLastUpdate > 5000) {
+            const previousText = currentParagraph.textContent.trim();
+            if (previousText) {
+              // Look for terminal punctuation at the end of the last paragraph
+              let lastMeaningfulChar = '';
+              for (let i = previousText.length - 1; i >= 0; i--) {
+                const char = previousText[i];
+                if (char !== ' ' && char !== '"' && char !== "'" && char !== ')' && char !== ']') {
+                  lastMeaningfulChar = char;
+                  break;
+                }
+              }
+              const endsWithTerminal =
+                lastMeaningfulChar === '.' || lastMeaningfulChar === '!' || lastMeaningfulChar === '?';
+              shouldCreateNewParagraph = endsWithTerminal;
+            } else {
+              shouldCreateNewParagraph = true;
+            }
+          }
+
+          if (shouldCreateNewParagraph) {
             currentParagraph = document.createElement('li');
             currentParagraph.dataset.lastUpdate = now;
             currentParagraph.dataset.stage = 'hard';
             currentParagraph.dataset.utterances = '[]'; // Track utterances in this paragraph
-            transcriptEl.appendChild(currentParagraph);
+            if (transcriptEl.firstChild) {
+              transcriptEl.insertBefore(currentParagraph, transcriptEl.firstChild);
+            } else {
+              transcriptEl.appendChild(currentParagraph);
+            }
           } else {
             currentParagraph.dataset.lastUpdate = now;
           }
@@ -429,9 +446,33 @@
           const currentText = currentParagraph.textContent;
           let textToAppend = patch.text;
 
-          // Capitalize first letter if this is the start of a paragraph
-          if (!currentText && textToAppend) {
-            textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+          // Smart capitalization: only uppercase when starting a new sentence/paragraph
+          if (textToAppend) {
+            let shouldCapitalize = false;
+            const firstChar = textToAppend.charAt(0);
+            const isAlreadyCapitalized = firstChar === firstChar.toUpperCase();
+
+            if (!currentText) {
+              // First segment in paragraph → always capitalize
+              shouldCapitalize = !isAlreadyCapitalized;
+            } else {
+              const trimmedCurrent = currentText.trim();
+              let lastMeaningfulChar = '';
+              for (let i = trimmedCurrent.length - 1; i >= 0; i--) {
+                const char = trimmedCurrent[i];
+                if (char !== ' ' && char !== '"' && char !== "'" && char !== ')' && char !== ']') {
+                  lastMeaningfulChar = char;
+                  break;
+                }
+              }
+              const endsWithTerminal =
+                lastMeaningfulChar === '.' || lastMeaningfulChar === '!' || lastMeaningfulChar === '?';
+              shouldCapitalize = endsWithTerminal && !isAlreadyCapitalized;
+            }
+
+            if (shouldCapitalize) {
+              textToAppend = textToAppend.charAt(0).toUpperCase() + textToAppend.slice(1);
+            }
           }
 
           // Dev mode: Show translation quality indicators
@@ -476,6 +517,7 @@
               ? `${currentText} ${textToAppend}`
               : textToAppend;
           }
+          currentParagraph.dataset.stage = patch.stage;
 
           // Track this utterance to prevent duplicates
           state.itemsByUnit.set(utterId, {
@@ -501,17 +543,8 @@
 
         function cleanupOldParagraphs() {
           const MAX_PARAGRAPHS = 20; // Keep last 20 paragraphs (live streaming focus)
-          const paragraphs = transcriptEl.querySelectorAll('li');
-
-          if (paragraphs.length > MAX_PARAGRAPHS) {
-            const removeCount = paragraphs.length - MAX_PARAGRAPHS;
-            for (let i = 0; i < removeCount; i++) {
-              paragraphs[i].remove();
-            }
-            console.debug('[listener] Cleaned up old paragraphs', {
-              removed: removeCount,
-              remaining: MAX_PARAGRAPHS
-            });
+          while (transcriptEl.childElementCount > MAX_PARAGRAPHS) {
+            transcriptEl.lastElementChild?.remove(); // drop oldest first
           }
         }
 
