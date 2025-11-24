@@ -445,6 +445,60 @@ async function broadcastPatch(room, result) {
     }
   }
 
+  // On-demand translation safety net: if a listener requests a language that
+  // wasn't translated upstream (e.g., late language switch, missing target),
+  // generate it here so they never fall back to source text.
+  if (sourcePatch) {
+    const missingLangs = new Set();
+    for (const client of room.clients) {
+      if (
+        client.lang &&
+        client.lang !== sourcePatch.srcLang &&
+        !patchesByLang.has(client.lang)
+      ) {
+        missingLangs.add(client.lang);
+      }
+    }
+    if (missingLangs.size) {
+      try {
+        const fallbackTranslations = await translator.translate(
+          room.id,
+          sourcePatch.text || '',
+          sourcePatch.srcLang,
+          Array.from(missingLangs),
+          [] // no extra context
+        );
+        for (const translation of fallbackTranslations) {
+          const stamped = {
+            unitId: sourcePatch.unitId,
+            utteranceId: sourcePatch.utteranceId || sourcePatch.unitId,
+            stage: sourcePatch.stage,
+            op: 'replace',
+            version: sourcePatch.version,
+            rev: sourcePatch.rev || sourcePatch.version,
+            text: translation.text,
+            srcLang: sourcePatch.srcLang,
+            targetLang: translation.lang,
+            isFinal: sourcePatch.stage === 'hard',
+            sentLen: {
+              src: translation.srcSentLen,
+              tgt: translation.transSentLen
+            },
+            ts: sourcePatch.ts,
+            emittedAt: now,
+            provider: translation.provider || 'fallback'
+          };
+          patchesByLang.set(translation.lang, { type: 'patch', payload: stamped });
+        }
+      } catch (err) {
+        room.logger.warn(
+          { component: 'broadcast', err: err?.message, missingLangs: Array.from(missingLangs) },
+          'On-demand translation fallback failed.'
+        );
+      }
+    }
+  }
+
   room.logger.debug(
     {
       component: 'broadcast',
