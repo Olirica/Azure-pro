@@ -163,6 +163,7 @@ const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
   .filter(Boolean);
+const PATCH_HISTORY_MAX_MS = getNumberEnv('PATCH_HISTORY_MAX_MS', 5 * 60 * 1000); // Default: keep only last 5 minutes of history
 const AUTO_DETECT_LANGS = (process.env.AUTO_DETECT_LANGS || '')
   .split(',')
   .map((lang) => lang.trim())
@@ -364,7 +365,12 @@ async function hydrateRoom(room) {
   }
   try {
     const units = await stateStore.loadUnits(room.id);
+    const cutoff = PATCH_HISTORY_MAX_MS > 0 ? Date.now() - PATCH_HISTORY_MAX_MS : null;
     for (const unit of units) {
+      const updatedAt = unit?.updatedAt || unit?.ts || 0;
+      if (cutoff && (!updatedAt || updatedAt < cutoff)) {
+        continue;
+      }
       room.processor.hydrateUnit(unit);
     }
   } catch (err) {
@@ -412,26 +418,29 @@ async function broadcastPatch(room, result) {
     return;
   }
   const { sourcePatch, translatedPatches } = result;
+  const now = Date.now();
 
   const patchesByLang = new Map();
   if (sourcePatch) {
+    const stampedSource = { ...sourcePatch, emittedAt: sourcePatch.emittedAt || now };
     const langKey = sourcePatch.srcLang || 'source';
     patchesByLang.set(langKey, {
       type: 'patch',
-      payload: sourcePatch
+      payload: stampedSource
     });
     // Mirror source patch for listeners explicitly requesting 'source'.
     patchesByLang.set('source', {
       type: 'patch',
-      payload: sourcePatch
+      payload: stampedSource
     });
   }
 
   if (Array.isArray(translatedPatches)) {
     for (const patch of translatedPatches) {
+      const stampedPatch = { ...patch, emittedAt: patch.emittedAt || now };
       patchesByLang.set(patch.targetLang, {
         type: 'patch',
-        payload: patch
+        payload: stampedPatch
       });
     }
   }
@@ -518,6 +527,7 @@ async function broadcastPatch(room, result) {
     }
 
     if (client.lang && message && message.payload.stage === 'hard' && client.wantsTts) {
+      const version = typeof message.payload.version === 'number' ? message.payload.version : null;
       const queue = room.getTtsQueueForLang(client.lang);
       if (queue) {
         const incomingSentLen = message.payload.sentLen;
@@ -532,7 +542,8 @@ async function broadcastPatch(room, result) {
         );
         queue.enqueue(client.lang, message.payload.unitId, message.payload.text, {
           voice: client.voice,
-          sentLen: targetSentLen
+          sentLen: targetSentLen,
+          version
         });
       } else {
         room.logger.warn(
@@ -568,7 +579,8 @@ function broadcastAudio(room, payload) {
         audio: payload.audio.toString('base64'),
         format: payload.format,
         voice: payload.voice || client.voice || null,
-        sentLen: payload.sentLen || null
+        sentLen: payload.sentLen || null,
+        version: payload.version ?? null
       }
     });
     metrics.recordTtsEvent(room.id, payload.lang, 'delivered');
@@ -992,7 +1004,9 @@ wsServer.on('connection', async (socket, request) => {
     });
 
     let history = [];
-    if (stateStore) {
+    const now = Date.now();
+    const cutoff = PATCH_HISTORY_MAX_MS > 0 ? now - PATCH_HISTORY_MAX_MS : null;
+    if (stateStore && PATCH_HISTORY_MAX_MS !== 0) {
       try {
         history = await stateStore.loadPatches(roomId, lang || 'source');
       } catch (err) {
@@ -1003,15 +1017,34 @@ wsServer.on('connection', async (socket, request) => {
       }
     }
 
-    if (history.length) {
-      for (const patchPayload of history) {
-        safeSend(socket, { type: 'patch', payload: patchPayload });
+    const stampPatchPayload = (payload) => {
+      if (!payload) {
+        return null;
       }
-    } else {
+      const emittedAt = payload.emittedAt || payload.updatedAt || null;
+      if (cutoff && (!emittedAt || emittedAt < cutoff)) {
+        return null;
+      }
+      return { ...payload, emittedAt: emittedAt || now };
+    };
+
+    if (history.length && PATCH_HISTORY_MAX_MS !== 0) {
+      for (const patchPayload of history) {
+        const stamped = stampPatchPayload(patchPayload);
+        if (stamped) {
+          safeSend(socket, { type: 'patch', payload: stamped });
+        }
+      }
+    } else if (PATCH_HISTORY_MAX_MS !== 0) {
       const snapshot = await room.processor.snapshot(lang);
       if (snapshot.length) {
         for (const entry of snapshot) {
-          safeSend(socket, { type: 'patch', payload: entry });
+          const emittedAt =
+            typeof entry?.updatedAt === 'number' && entry.updatedAt > 0 ? entry.updatedAt : now;
+          if (cutoff && (!emittedAt || emittedAt < cutoff)) {
+            continue;
+          }
+          safeSend(socket, { type: 'patch', payload: { ...entry, emittedAt } });
         }
       }
     }
@@ -1148,6 +1181,3 @@ function shutdown(signal) {
   });
   setTimeout(() => process.exit(1), 5000).unref();
 }
-
-
-

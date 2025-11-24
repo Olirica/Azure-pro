@@ -163,7 +163,8 @@ function createTtsQueue({
       voice: item.voice,
       duration: item.duration,
       createdAt: item.createdAt,
-      sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+      sentLen: typeof item.sentLen === 'number' ? item.sentLen : null,
+      version: typeof item.version === 'number' ? item.version : null
     }));
   }
 
@@ -352,7 +353,8 @@ function createTtsQueue({
       rateMultiplier: BASE_SPEED, // Start at base speed (1.05x)
       hydrated: false,
       audioFormat: resolvedAudioFormat,
-      prefetch: new Map()
+      prefetch: new Map(),
+      latestVersion: new Map()
     };
 
     queueByLang.set(lang, state);
@@ -370,16 +372,22 @@ function createTtsQueue({
             }
             const duration =
               typeof item.duration === 'number' ? item.duration : estimateSeconds(item.text);
+            const rootUnitId = item.rootUnitId || item.unitId.split('#')[0];
+            const version = typeof item.version === 'number' ? item.version : null;
             state.queue.push({
               lang,
               unitId: item.unitId,
-              rootUnitId: item.rootUnitId || item.unitId.split('#')[0],
+              rootUnitId,
               text: item.text,
               voice: item.voice,
               duration,
               createdAt: item.createdAt || Date.now(),
-              sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+              sentLen: typeof item.sentLen === 'number' ? item.sentLen : null,
+              version
             });
+            if (version !== null) {
+              state.latestVersion.set(rootUnitId, version);
+            }
           }
           updateQueueBacklog(lang);
           if (state.queue.length) {
@@ -521,6 +529,18 @@ function createTtsQueue({
       return;
     }
     const item = state.queue[0];
+    const latestVersion = state.latestVersion.get(item.rootUnitId || item.unitId);
+    const itemVersion = typeof item.version === 'number' ? item.version : null;
+    if (
+      latestVersion !== undefined &&
+      (itemVersion === null || itemVersion < latestVersion)
+    ) {
+      state.queue.shift();
+      clearPrefetchForUnit(state, item.rootUnitId || item.unitId);
+      updateQueueBacklog(lang);
+      setImmediate(() => processQueueForLang(lang));
+      return;
+    }
     state.playing = item;
     state.processing = true;
     updateQueueBacklog(lang);
@@ -542,7 +562,8 @@ function createTtsQueue({
           audio: audioBuffer,
           format: inferMimeType(state.audioFormat),
           voice: voiceName,
-          sentLen: typeof item.sentLen === 'number' ? item.sentLen : null
+          sentLen: typeof item.sentLen === 'number' ? item.sentLen : null,
+          version: typeof item.version === 'number' ? item.version : null
         });
       } else {
         emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
@@ -587,6 +608,15 @@ function createTtsQueue({
     }
 
     const state = ensureLangState(lang);
+    const incomingVersion = typeof options.version === 'number' ? options.version : null;
+    if (incomingVersion !== null) {
+      const prev = state.latestVersion.get(unitId);
+      if (prev !== undefined && incomingVersion < prev) {
+        metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
+        return;
+      }
+      state.latestVersion.set(unitId, incomingVersion);
+    }
 
     state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
     clearPrefetchForUnit(state, unitId);
@@ -598,9 +628,16 @@ function createTtsQueue({
 
     const lengths = normalizeLengths(options.sentLen);
     const segmentsFromLengths = splitByCharLengths(trimmed, lengths);
-    const segments = (segmentsFromLengths && segmentsFromLengths.length
-      ? segmentsFromLengths
-      : segmentText(trimmed)) || [trimmed];
+    const totalFromLengths = Array.isArray(segmentsFromLengths)
+      ? segmentsFromLengths.reduce((sum, part) => sum + part.length, 0)
+      : 0;
+    const lengthDelta = Math.abs(totalFromLengths - trimmed.length);
+    const useLengths =
+      segmentsFromLengths &&
+      segmentsFromLengths.length &&
+      lengthDelta <= Math.max(12, Math.floor(trimmed.length * 0.05));
+    const segments =
+      (useLengths ? segmentsFromLengths : segmentText(trimmed)) || [trimmed];
     // Duration accounts for current playback speed
     const currentRate = state.rateMultiplier || BASE_SPEED;
     const makeDuration = (input) => estimateSeconds(input) / currentRate;
@@ -614,7 +651,8 @@ function createTtsQueue({
         voice: options.voice,
         duration: makeDuration(segment),
         createdAt: Date.now(),
-        sentLen: lengths ? lengths[index] || null : null
+        sentLen: lengths ? lengths[index] || null : null,
+        version: incomingVersion
       });
     });
 
@@ -656,6 +694,9 @@ function createTtsQueue({
       if (state.prefetch) {
         state.prefetch.clear();
       }
+      if (state.latestVersion) {
+        state.latestVersion.clear();
+      }
       persistQueueState(lang);
       if (store && typeof store.clearTtsQueue === 'function') {
         store
@@ -683,6 +724,9 @@ function createTtsQueue({
       state.processing = false;
       if (state.prefetch) {
         state.prefetch.clear();
+      }
+      if (state.latestVersion) {
+        state.latestVersion.clear();
       }
       updateQueueBacklog(lang);
       persistQueueState(lang);

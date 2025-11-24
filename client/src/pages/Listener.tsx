@@ -35,6 +35,7 @@ type TtsEvent = {
 }
 
 export function ListenerApp() {
+  const PATCH_TTL_MS = 5 * 60 * 1000
   const [room, setRoom] = useState(getRoomFromUrl())
   const [roomInput, setRoomInput] = useState('')
   const [roomUnlocked, setRoomUnlocked] = useState(false)
@@ -45,13 +46,14 @@ export function ListenerApp() {
   const [roomMeta, setRoomMeta] = useState<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const [patches, setPatches] = useState<Map<string, Patch>>(new Map())
+  const patchesRef = useRef<Map<string, Patch>>(new Map())
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [showDeviceSelector, setShowDeviceSelector] = useState(false)
 
   // TTS queue
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const ttsQueueRef = useRef<{ src: string; mime: string; unitId?: string }[]>([])
+  const ttsQueueRef = useRef<{ src: string; mime: string; unitId?: string; version?: number | null }[]>([])
   const [ttsEvents, setTtsEvents] = useState<TtsEvent[]>([])
   const isPlayingRef = useRef(false)
 
@@ -107,6 +109,11 @@ export function ListenerApp() {
   // Set page title
   useEffect(() => { document.title = 'Simo' }, [])
 
+  // Keep ref in sync for message handlers
+  useEffect(() => {
+    patchesRef.current = patches
+  }, [patches])
+
   // Debug toggle via ?debug=true
   const debugMode = useMemo(() => {
     try { return new URLSearchParams(window.location.search).get('debug') === 'true' } catch { return false }
@@ -137,6 +144,23 @@ export function ListenerApp() {
       isPlayingRef.current = false
       playNextTts()
     })
+  }, [])
+
+  // Prune old patches from view to avoid stale paragraphs
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPatches((prev) => {
+        const now = Date.now()
+        const next = new Map<string, Patch>()
+        for (const [key, value] of prev.entries()) {
+          if (!value.receivedAt || now - value.receivedAt <= PATCH_TTL_MS) {
+            next.set(key, value)
+          }
+        }
+        return next
+      })
+    }, 30000)
+    return () => clearInterval(id)
   }, [])
 
   // Enumerate audio output devices
@@ -178,6 +202,14 @@ export function ListenerApp() {
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
   }, [showDeviceSelector])
+
+  // Reconnect automatically when translation language changes
+  useEffect(() => {
+    if (!roomUnlocked) return
+    if (status === 'Connected' || status === 'Connecting') {
+      disconnect()
+    }
+  }, [lang, roomUnlocked])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unlock room with access code
   async function unlockRoom(e: React.FormEvent) {
@@ -241,13 +273,40 @@ export function ListenerApp() {
     }
   }, [roomMeta, lang, status])
 
+  // Ensure language changes always reopen the socket with the new lang
+  useEffect(() => {
+    if (!roomUnlocked) return
+    lastAutoConnectKeyRef.current = null
+    if (status === 'Connected' || status === 'Connecting') {
+      disconnect()
+      setTimeout(() => connect(), 60)
+    } else if (status === 'Idle') {
+      connect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang, roomUnlocked])
+
   function connect() {
     try { wsRef.current?.close() } catch {}
+    patchBufferRef.current = []
+    if (rafFlushRef.current != null) {
+      cancelAnimationFrame(rafFlushRef.current)
+      rafFlushRef.current = null
+    }
+    setPatches(new Map())
+    ttsQueueRef.current = []
+    setTtsEvents([])
+    isPlayingRef.current = false
+    if (audioRef.current) {
+      try { audioRef.current.pause() } catch {}
+      audioRef.current.src = ''
+    }
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const url = `${proto}://${window.location.host}/ws?role=listener&room=${encodeURIComponent(room)}&lang=${encodeURIComponent(lang)}&tts=${tts}`
     if (debugMode) console.log('[Listener] Connecting:', { url, room, lang, tts })
     const ws = new WebSocket(url)
     wsRef.current = ws
+    lastAutoConnectKeyRef.current = `${room}|${lang}`
     setStatus('Connecting')
     ws.onopen = () => setStatus('Connected')
     ws.onclose = () => setStatus('Idle')
@@ -256,6 +315,10 @@ export function ListenerApp() {
       try {
         const msg = JSON.parse(ev.data)
         if (msg?.type === 'patch' && msg?.payload) {
+          const emittedAt = typeof msg.payload.emittedAt === 'number' ? msg.payload.emittedAt : null
+          if (emittedAt && Date.now() - emittedAt > PATCH_TTL_MS) {
+            return
+          }
           const p: Patch = { ...msg.payload, receivedAt: Date.now() }
           patchBufferRef.current.push(p)
           schedulePatchFlush()
@@ -264,7 +327,20 @@ export function ListenerApp() {
           if (base64 && base64.length > 0) {
             const fmt = String(msg.payload.format || 'audio/mpeg')
             const src = `data:${fmt};base64,${base64}`
-            ttsQueueRef.current.push({ src, mime: fmt, unitId: msg.payload.unitId })
+            const incomingVersion = typeof msg.payload.version === 'number' ? msg.payload.version : null
+            const unitId = msg.payload.unitId || msg.payload.rootUnitId
+            if (unitId && incomingVersion !== null) {
+              const latestPatch = patchesRef.current.get(unitId)
+              if (latestPatch && typeof latestPatch.version === 'number' && latestPatch.version > incomingVersion) {
+                return
+              }
+              ttsQueueRef.current = ttsQueueRef.current.filter(item => {
+                if (!item.unitId || item.unitId !== unitId) return true
+                if (item.version == null) return false
+                return item.version >= incomingVersion
+              })
+            }
+            ttsQueueRef.current.push({ src, mime: fmt, unitId, version: incomingVersion })
             setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'received', format: fmt, audioSize: base64.length }])
             if (!isPlayingRef.current) playNextTts()
           }
@@ -279,6 +355,21 @@ export function ListenerApp() {
 
   function disconnect() {
     try { wsRef.current?.close() } catch {}
+    wsRef.current = null
+    lastAutoConnectKeyRef.current = null
+    patchBufferRef.current = []
+    if (rafFlushRef.current != null) {
+      cancelAnimationFrame(rafFlushRef.current)
+      rafFlushRef.current = null
+    }
+    setPatches(new Map())
+    ttsQueueRef.current = []
+    setTtsEvents([])
+    isPlayingRef.current = false
+    if (audioRef.current) {
+      try { audioRef.current.pause() } catch {}
+      audioRef.current.src = ''
+    }
     setStatus('Idle')
   }
 
@@ -442,7 +533,7 @@ export function ListenerApp() {
           <svg className="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
           </svg>
-          <h2 className="text-xl font-semibold text-slate-200">Live Transcript</h2>
+          <h2 className="text-xl font-semibold text-slate-200">Live Captions</h2>
           <span className="text-xs text-slate-500 ml-auto">{getLangName(lang)}</span>
         </div>
         <ul className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
@@ -451,27 +542,22 @@ export function ListenerApp() {
               key={p.unitId}
               data-stage={p.stage}
               className={cn(
-                'rounded-lg border p-4 transition-all hover:bg-slate-900/50',
-                p.stage === 'hard' ? 'border-violet-500/50 bg-violet-500/5' : 'border-slate-700/50 bg-slate-900/30'
+                'rounded-lg border p-4 transition-all hover:-translate-y-0.5 hover:shadow-lg/20',
+                p.stage === 'hard'
+                  ? 'border-slate-700/70 bg-slate-900/70'
+                  : 'border-amber-400/40 bg-amber-500/10'
               )}
             >
-              <div className="flex items-center gap-2 mb-2">
-                <span className={cn(
-                  'text-xs font-semibold px-2 py-0.5 rounded-full',
-                  p.stage === 'hard' ? 'bg-violet-500/20 text-violet-300' : 'bg-slate-700/50 text-slate-400'
-                )}>
-                  {p.stage === 'hard' ? 'FINAL' : 'INTERIM'}
-                </span>
-                {p.srcLang && (
-                  <span className="text-xs text-slate-500">
-                    from <span className="text-slate-400">{p.srcLang}</span>
-                  </span>
-                )}
+              <div className="flex items-center gap-3 mb-2">
+                <div className={cn(
+                  'h-2 w-2 rounded-full',
+                  p.stage === 'hard' ? 'bg-emerald-400' : 'bg-amber-300 animate-pulse'
+                )} />
                 <span className="text-xs text-slate-600 ml-auto">
                   {p.receivedAt ? new Date(p.receivedAt).toLocaleTimeString() : ''}
                 </span>
               </div>
-              <div className="text-slate-200 whitespace-pre-wrap leading-relaxed">{p.text}</div>
+              <div className="text-lg text-slate-100 whitespace-pre-wrap leading-relaxed">{p.text}</div>
             </li>
           ))}
           {patches.size === 0 && (
@@ -491,4 +577,3 @@ export function ListenerApp() {
     </main>
   )
 }
-
