@@ -642,7 +642,8 @@ async function broadcastPatch(room, result) {
         const words = countWords(message.payload.text);
         // Skip ultra-short TTS to avoid choppy playback unless punct-final
         const isPunctFinal = /[.?!]\s*$/.test(String(message.payload.text || ''));
-        if (words < 3 && !isPunctFinal) {
+        // Allow short clips if they’re the only output (to avoid “empty src”)
+        if (words < 2 && !isPunctFinal) {
           room.logger.debug(
             { component: 'tts', lang: client.lang, unitId: message.payload.unitId },
             '[TTS Skip] Segment too short for synthesis'
