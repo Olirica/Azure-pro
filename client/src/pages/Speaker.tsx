@@ -115,8 +115,8 @@ export function SpeakerApp() {
 
     const timeSinceLock = now - stability.detectedAt
 
-    // Lock language for 15 seconds after detection (configurable via SPEECH_LANG_STABILITY_SEC)
-    const lockDurationMs = 15000  // TODO: Make configurable
+    // Lock language for 8 seconds after detection to avoid flapping
+    const lockDurationMs = 8000  // TODO: Make configurable
     if (timeSinceLock < lockDurationMs) {
       return stability.current
     }

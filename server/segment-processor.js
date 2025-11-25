@@ -19,6 +19,20 @@ function longestCommonPrefix(a, b) {
   return a.slice(0, i);
 }
 
+function langBase(lang) {
+  return (typeof lang === 'string' ? lang.split('-')[0].toLowerCase() : '');
+}
+
+// Lightweight French detector to catch mislabelled segments (e.g., auto-detect returns en-US)
+function inferLikelyBase(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t) return '';
+  const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
+  const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|pour|avec|dans|semaine|aujourd'hui|aller|souliers|plais|ceux|mettez|d'accord|min)\b/.test(t);
+  if (hasFrenchAccents || hasFrenchWords) return 'fr';
+  return '';
+}
+
 function dedupeContinuation(previous, incoming) {
   const next = (incoming || '').trim();
   if (!previous) {
@@ -923,6 +937,20 @@ class SegmentProcessor {
       return { stale: true };
     }
 
+    // If the text clearly looks French but lang is tagged en-US, treat as French
+    const inferredBase = inferLikelyBase(incomingText);
+    const incomingBase = langBase(srcLang);
+    let normalizedSrcLang = srcLang || existing?.srcLang;
+    if (inferredBase && inferredBase !== incomingBase) {
+      // Prefer preserving region if existing srcLang shares the inferred base
+      const existingBase = langBase(existing?.srcLang);
+      if (existingBase === inferredBase) {
+        normalizedSrcLang = existing?.srcLang;
+      } else {
+        normalizedSrcLang = `${inferredBase}-${inferredBase.toUpperCase()}`;
+      }
+    }
+
     const mergedText =
       finalStage === 'soft' && existing ? dedupeContinuation(existing.text, incomingText) : incomingText;
 
@@ -932,7 +960,7 @@ class SegmentProcessor {
       stage: finalStage,
       version,
       text: mergedText,
-      srcLang: srcLang || existing?.srcLang,
+      srcLang: normalizedSrcLang || existing?.srcLang,
       ts: ts || existing?.ts,
       updatedAt: Date.now()
     };
