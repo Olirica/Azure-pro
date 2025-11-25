@@ -422,6 +422,17 @@ async function broadcastPatch(room, result) {
 
   const langBase = (lang) => (typeof lang === 'string' ? String(lang).split('-')[0].toLowerCase() : '');
 
+  // Very light heuristic to guess French content when auto-detect mislabels it as en-US
+  function inferLikelyBase(text) {
+    const t = String(text || '').toLowerCase();
+    if (!t) return '';
+    // Accented characters or common French function words
+    const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
+    const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|pour|avec|dans|semaine|aujourd'hui|aller|souliers)\b/.test(t);
+    if (hasFrenchAccents || hasFrenchWords) return 'fr';
+    return '';
+  }
+
   const patchesByLang = new Map();
   if (sourcePatch) {
     const stampedSource = { ...sourcePatch, emittedAt: sourcePatch.emittedAt || now };
@@ -451,16 +462,25 @@ async function broadcastPatch(room, result) {
   // wasn't translated upstream (e.g., late language switch, missing target),
   // generate it here so they never fall back to source text.
   if (sourcePatch) {
+    const srcBase = langBase(sourcePatch.srcLang);
+    const inferredBase = inferLikelyBase(sourcePatch.text);
+    const textSuspicious = inferredBase && inferredBase !== srcBase;
     const directMirrors = [];
     const translateLangs = new Set();
     for (const client of room.clients) {
-      if (
-        client.lang &&
-        client.lang !== sourcePatch.srcLang &&
-        !patchesByLang.has(client.lang)
-      ) {
+      if (!client.lang) continue;
+
+      const clientBase = langBase(client.lang);
+
+      // If the text looks mislabeled, force translation even if client lang matches srcLang
+      if (textSuspicious && !patchesByLang.has(client.lang)) {
+        translateLangs.add(client.lang);
+        continue;
+      }
+
+      if (client.lang !== sourcePatch.srcLang && !patchesByLang.has(client.lang)) {
         // If the listener lang shares the same base (fr-FR vs fr-CA), just mirror the source text
-        if (langBase(client.lang) && langBase(client.lang) === langBase(sourcePatch.srcLang)) {
+        if (clientBase && clientBase === srcBase) {
           directMirrors.push(client.lang);
         } else {
           translateLangs.add(client.lang);
@@ -493,7 +513,7 @@ async function broadcastPatch(room, result) {
         const fallbackTranslations = await translator.translate(
           room.id,
           sourcePatch.text || '',
-          sourcePatch.srcLang,
+          textSuspicious ? undefined : sourcePatch.srcLang,
           Array.from(translateLangs),
           [] // no extra context
         );
