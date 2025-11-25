@@ -420,6 +420,8 @@ async function broadcastPatch(room, result) {
   const { sourcePatch, translatedPatches } = result;
   const now = Date.now();
 
+  const langBase = (lang) => (typeof lang === 'string' ? String(lang).split('-')[0].toLowerCase() : '');
+
   const patchesByLang = new Map();
   if (sourcePatch) {
     const stampedSource = { ...sourcePatch, emittedAt: sourcePatch.emittedAt || now };
@@ -449,23 +451,50 @@ async function broadcastPatch(room, result) {
   // wasn't translated upstream (e.g., late language switch, missing target),
   // generate it here so they never fall back to source text.
   if (sourcePatch) {
-    const missingLangs = new Set();
+    const directMirrors = [];
+    const translateLangs = new Set();
     for (const client of room.clients) {
       if (
         client.lang &&
         client.lang !== sourcePatch.srcLang &&
         !patchesByLang.has(client.lang)
       ) {
-        missingLangs.add(client.lang);
+        // If the listener lang shares the same base (fr-FR vs fr-CA), just mirror the source text
+        if (langBase(client.lang) && langBase(client.lang) === langBase(sourcePatch.srcLang)) {
+          directMirrors.push(client.lang);
+        } else {
+          translateLangs.add(client.lang);
+        }
       }
     }
-    if (missingLangs.size) {
+    // Emit direct mirrors (identity copy) for same-language-family listeners
+    for (const lang of directMirrors) {
+      const stamped = {
+        unitId: sourcePatch.unitId,
+        utteranceId: sourcePatch.utteranceId || sourcePatch.unitId,
+        stage: sourcePatch.stage,
+        op: 'replace',
+        version: sourcePatch.version,
+        rev: sourcePatch.rev || sourcePatch.version,
+        text: sourcePatch.text,
+        srcLang: sourcePatch.srcLang,
+        targetLang: lang,
+        isFinal: sourcePatch.stage === 'hard',
+        sentLen: sourcePatch.sentLen || null,
+        ts: sourcePatch.ts,
+        emittedAt: now,
+        provider: 'mirror'
+      };
+      patchesByLang.set(lang, { type: 'patch', payload: stamped });
+    }
+
+    if (translateLangs.size) {
       try {
         const fallbackTranslations = await translator.translate(
           room.id,
           sourcePatch.text || '',
           sourcePatch.srcLang,
-          Array.from(missingLangs),
+          Array.from(translateLangs),
           [] // no extra context
         );
         for (const translation of fallbackTranslations) {
@@ -492,7 +521,7 @@ async function broadcastPatch(room, result) {
         }
       } catch (err) {
         room.logger.warn(
-          { component: 'broadcast', err: err?.message, missingLangs: Array.from(missingLangs) },
+          { component: 'broadcast', err: err?.message, missingLangs: Array.from(translateLangs) },
           'On-demand translation fallback failed.'
         );
       }
