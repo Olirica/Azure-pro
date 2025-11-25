@@ -150,15 +150,15 @@ const FINAL_DEBOUNCE_MS = Number(process.env.FINAL_DEBOUNCE_MS || 180);
 const WATCHDOG_EVENT_IDLE_MS = Number(process.env.WATCHDOG_EVENT_IDLE_MS || 12000);
 const WATCHDOG_PCM_IDLE_MS = Number(process.env.WATCHDOG_PCM_IDLE_MS || 7000);
 const TTS_RATE_BOOST_PERCENT = getNumberEnv('TTS_RATE_BOOST_PERCENT', 10);
-const FASTFINALS_STABLE_K = getNumberEnv('FASTFINALS_STABLE_K', 3);
-const FASTFINALS_MIN_STABLE_MS = getNumberEnv('FASTFINALS_MIN_STABLE_MS', 600);
-const FASTFINALS_MIN_CHARS = getNumberEnv('FASTFINALS_MIN_CHARS', 28);
+const FASTFINALS_STABLE_K = getNumberEnv('FASTFINALS_STABLE_K', 2);
+const FASTFINALS_MIN_STABLE_MS = getNumberEnv('FASTFINALS_MIN_STABLE_MS', 350);
+const FASTFINALS_MIN_CHARS = getNumberEnv('FASTFINALS_MIN_CHARS', 24);
 const FASTFINALS_MIN_WORDS = getNumberEnv('FASTFINALS_MIN_WORDS', 6);
-const FASTFINALS_EMIT_THROTTLE_MS = getNumberEnv('FASTFINALS_EMIT_THROTTLE_MS', 700);
-const FASTFINALS_PUNCT_STABLE_MS = getNumberEnv('FASTFINALS_PUNCT_STABLE_MS', 350);
-const FASTFINALS_TAIL_GUARD_CHARS = getNumberEnv('FASTFINALS_TAIL_GUARD_CHARS', 12);
+const FASTFINALS_EMIT_THROTTLE_MS = getNumberEnv('FASTFINALS_EMIT_THROTTLE_MS', 500);
+const FASTFINALS_PUNCT_STABLE_MS = getNumberEnv('FASTFINALS_PUNCT_STABLE_MS', 300);
+const FASTFINALS_TAIL_GUARD_CHARS = getNumberEnv('FASTFINALS_TAIL_GUARD_CHARS', 10);
 const FASTFINALS_TAIL_GUARD_WORDS = getNumberEnv('FASTFINALS_TAIL_GUARD_WORDS', 2);
-const MAX_UTTERANCE_DURATION_MS = getNumberEnv('MAX_UTTERANCE_DURATION_MS', 9000);
+const MAX_UTTERANCE_DURATION_MS = getNumberEnv('MAX_UTTERANCE_DURATION_MS', 7000);
 const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
@@ -241,6 +241,12 @@ function ensureRoom(roomId) {
   if (rooms.has(roomId)) {
     return rooms.get(roomId);
   }
+
+  const countWords = (text) =>
+    String(text || '')
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter(Boolean).length;
 
   const roomLogger = logger.child({ roomId });
 
@@ -633,6 +639,16 @@ async function broadcastPatch(room, result) {
       const version = typeof message.payload.version === 'number' ? message.payload.version : null;
       const queue = room.getTtsQueueForLang(client.lang);
       if (queue) {
+        const words = countWords(message.payload.text);
+        // Skip ultra-short TTS to avoid choppy playback unless punct-final
+        const isPunctFinal = /[.?!]\s*$/.test(String(message.payload.text || ''));
+        if (words < 3 && !isPunctFinal) {
+          room.logger.debug(
+            { component: 'tts', lang: client.lang, unitId: message.payload.unitId },
+            '[TTS Skip] Segment too short for synthesis'
+          );
+          continue;
+        }
         const incomingSentLen = message.payload.sentLen;
         const targetSentLen = Array.isArray(incomingSentLen?.tgt)
           ? incomingSentLen.tgt

@@ -18,7 +18,7 @@ class TranslationBuffer {
    * @param {number} [deps.maxMergeCount=3] - Maximum segments to merge together
    * @param {boolean} [deps.enabled=true] - Enable/disable buffering
    */
-  constructor({ roomId, logger, onTranslate, mergeWindowMs = 1500, minMergeChars = 50, maxMergeCount = 3, enabled = true }) {
+  constructor({ roomId, logger, onTranslate, mergeWindowMs = 1100, minMergeChars = 40, maxMergeCount = 3, enabled = true }) {
     this.roomId = roomId;
     this.logger = logger;
     this.onTranslate = onTranslate;
