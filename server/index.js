@@ -237,16 +237,17 @@ function defaultRoomTargets(room) {
   return langs;
 }
 
+function countWords(text) {
+  return String(text || '')
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter(Boolean).length;
+}
+
 function ensureRoom(roomId) {
   if (rooms.has(roomId)) {
     return rooms.get(roomId);
   }
-
-  const countWords = (text) =>
-    String(text || '')
-      .split(/\s+/)
-      .map((w) => w.trim())
-      .filter(Boolean).length;
 
   const roomLogger = logger.child({ roomId });
 
