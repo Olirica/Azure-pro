@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import { Button } from '../components/ui/button'
+import { Textarea } from '../components/ui/textarea'
 import { cn } from '../lib/utils'
 
 declare global { interface Window { SpeechSDK?: any } }
@@ -50,6 +51,8 @@ export function SpeakerApp() {
   const [transcriptHistory, setTranscriptHistory] = useState<string[]>([])  // Store recent transcriptions
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
+  const [glossary, setGlossary] = useState('')
+  const [isRecording, setIsRecording] = useState(false)
   const recogRef = useRef<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSoftAt = useRef(0)
@@ -58,11 +61,29 @@ export function SpeakerApp() {
   const version = useRef(0)
   const sessionId = useRef(crypto.randomUUID())
   const isAutoDetect = useRef(false)  // Track if using auto-detect mode
+  const currentUnitLang = useRef('')
 
   // Set page title
   useEffect(() => {
     document.title = 'Simo'
   }, [])
+
+  // Load persisted glossary for the current room
+  useEffect(() => {
+    if (typeof window === 'undefined' || !room) return
+    try {
+      const saved = localStorage.getItem(glossaryStorageKey(room))
+      if (saved !== null) setGlossary(saved)
+    } catch {}
+  }, [room])
+
+  // Persist glossary per room so it survives sessions
+  useEffect(() => {
+    if (typeof window === 'undefined' || !roomUnlocked || !room) return
+    try {
+      localStorage.setItem(glossaryStorageKey(room), glossary)
+    } catch {}
+  }, [roomUnlocked, room, glossary])
 
   // Language stability tracking (for auto-detect mode)
   const langStability = useRef({
@@ -72,7 +93,8 @@ export function SpeakerApp() {
     switchCount: 0  // Consecutive detections of candidate
   })
 
-  function unitId() { return `${sessionId.current}|${srcLang}|${unitIndex.current}` }
+  function unitId(lang: string) { return `${sessionId.current}|${lang}|${unitIndex.current}` }
+  const glossaryStorageKey = (roomId: string) => `simo-glossary-${roomId}`
 
   // Get stable language with persistence (15s lock + 2 consecutive threshold)
   function getStableLanguage(detected: string | undefined, fallback: string): string {
@@ -93,8 +115,8 @@ export function SpeakerApp() {
 
     const timeSinceLock = now - stability.detectedAt
 
-    // Lock language for 15 seconds after detection (configurable via SPEECH_LANG_STABILITY_SEC)
-    const lockDurationMs = 15000  // TODO: Make configurable
+    // Lock language for 8 seconds after detection to avoid flapping
+    const lockDurationMs = 8000  // TODO: Make configurable
     if (timeSinceLock < lockDurationMs) {
       return stability.current
     }
@@ -156,12 +178,24 @@ export function SpeakerApp() {
 
   async function start() {
     try {
+      if (isRecording) return
+      setIsRecording(true)
+      sessionId.current = crypto.randomUUID()
+      unitIndex.current = 0
+      version.current = 0
+      currentUnitLang.current = ''
+      langStability.current = { current: '', detectedAt: 0, switchCandidate: null, switchCount: 0 }
+      lastSoftText.current = ''
+      lastSoftAt.current = 0
       setStatus('Loading Speech SDK…')
       const SDK = await loadSpeechCdn()
       setStatus('Fetching token…')
       const { token, region } = await fetchToken()
       const speechConfig = SDK.SpeechConfig.fromAuthorizationToken(token, region)
       speechConfig.outputFormat = SDK.OutputFormat.Detailed
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_PostProcessingOption, 'TrueText') } catch {}
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_ContinuousLanguageIdPriority, 'Accuracy') } catch {}
+      try { speechConfig.enableDictation() } catch {}
 
       // Load room metadata to configure fixed vs. auto-detect languages
       let meta: any = null
@@ -227,6 +261,19 @@ export function SpeakerApp() {
       }
 
       recogRef.current = recognizer
+      // Apply glossary/phrase list hints to improve domain accuracy
+      const phrases = glossary
+        .split(/\n|,|;/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+      if (phrases.length) {
+        try {
+          const phraseList = SDK.PhraseListGrammar.fromRecognizer(recognizer)
+          phraseList.clear()
+          phrases.forEach((phrase) => phraseList.addPhrase(phrase))
+        } catch {}
+      }
+
       startHeartbeat()
       setStatus('Listening')
 
@@ -254,7 +301,17 @@ export function SpeakerApp() {
           const rawDetected = detectedLangFrom(e.result)
           const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
           const stableLang = getStableLanguage(rawDetected, fallback)
-          await postPatch({ unitId: unitId(), stage: 'soft', op: 'replace', version: version.current, text, srcLang: stableLang, ts: timestamps(e.result) })
+          if (!currentUnitLang.current) currentUnitLang.current = stableLang
+          const langForUnit = currentUnitLang.current || stableLang
+          await postPatch({
+            unitId: unitId(langForUnit),
+            stage: 'soft',
+            op: 'replace',
+            version: version.current,
+            text,
+            srcLang: langForUnit,
+            ts: timestamps(e.result)
+          })
         }
       }
 
@@ -274,33 +331,58 @@ export function SpeakerApp() {
           const rawDetected = detectedLangFrom(e.result)
           const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
           const stableLang = getStableLanguage(rawDetected, fallback)
-          await postPatch({ unitId: unitId(), stage: 'hard', op: 'replace', version: version.current, text, srcLang: stableLang, ts: timestamps(e.result) })
+          if (!currentUnitLang.current) currentUnitLang.current = stableLang
+          const langForUnit = currentUnitLang.current || stableLang
+          await postPatch({
+            unitId: unitId(langForUnit),
+            stage: 'hard',
+            op: 'replace',
+            version: version.current,
+            text,
+            srcLang: langForUnit,
+            ts: timestamps(e.result)
+          })
           unitIndex.current += 1
           version.current = 0
           lastSoftText.current = ''
           lastSoftAt.current = Date.now()
+          currentUnitLang.current = ''
         }
       }
 
       recognizer.sessionStarted = () => setStatus('Session started')
-      recognizer.sessionStopped = () => setStatus('Session stopped')
-      recognizer.canceled = (_s: any, e: any) => setStatus('Canceled')
+      recognizer.sessionStopped = () => { setStatus('Session stopped'); setIsRecording(false); currentUnitLang.current = '' }
+      recognizer.canceled = (_s: any, e: any) => { setStatus('Canceled'); setIsRecording(false); currentUnitLang.current = '' }
       recognizer.startContinuousRecognitionAsync()
     } catch (e: any) {
       setStatus('Error: ' + (e?.message || 'unknown'))
+      try { wsRef.current?.close() } catch {}
+      setIsRecording(false)
     }
   }
 
-  function stop() {
+  async function stop() {
+    setStatus('Stopping…')
     try { wsRef.current?.close() } catch {}
+    wsRef.current = null
     const r = recogRef.current
     if (r) {
-      try { r.stopContinuousRecognitionAsync(()=>{},()=>{}) } catch {}
+      try {
+        await new Promise<void>((resolve) => {
+          try {
+            r.stopContinuousRecognitionAsync(()=>resolve(), ()=>resolve())
+          } catch {
+            resolve()
+          }
+        })
+      } catch {}
       try { r.close() } catch {}
     }
     recogRef.current = null
     setStatus('Idle')
     setTranscriptHistory([])  // Clear transcript history when stopping
+    setIsRecording(false)
+    currentUnitLang.current = ''
   }
 
   // Enumerate audio input devices on mount
@@ -485,9 +567,23 @@ export function SpeakerApp() {
           )}
         </div>
 
+        <div className="mb-6">
+          <Label className="mb-2 block text-slate-300">Glossary / Phrase Hints</Label>
+          <Textarea
+            value={glossary}
+            onChange={(e)=> setGlossary(e.target.value)}
+            placeholder="Product names, acronyms, people... one per line"
+            className="bg-slate-900/50 border-slate-700 focus-visible:ring-emerald-500 text-slate-100 min-h-[110px]"
+          />
+          <p className="text-xs text-slate-500 mt-2">
+            Sent to Azure as a phrase list to improve recognition. Saved locally for this room.
+          </p>
+        </div>
+
         <div className="flex items-center gap-3 pt-4 border-t border-slate-700/50">
           <Button
             onClick={start}
+            disabled={isRecording}
             className="bg-gradient-to-r from-emerald-500 to-blue-500 hover:from-emerald-600 hover:to-blue-600 transition-all"
           >
             <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
@@ -498,7 +594,8 @@ export function SpeakerApp() {
           <Button
             variant="outline"
             onClick={stop}
-            className="border-slate-700 hover:bg-slate-800"
+            disabled={!isRecording && status === 'Idle'}
+            className="border-slate-700 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
               <path d="M6 6h12v12H6z" />

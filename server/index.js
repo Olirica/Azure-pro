@@ -163,6 +163,7 @@ const PHRASE_HINTS = (process.env.PHRASE_HINTS || '')
   .split(',')
   .map((hint) => hint.trim())
   .filter(Boolean);
+const PATCH_HISTORY_MAX_MS = getNumberEnv('PATCH_HISTORY_MAX_MS', 5 * 60 * 1000); // Default: keep only last 5 minutes of history
 const AUTO_DETECT_LANGS = (process.env.AUTO_DETECT_LANGS || '')
   .split(',')
   .map((lang) => lang.trim())
@@ -364,7 +365,12 @@ async function hydrateRoom(room) {
   }
   try {
     const units = await stateStore.loadUnits(room.id);
+    const cutoff = PATCH_HISTORY_MAX_MS > 0 ? Date.now() - PATCH_HISTORY_MAX_MS : null;
     for (const unit of units) {
+      const updatedAt = unit?.updatedAt || unit?.ts || 0;
+      if (cutoff && (!updatedAt || updatedAt < cutoff)) {
+        continue;
+      }
       room.processor.hydrateUnit(unit);
     }
   } catch (err) {
@@ -412,27 +418,133 @@ async function broadcastPatch(room, result) {
     return;
   }
   const { sourcePatch, translatedPatches } = result;
+  const now = Date.now();
+
+  const langBase = (lang) => (typeof lang === 'string' ? String(lang).split('-')[0].toLowerCase() : '');
+
+  // Very light heuristic to guess French content when auto-detect mislabels it as en-US
+  function inferLikelyBase(text) {
+    const t = String(text || '').toLowerCase();
+    if (!t) return '';
+    // Accented characters or common French function words
+    const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
+    const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|pour|avec|dans|semaine|aujourd'hui|aller|souliers)\b/.test(t);
+    if (hasFrenchAccents || hasFrenchWords) return 'fr';
+    return '';
+  }
 
   const patchesByLang = new Map();
   if (sourcePatch) {
+    const stampedSource = { ...sourcePatch, emittedAt: sourcePatch.emittedAt || now };
     const langKey = sourcePatch.srcLang || 'source';
     patchesByLang.set(langKey, {
       type: 'patch',
-      payload: sourcePatch
+      payload: stampedSource
     });
     // Mirror source patch for listeners explicitly requesting 'source'.
     patchesByLang.set('source', {
       type: 'patch',
-      payload: sourcePatch
+      payload: stampedSource
     });
   }
 
   if (Array.isArray(translatedPatches)) {
     for (const patch of translatedPatches) {
+      const stampedPatch = { ...patch, emittedAt: patch.emittedAt || now };
       patchesByLang.set(patch.targetLang, {
         type: 'patch',
-        payload: patch
+        payload: stampedPatch
       });
+    }
+  }
+
+  // On-demand translation safety net: if a listener requests a language that
+  // wasn't translated upstream (e.g., late language switch, missing target),
+  // generate it here so they never fall back to source text.
+  if (sourcePatch) {
+    const srcBase = langBase(sourcePatch.srcLang);
+    const inferredBase = inferLikelyBase(sourcePatch.text);
+    const textSuspicious = inferredBase && inferredBase !== srcBase;
+    const directMirrors = [];
+    const translateLangs = new Set();
+    for (const client of room.clients) {
+      if (!client.lang) continue;
+
+      const clientBase = langBase(client.lang);
+
+      // If the text looks mislabeled, force translation even if client lang matches srcLang
+      if (textSuspicious && !patchesByLang.has(client.lang)) {
+        translateLangs.add(client.lang);
+        continue;
+      }
+
+      if (client.lang !== sourcePatch.srcLang && !patchesByLang.has(client.lang)) {
+        // If the listener lang shares the same base (fr-FR vs fr-CA), just mirror the source text
+        if (clientBase && clientBase === srcBase) {
+          directMirrors.push(client.lang);
+        } else {
+          translateLangs.add(client.lang);
+        }
+      }
+    }
+    // Emit direct mirrors (identity copy) for same-language-family listeners
+    for (const lang of directMirrors) {
+      const stamped = {
+        unitId: sourcePatch.unitId,
+        utteranceId: sourcePatch.utteranceId || sourcePatch.unitId,
+        stage: sourcePatch.stage,
+        op: 'replace',
+        version: sourcePatch.version,
+        rev: sourcePatch.rev || sourcePatch.version,
+        text: sourcePatch.text,
+        srcLang: sourcePatch.srcLang,
+        targetLang: lang,
+        isFinal: sourcePatch.stage === 'hard',
+        sentLen: sourcePatch.sentLen || null,
+        ts: sourcePatch.ts,
+        emittedAt: now,
+        provider: 'mirror'
+      };
+      patchesByLang.set(lang, { type: 'patch', payload: stamped });
+    }
+
+    if (translateLangs.size) {
+      try {
+        const fallbackTranslations = await translator.translate(
+          room.id,
+          sourcePatch.text || '',
+          textSuspicious ? undefined : sourcePatch.srcLang,
+          Array.from(translateLangs),
+          [] // no extra context
+        );
+        for (const translation of fallbackTranslations) {
+          const stamped = {
+            unitId: sourcePatch.unitId,
+            utteranceId: sourcePatch.utteranceId || sourcePatch.unitId,
+            stage: sourcePatch.stage,
+            op: 'replace',
+            version: sourcePatch.version,
+            rev: sourcePatch.rev || sourcePatch.version,
+            text: translation.text,
+            srcLang: sourcePatch.srcLang,
+            targetLang: translation.lang,
+            isFinal: sourcePatch.stage === 'hard',
+            sentLen: {
+              src: translation.srcSentLen,
+              tgt: translation.transSentLen
+            },
+            ts: sourcePatch.ts,
+            emittedAt: now,
+            provider: translation.provider || 'fallback'
+          };
+          patchesByLang.set(translation.lang, { type: 'patch', payload: stamped });
+        }
+      } catch (err) {
+        room.logger.warn(
+          { component: 'broadcast', err: err?.message, missingLangs: Array.from(translateLangs) },
+          'On-demand translation fallback failed.'
+        );
+      }
     }
   }
 
@@ -518,6 +630,7 @@ async function broadcastPatch(room, result) {
     }
 
     if (client.lang && message && message.payload.stage === 'hard' && client.wantsTts) {
+      const version = typeof message.payload.version === 'number' ? message.payload.version : null;
       const queue = room.getTtsQueueForLang(client.lang);
       if (queue) {
         const incomingSentLen = message.payload.sentLen;
@@ -532,7 +645,8 @@ async function broadcastPatch(room, result) {
         );
         queue.enqueue(client.lang, message.payload.unitId, message.payload.text, {
           voice: client.voice,
-          sentLen: targetSentLen
+          sentLen: targetSentLen,
+          version
         });
       } else {
         room.logger.warn(
@@ -568,7 +682,8 @@ function broadcastAudio(room, payload) {
         audio: payload.audio.toString('base64'),
         format: payload.format,
         voice: payload.voice || client.voice || null,
-        sentLen: payload.sentLen || null
+        sentLen: payload.sentLen || null,
+        version: payload.version ?? null
       }
     });
     metrics.recordTtsEvent(room.id, payload.lang, 'delivered');
@@ -992,7 +1107,9 @@ wsServer.on('connection', async (socket, request) => {
     });
 
     let history = [];
-    if (stateStore) {
+    const now = Date.now();
+    const cutoff = PATCH_HISTORY_MAX_MS > 0 ? now - PATCH_HISTORY_MAX_MS : null;
+    if (stateStore && PATCH_HISTORY_MAX_MS !== 0) {
       try {
         history = await stateStore.loadPatches(roomId, lang || 'source');
       } catch (err) {
@@ -1003,15 +1120,34 @@ wsServer.on('connection', async (socket, request) => {
       }
     }
 
-    if (history.length) {
-      for (const patchPayload of history) {
-        safeSend(socket, { type: 'patch', payload: patchPayload });
+    const stampPatchPayload = (payload) => {
+      if (!payload) {
+        return null;
       }
-    } else {
+      const emittedAt = payload.emittedAt || payload.updatedAt || null;
+      if (cutoff && (!emittedAt || emittedAt < cutoff)) {
+        return null;
+      }
+      return { ...payload, emittedAt: emittedAt || now };
+    };
+
+    if (history.length && PATCH_HISTORY_MAX_MS !== 0) {
+      for (const patchPayload of history) {
+        const stamped = stampPatchPayload(patchPayload);
+        if (stamped) {
+          safeSend(socket, { type: 'patch', payload: stamped });
+        }
+      }
+    } else if (PATCH_HISTORY_MAX_MS !== 0) {
       const snapshot = await room.processor.snapshot(lang);
       if (snapshot.length) {
         for (const entry of snapshot) {
-          safeSend(socket, { type: 'patch', payload: entry });
+          const emittedAt =
+            typeof entry?.updatedAt === 'number' && entry.updatedAt > 0 ? entry.updatedAt : now;
+          if (cutoff && (!emittedAt || emittedAt < cutoff)) {
+            continue;
+          }
+          safeSend(socket, { type: 'patch', payload: { ...entry, emittedAt } });
         }
       }
     }
@@ -1148,6 +1284,3 @@ function shutdown(signal) {
   });
   setTimeout(() => process.exit(1), 5000).unref();
 }
-
-
-
