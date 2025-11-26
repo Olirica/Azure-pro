@@ -527,6 +527,13 @@ class SegmentProcessor {
     const lastEntry = this.continuationWindow[this.continuationWindow.length - 1];
     const previousSegment = lastEntry.segment;
 
+    // Avoid cross-language merges that can duplicate text across streams
+    const prevBase = langBase(previousSegment?.srcLang);
+    const newBase = langBase(newSegment?.srcLang);
+    if (prevBase && newBase && prevBase !== newBase) {
+      return false;
+    }
+
     // Use helper to determine if we should merge
     const shouldMerge = shouldMergeContinuation(previousSegment, newSegment);
 

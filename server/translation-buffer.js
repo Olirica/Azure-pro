@@ -49,6 +49,13 @@ class TranslationBuffer {
       return;
     }
 
+    // Keep only the latest revision per unitId to avoid duplicated merges
+    if (segment?.unitId) {
+      this.pendingSegments = this.pendingSegments.filter(
+        (entry) => entry.segment?.unitId !== segment.unitId
+      );
+    }
+
     // Add to pending buffer
     this.pendingSegments.push({
       segment,
@@ -170,9 +177,20 @@ class TranslationBuffer {
    * @param {Array} segments
    */
   async translateMerged(segments) {
-    // Merge text from all segments
-    const mergedText = segments
-      .map(s => (s.segment.text || '').trim())
+    // Deduplicate by unitId, keeping the latest entry for each
+    const uniq = [];
+    const seen = new Set();
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const entry = segments[i];
+      const id = entry.segment?.unitId || `idx-${i}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      uniq.unshift(entry);
+    }
+
+    // Merge text from all unique segments (oldest → newest)
+    const mergedText = uniq
+      .map((s) => (s.segment.text || '').trim())
       .filter(Boolean)
       .join(' ');
 
@@ -181,20 +199,20 @@ class TranslationBuffer {
     }
 
     // Use the first segment as the base, but with merged text
-    const baseSegment = segments[0].segment;
+    const baseSegment = uniq[0].segment;
     const mergedSegment = {
       ...baseSegment,
       text: mergedText,
       unitId: `${baseSegment.unitId}#merged`, // Mark as merged
-      mergedFrom: segments.map(s => s.segment.unitId),
-      mergedCount: segments.length,
+      mergedFrom: uniq.map((s) => s.segment.unitId),
+      mergedCount: uniq.length,
       // Allow TTS only if any of the merged parts were marked TTS-safe
-      ttsFinal: segments.some(s => s.segment?.ttsFinal !== false)
+      ttsFinal: uniq.some((s) => s.segment?.ttsFinal !== false)
     };
 
     // Get union of all target languages
     const allTargetLangs = new Set();
-    for (const { targetLangs } of segments) {
+    for (const { targetLangs } of uniq) {
       for (const lang of targetLangs) {
         allTargetLangs.add(lang);
       }
