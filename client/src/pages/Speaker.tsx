@@ -185,7 +185,7 @@ export function SpeakerApp() {
     if (deviceId) {
       try {
         // Prime permissions and validate the device exists
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } })
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { ideal: deviceId } } })
         // Close any previous pinned stream
         if (micStreamRef.current) {
           micStreamRef.current.getTracks().forEach(t => t.stop())
