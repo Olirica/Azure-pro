@@ -343,11 +343,26 @@ export function ListenerApp() {
       try {
         const msg = JSON.parse(ev.data)
         if (msg?.type === 'patch' && msg?.payload) {
-          const emittedAt = typeof msg.payload.emittedAt === 'number' ? msg.payload.emittedAt : null
+          const payload = msg.payload
+
+          // Suppression patches hide a segment that was merged into a previous one
+          if (payload.op === 'suppress' && payload.unitId) {
+            patchBufferRef.current = patchBufferRef.current.filter(p => p.unitId !== payload.unitId)
+            setPatches(prev => {
+              if (!prev.has(payload.unitId)) return prev
+              const next = new Map(prev)
+              next.delete(payload.unitId)
+              return next
+            })
+            ttsQueueRef.current = ttsQueueRef.current.filter(item => item.unitId !== payload.unitId)
+            return
+          }
+
+          const emittedAt = typeof payload.emittedAt === 'number' ? payload.emittedAt : null
           if (emittedAt && Date.now() - emittedAt > PATCH_TTL_MS) {
             return
           }
-          const p: Patch = { ...msg.payload, receivedAt: Date.now() }
+          const p: Patch = { ...payload, receivedAt: Date.now() }
           patchBufferRef.current.push(p)
           schedulePatchFlush()
         } else if (msg?.type === 'tts' && msg?.payload && tts) {

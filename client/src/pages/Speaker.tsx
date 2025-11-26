@@ -62,6 +62,7 @@ export function SpeakerApp() {
   const sessionId = useRef(crypto.randomUUID())
   const isAutoDetect = useRef(false)  // Track if using auto-detect mode
   const currentUnitLang = useRef('')
+  const micStreamRef = useRef<MediaStream | null>(null)
 
   // Fast-finals state machine for prefix-based emission
   const sttState = useRef({
@@ -179,6 +180,30 @@ export function SpeakerApp() {
     try { await fetch('/api/segments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch {}
   }
 
+  // Build an AudioConfig pinned to the requested deviceId when provided
+  async function buildAudioConfig(SDK: any, deviceId?: string) {
+    if (deviceId) {
+      try {
+        if (micStreamRef.current) {
+          micStreamRef.current.getTracks().forEach(t => t.stop())
+          micStreamRef.current = null
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } })
+        micStreamRef.current = stream
+        return SDK.AudioConfig.fromStreamInput(stream)
+      } catch (err) {
+        console.warn('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
+      }
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+    }
+    return deviceId
+      ? SDK.AudioConfig.fromMicrophoneInput(deviceId)
+      : SDK.AudioConfig.fromDefaultMicrophoneInput()
+  }
+
   function startHeartbeat() {
     try { wsRef.current?.close() } catch {}
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -222,10 +247,8 @@ export function SpeakerApp() {
         if (meta) setRoomMeta(meta)
       } catch {}
 
-      // Use selected device or default microphone
-      const audioConfig = (deviceOverride || selectedDeviceId)
-        ? SDK.AudioConfig.fromMicrophoneInput(deviceOverride || selectedDeviceId)
-        : SDK.AudioConfig.fromDefaultMicrophoneInput()
+      // Use selected device or default microphone (with exact device binding when provided)
+      const audioConfig = await buildAudioConfig(SDK, deviceOverride || selectedDeviceId)
       let recognizer: any = null
 
             // Helper to read detected language from SDK result (robust to SDK variants)
@@ -450,6 +473,10 @@ export function SpeakerApp() {
       try { r.close() } catch {}
     }
     recogRef.current = null
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+    }
     setStatus('Idle')
     setTranscriptHistory([])  // Clear transcript history when stopping
     setIsRecording(false)

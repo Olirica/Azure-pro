@@ -230,6 +230,7 @@
           ws: null,
           sessionId: null,
           currentUtteranceId: null,  // Stable ID for current utterance
+          micStream: null,
           rev: 0,  // Revision counter (increments within same utteranceId)
           // Partials disabled - removed: lastSoftEmitAt, lastSoftText, lastPartialFull, prefix, fastFinals
           roomId: null,
@@ -1064,12 +1065,30 @@
               maxUtteranceDurationMs: config.maxUtteranceDurationMs
             });
 
-            // Use selected microphone or default
+            // Use selected microphone or default (bind exact device when chosen)
             const selectedMicId = document.getElementById('micSelect').value;
-            const audioConfig = selectedMicId
-              ? SpeechSDK.AudioConfig.fromMicrophoneInput(selectedMicId)
-              : SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
-            log('Creating audio config', { deviceId: selectedMicId || 'default' });
+            let audioConfig;
+            if (selectedMicId) {
+              try {
+                if (state.micStream) {
+                  state.micStream.getTracks().forEach(track => track.stop());
+                  state.micStream = null;
+                }
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: selectedMicId } } });
+                state.micStream = stream;
+                audioConfig = SpeechSDK.AudioConfig.fromStreamInput(stream);
+                log('Creating audio config from explicit mic stream', { deviceId: selectedMicId });
+              } catch (err) {
+                log('Failed to bind selected mic stream, falling back to SDK selection', {
+                  deviceId: selectedMicId,
+                  error: err?.message
+                });
+                audioConfig = SpeechSDK.AudioConfig.fromMicrophoneInput(selectedMicId);
+              }
+            } else {
+              audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+              log('Creating audio config', { deviceId: 'default' });
+            }
 
             let recognizer;
             if (useAutoDetect) {
@@ -1308,6 +1327,10 @@
           if (state.ws) {
             state.ws.close(1000, 'Stopping');
             state.ws = null;
+          }
+          if (state.micStream) {
+            state.micStream.getTracks().forEach(track => track.stop());
+            state.micStream = null;
           }
           if (state.phraseList && typeof state.phraseList.clear === 'function') {
             state.phraseList.clear();
