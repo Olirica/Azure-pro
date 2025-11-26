@@ -380,17 +380,23 @@ export function SpeakerApp() {
 
           // Determine if we should emit a fast-final
           const hasNewSentence = /[.?!]\s/.test(extension)   // new boundary in extension
+          const prefixEndsSentence = /[.?!]\s*$/.test(prefix)  // prefix ends with punctuation
           const enoughNewChars = extensionChars >= 22   // FASTFINALS_MIN_CHARS from env
           const timeOk = timeSinceEmit >= 600               // FASTFINALS_EMIT_THROTTLE_MS from env
 
-          if ((hasNewSentence || enoughNewChars) && timeOk) {
+          if ((hasNewSentence || prefixEndsSentence || enoughNewChars) && timeOk) {
             // Apply tail guard on the *new* prefix, not whole text
+            // BUT: if prefix ends with sentence punctuation, don't guard it off
             const guardChars = 8  // FASTFINALS_TAIL_GUARD_CHARS from env
             const total = prefix.length
-            const guardedLen = Math.max(
+            let guardedLen = Math.max(
               sttState.current.committedPrefix.length,
               total - guardChars
             )
+            // If prefix ends with punctuation, extend to include it
+            if (prefixEndsSentence && guardedLen < total) {
+              guardedLen = total
+            }
             const candidate = prefix.slice(0, guardedLen)
 
             if (candidate.length > sttState.current.committedPrefix.length) {

@@ -86,11 +86,31 @@ function splitByCharLengths(text, lengths) {
     if (cursor >= clean.length) {
       break;
     }
-    const slice = clean.slice(cursor, cursor + length);
+    let endPos = cursor + length;
+
+    // Snap to word boundary: if we're splitting mid-word, find the last space
+    if (endPos < clean.length && !/\s/.test(clean[endPos])) {
+      // We're in the middle of a word - look back for a space
+      let lastSpace = endPos;
+      while (lastSpace > cursor && !/\s/.test(clean[lastSpace])) {
+        lastSpace--;
+      }
+      // Only snap back if we found a space (don't go all the way back to cursor)
+      if (lastSpace > cursor) {
+        endPos = lastSpace;
+      }
+      // Otherwise keep the original position (single long word)
+    }
+
+    const slice = clean.slice(cursor, endPos);
     if (slice.trim()) {
       segments.push(slice.trim());
     }
-    cursor += length;
+    cursor = endPos;
+    // Skip any leading whitespace for next segment
+    while (cursor < clean.length && /\s/.test(clean[cursor])) {
+      cursor++;
+    }
   }
   if (cursor < clean.length) {
     const tail = clean.slice(cursor).trim();
@@ -705,10 +725,12 @@ function createTtsQueue({
       ? segmentsFromLengths.reduce((sum, part) => sum + part.length, 0)
       : 0;
     const lengthDelta = Math.abs(totalFromLengths - trimmed.length);
+    // Use sentLen only when it closely matches translated text (stricter threshold)
+    // sentLen is from source language transcription and often misaligns after translation
     const useLengths =
       segmentsFromLengths &&
       segmentsFromLengths.length &&
-      lengthDelta <= Math.max(12, Math.floor(trimmed.length * 0.05));
+      lengthDelta <= Math.max(5, Math.floor(trimmed.length * 0.02));
     const segments =
       (useLengths ? segmentsFromLengths : segmentText(trimmed)) || [trimmed];
     // Duration accounts for current playback speed
