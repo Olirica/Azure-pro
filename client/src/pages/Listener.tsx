@@ -56,6 +56,7 @@ export function ListenerApp() {
   const ttsQueueRef = useRef<{ src: string; mime: string; unitId?: string; version?: number | null }[]>([])
   const [ttsEvents, setTtsEvents] = useState<TtsEvent[]>([])
   const isPlayingRef = useRef(false)
+  const [audioBlocked, setAudioBlocked] = useState(false)
 
   function playNextTts() {
     const el = audioRef.current
@@ -72,14 +73,38 @@ export function ListenerApp() {
       if (p && typeof (p as any).catch === 'function') {
         ;(p as any).catch((err: any) => {
           console.error('[TTS] Play failed:', err)
+          if (err?.name === 'NotAllowedError') {
+            setAudioBlocked(true)
+          }
           setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'error', error: err?.message || 'Play failed' }])
           playNextTts()
         })
       }
     } catch (err: any) {
       console.error('[TTS] Play threw:', err)
+      if (err?.name === 'NotAllowedError') {
+        setAudioBlocked(true)
+      }
       setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'error', error: err?.message || 'Play threw' }])
       playNextTts()
+    }
+  }
+
+  async function unlockAudio() {
+    try {
+      const el = audioRef.current
+      if (!el) return
+      // Try playing a silent data URI to satisfy gesture requirements
+      const silent = 'data:audio/mp3;base64,/+MYxAAAAANIAAAAAExBTUUzLjk5LjIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+      el.src = silent
+      await el.play().catch(() => {})
+      setAudioBlocked(false)
+      if (ttsQueueRef.current.length && !isPlayingRef.current) {
+        playNextTts()
+      }
+    } catch (err) {
+      console.error('[TTS] Unlock failed:', err)
+      setAudioBlocked(true)
     }
   }
 
@@ -131,7 +156,10 @@ export function ListenerApp() {
     audioRef.current = audio
     audio.addEventListener('loadstart', () => console.log('[TTS] Load started'))
     audio.addEventListener('canplay', () => console.log('[TTS] Can play'))
-    audio.addEventListener('play', () => setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'playing' }]))
+    audio.addEventListener('play', () => {
+      setAudioBlocked(false)
+      setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'playing' }])
+    })
     audio.addEventListener('ended', () => {
       setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'played' }])
       isPlayingRef.current = false
@@ -507,6 +535,18 @@ export function ListenerApp() {
             <Label htmlFor="tts" className="text-slate-300 cursor-pointer">Enable Text-to-Speech</Label>
           </div>
           <div className="flex items-center gap-2 justify-end">
+            {audioBlocked && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={unlockAudio}
+                className="border-amber-500 text-amber-200 hover:bg-amber-500/10"
+                title="Enable audio playback"
+              >
+                Enable audio
+              </Button>
+            )}
             <Button
               type="button"
               onClick={connect}
