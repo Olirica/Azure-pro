@@ -510,7 +510,8 @@ async function broadcastPatch(room, result) {
         sentLen: sourcePatch.sentLen || null,
         ts: sourcePatch.ts,
         emittedAt: now,
-        provider: 'mirror'
+        provider: 'mirror',
+        ttsFinal: sourcePatch.ttsFinal !== false
       };
       patchesByLang.set(lang, { type: 'patch', payload: stamped });
     }
@@ -538,14 +539,15 @@ async function broadcastPatch(room, result) {
             isFinal: sourcePatch.stage === 'hard',
             sentLen: {
               src: translation.srcSentLen,
-              tgt: translation.transSentLen
-            },
-            ts: sourcePatch.ts,
-            emittedAt: now,
-            provider: translation.provider || 'fallback'
-          };
-          patchesByLang.set(translation.lang, { type: 'patch', payload: stamped });
-        }
+            tgt: translation.transSentLen
+          },
+          ts: sourcePatch.ts,
+          emittedAt: now,
+          provider: translation.provider || 'fallback',
+          ttsFinal: sourcePatch.ttsFinal !== false
+        };
+        patchesByLang.set(translation.lang, { type: 'patch', payload: stamped });
+      }
       } catch (err) {
         room.logger.warn(
           { component: 'broadcast', err: err?.message, missingLangs: Array.from(translateLangs) },
@@ -610,6 +612,8 @@ async function broadcastPatch(room, result) {
     }
   }
 
+  const ttsEnqueueByLang = new Map(); // lang -> Map<unitId, { payload, voice }>
+
   for (const client of room.clients) {
     if (client.socket.readyState !== WS.OPEN) {
       continue;
@@ -637,41 +641,70 @@ async function broadcastPatch(room, result) {
     }
 
     if (client.lang && message && message.payload.stage === 'hard' && client.wantsTts) {
-      const version = typeof message.payload.version === 'number' ? message.payload.version : null;
-      const queue = room.getTtsQueueForLang(client.lang);
-      if (queue) {
-        const words = countWords(message.payload.text);
-        // Skip ultra-short TTS to avoid choppy playback unless punct-final
-        const isPunctFinal = /[.?!]\s*$/.test(String(message.payload.text || ''));
-        // Allow short clips if they’re the only output (to avoid “empty src”)
-        if (words < 2 && !isPunctFinal) {
-          room.logger.debug(
-            { component: 'tts', lang: client.lang, unitId: message.payload.unitId },
-            '[TTS Skip] Segment too short for synthesis'
-          );
-          continue;
-        }
-        const incomingSentLen = message.payload.sentLen;
-        const targetSentLen = Array.isArray(incomingSentLen?.tgt)
-          ? incomingSentLen.tgt
-          : Array.isArray(incomingSentLen)
-          ? incomingSentLen
-          : null;
-        room.logger.debug(
-          { component: 'tts', lang: client.lang, unitId: message.payload.unitId, textLength: message.payload.text?.length },
-          '[TTS Enqueue] Enqueueing text for synthesis'
-        );
-        queue.enqueue(client.lang, message.payload.unitId, message.payload.text, {
-          voice: client.voice,
-          sentLen: targetSentLen,
-          version
-        });
-      } else {
-        room.logger.warn(
-          { component: 'tts', lang: client.lang, unitId: message.payload.unitId },
-          '[TTS Enqueue] No TTS queue available for language'
-        );
+      // Skip TTS for segments explicitly marked as non-final for speech (e.g., fast-finals)
+      if (message.payload.ttsFinal === false) {
+        continue;
       }
+      if (!message.payload.text) {
+        continue;
+      }
+      if (!message.payload.unitId) {
+        continue;
+      }
+      let byUnit = ttsEnqueueByLang.get(client.lang);
+      if (!byUnit) {
+        byUnit = new Map();
+        ttsEnqueueByLang.set(client.lang, byUnit);
+      }
+      const version = typeof message.payload.version === 'number' ? message.payload.version : null;
+      const existing = byUnit.get(message.payload.unitId);
+      if (!existing) {
+        byUnit.set(message.payload.unitId, { payload: message.payload, voice: client.voice, version });
+      } else {
+        const existingVersion =
+          typeof existing.version === 'number' ? existing.version : null;
+        if (existingVersion == null || (version != null && version > existingVersion)) {
+          byUnit.set(message.payload.unitId, { payload: message.payload, voice: client.voice, version });
+        } else if (!existing.voice && client.voice) {
+          byUnit.set(message.payload.unitId, { payload: existing.payload, voice: client.voice, version: existing.version });
+        }
+      }
+    }
+  }
+
+  // Enqueue TTS once per (lang, unitId) to avoid duplicate playback when multiple listeners request TTS
+  for (const [lang, units] of ttsEnqueueByLang.entries()) {
+    const queue = room.getTtsQueueForLang(lang);
+    if (!queue) {
+      room.logger.warn({ component: 'tts', lang }, '[TTS Enqueue] No TTS queue available for language');
+      continue;
+    }
+    for (const [, entry] of units.entries()) {
+      const { payload, voice, version } = entry;
+      const words = countWords(payload.text);
+      const isPunctFinal = /[.?!]\s*$/.test(String(payload.text || ''));
+      if (words < 2 && !isPunctFinal) {
+        room.logger.debug(
+          { component: 'tts', lang, unitId: payload.unitId },
+          '[TTS Skip] Segment too short for synthesis'
+        );
+        continue;
+      }
+      const incomingSentLen = payload.sentLen;
+      const targetSentLen = Array.isArray(incomingSentLen?.tgt)
+        ? incomingSentLen.tgt
+        : Array.isArray(incomingSentLen)
+        ? incomingSentLen
+        : null;
+      room.logger.debug(
+        { component: 'tts', lang, unitId: payload.unitId, textLength: payload.text?.length },
+        '[TTS Enqueue] Enqueueing text for synthesis'
+      );
+      queue.enqueue(lang, payload.unitId, payload.text, {
+        voice,
+        sentLen: targetSentLen,
+        version
+      });
     }
   }
 }

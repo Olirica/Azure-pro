@@ -374,6 +374,7 @@ export function SpeakerApp() {
                 version: version.current,
                 text: candidate,
                 srcLang: langForUnit,
+                ttsFinal: false,     // Skip TTS for fast-finals; wait for full sentence
                 ts: timestamps(e.result),
               })
 
@@ -435,6 +436,7 @@ export function SpeakerApp() {
             version: version.current,
             text,
             srcLang: langForUnit,
+            ttsFinal: true,   // Only queue TTS on the definitive final
             ts: timestamps(e.result)
           })
           unitIndex.current += 1

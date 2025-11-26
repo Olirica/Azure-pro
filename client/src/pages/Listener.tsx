@@ -15,6 +15,15 @@ type Patch = {
   receivedAt?: number
 }
 
+type Paragraph = {
+  id: string
+  text: string
+  stage: 'soft' | 'hard'
+  updatedAt: number
+  unitIds: string[]
+  version?: number
+}
+
 function getRoomFromUrl(): string {
   try {
     if (typeof window === 'undefined') return 'demo-room'
@@ -24,6 +33,32 @@ function getRoomFromUrl(): string {
   } catch {
     return 'demo-room'
   }
+}
+
+function lastMeaningfulChar(text: string): string {
+  const trimmed = (text || '').trim()
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const ch = trimmed[i]
+    if (ch !== ' ' && ch !== '"' && ch !== "'" && ch !== ')' && ch !== ']') {
+      return ch
+    }
+  }
+  return ''
+}
+
+function endsWithTerminal(text: string): boolean {
+  const lastChar = lastMeaningfulChar(text)
+  return lastChar === '.' || lastChar === '!' || lastChar === '?'
+}
+
+function maybeCapitalize(prevText: string, incoming: string): string {
+  if (!incoming) return incoming
+  const firstChar = incoming.charAt(0)
+  const alreadyUpper = firstChar === firstChar.toUpperCase()
+  if (!prevText || endsWithTerminal(prevText)) {
+    return alreadyUpper ? incoming : firstChar.toUpperCase() + incoming.slice(1)
+  }
+  return incoming
 }
 
 type TtsEvent = {
@@ -132,6 +167,46 @@ export function ListenerApp() {
       rafFlushRef.current = requestAnimationFrame(flushPatchBuffer)
     }
   }
+
+  const paragraphs = useMemo(() => {
+    const sorted = Array.from(patches.values()).sort(
+      (a, b) => (a.receivedAt || 0) - (b.receivedAt || 0)
+    )
+    const acc: Paragraph[] = []
+
+    for (const patch of sorted) {
+      const text = (patch.text || '').trim()
+      if (!text) continue
+      const now = patch.receivedAt || Date.now()
+      const current = acc[acc.length - 1]
+      const longPause = current ? now - current.updatedAt > 5000 : true
+      const shouldBreak = !current || (longPause && endsWithTerminal(current.text))
+
+      if (shouldBreak) {
+        const paragraphText = maybeCapitalize('', text)
+        acc.push({
+          id: patch.unitId,
+          text: paragraphText,
+          stage: patch.stage,
+          updatedAt: now,
+          unitIds: [patch.unitId],
+          version: patch.version
+        })
+      } else {
+        const paragraphText = maybeCapitalize(current.text, text)
+        acc[acc.length - 1] = {
+          ...current,
+          text: current.text ? `${current.text} ${paragraphText}` : paragraphText,
+          stage: patch.stage,
+          updatedAt: now,
+          unitIds: [...current.unitIds, patch.unitId],
+          version: patch.version
+        }
+      }
+    }
+
+    return acc.slice(-20).reverse() // newest first, cap length
+  }, [patches])
 
   // Set page title
   useEffect(() => { document.title = 'Simo' }, [])
@@ -610,9 +685,9 @@ export function ListenerApp() {
           <span className="text-xs text-slate-500 ml-auto">{getLangName(lang)}</span>
         </div>
         <ul className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
-          {Array.from(patches.values()).sort((a,b)=> (b.receivedAt||0) - (a.receivedAt||0)).map(p => (
+          {paragraphs.map(p => (
             <li
-              key={p.unitId}
+              key={p.id}
               data-stage={p.stage}
               className={cn(
                 'rounded-lg border p-4 transition-all hover:-translate-y-0.5 hover:shadow-lg/20',
@@ -627,13 +702,13 @@ export function ListenerApp() {
                   p.stage === 'hard' ? 'bg-emerald-400' : 'bg-amber-300 animate-pulse'
                 )} />
                 <span className="text-xs text-slate-600 ml-auto">
-                  {p.receivedAt ? new Date(p.receivedAt).toLocaleTimeString() : ''}
+                  {p.updatedAt ? new Date(p.updatedAt).toLocaleTimeString() : ''}
                 </span>
               </div>
               <div className="text-lg text-slate-100 whitespace-pre-wrap leading-relaxed">{p.text}</div>
             </li>
           ))}
-          {patches.size === 0 && (
+          {paragraphs.length === 0 && (
             <li className="text-center py-12">
               <div className="text-slate-500 mb-2">
                 <svg className="w-12 h-12 mx-auto opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">

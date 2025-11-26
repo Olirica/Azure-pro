@@ -611,8 +611,8 @@ function createTtsQueue({
     const incomingVersion = typeof options.version === 'number' ? options.version : null;
     if (incomingVersion !== null) {
       const prev = state.latestVersion.get(unitId);
-      if (prev !== undefined && incomingVersion < prev) {
-        metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
+      if (prev !== undefined && incomingVersion <= prev) {
+        metrics?.recordTtsEvent?.(roomId, lang, incomingVersion === prev ? 'duplicate_version' : 'stale_version');
         return;
       }
       state.latestVersion.set(unitId, incomingVersion);

@@ -187,7 +187,9 @@ class TranslationBuffer {
       text: mergedText,
       unitId: `${baseSegment.unitId}#merged`, // Mark as merged
       mergedFrom: segments.map(s => s.segment.unitId),
-      mergedCount: segments.length
+      mergedCount: segments.length,
+      // Allow TTS only if any of the merged parts were marked TTS-safe
+      ttsFinal: segments.some(s => s.segment?.ttsFinal !== false)
     };
 
     // Get union of all target languages

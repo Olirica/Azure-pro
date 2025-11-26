@@ -735,6 +735,7 @@ class SegmentProcessor {
           srcLang,
           targetLang: lang,
           isFinal: stage === 'hard',
+          ttsFinal: segment.ttsFinal !== false,
           sentLen: {
             src: cached.srcSentLen,
             tgt: cached.transSentLen
@@ -810,7 +811,10 @@ class SegmentProcessor {
             provider: translation.provider || 'azure' // Which translator was used
           };
           this.cacheTranslation(unitId, version, translation.lang, translation);
-          translatedPatches.push(payload);
+          translatedPatches.push({
+            ...payload,
+            ttsFinal: segment.ttsFinal !== false
+          });
         }
       } catch (err) {
         this.logger.error(
@@ -904,7 +908,7 @@ class SegmentProcessor {
     // Support both old unitId and new utteranceId formats
     const unitId = patch.utteranceId || patch.unitId;
     const rev = patch.rev ?? patch.version;
-    const { stage, text, srcLang, ts, isFinal } = patch;
+    const { stage, text, srcLang, ts, isFinal, ttsFinal } = patch;
 
     if (!unitId || typeof unitId !== 'string') {
       throw new Error('Patch unitId/utteranceId is required.');
@@ -916,6 +920,9 @@ class SegmentProcessor {
     if (!['soft', 'hard'].includes(finalStage)) {
       throw new Error('Patch stage must be "soft" or "hard".');
     }
+
+    // Indicates if this segment is safe to speak (skip fast-finals for TTS)
+    const ttsReady = ttsFinal !== false;
 
     const root = rootFromUnitId(unitId);
     const rawText = (text || '').trim();
@@ -962,7 +969,8 @@ class SegmentProcessor {
       text: mergedText,
       srcLang: normalizedSrcLang || existing?.srcLang,
       ts: ts || existing?.ts,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      ttsFinal: ttsReady
     };
 
     if (existing) {
@@ -1005,6 +1013,7 @@ class SegmentProcessor {
       text: mergedText,
       srcLang: updatedUnit.srcLang,
       isFinal: finalStage === 'hard',
+      ttsFinal: ttsReady,
       ts
     };
 
@@ -1033,6 +1042,7 @@ class SegmentProcessor {
         srcLang: updatedUnit.srcLang,
         stage: finalStage,
         version,
+        ttsFinal: ttsReady,
         ts
       };
 
