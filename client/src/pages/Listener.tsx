@@ -54,6 +54,7 @@ export function ListenerApp() {
   // TTS queue
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const ttsQueueRef = useRef<{ src: string; mime: string; unitId?: string; version?: number | null }[]>([])
+  const lastTtsVersionRef = useRef<Map<string, number>>(new Map())
   const [ttsEvents, setTtsEvents] = useState<TtsEvent[]>([])
   const isPlayingRef = useRef(false)
   const [audioBlocked, setAudioBlocked] = useState(false)
@@ -355,6 +356,7 @@ export function ListenerApp() {
               return next
             })
             ttsQueueRef.current = ttsQueueRef.current.filter(item => item.unitId !== payload.unitId)
+            lastTtsVersionRef.current.delete(payload.unitId)
             return
           }
 
@@ -373,6 +375,11 @@ export function ListenerApp() {
             const incomingVersion = typeof msg.payload.version === 'number' ? msg.payload.version : null
             const unitId = msg.payload.unitId || msg.payload.rootUnitId
             if (unitId && incomingVersion !== null) {
+              const last = lastTtsVersionRef.current.get(unitId)
+              if (last != null && incomingVersion <= last) {
+                return
+              }
+              lastTtsVersionRef.current.set(unitId, incomingVersion)
               const latestPatch = patchesRef.current.get(unitId)
               if (latestPatch && typeof latestPatch.version === 'number' && latestPatch.version > incomingVersion) {
                 return
@@ -380,7 +387,7 @@ export function ListenerApp() {
               ttsQueueRef.current = ttsQueueRef.current.filter(item => {
                 if (!item.unitId || item.unitId !== unitId) return true
                 if (item.version == null) return false
-                return item.version >= incomingVersion
+                return item.version > incomingVersion
               })
             }
             ttsQueueRef.current.push({ src, mime: fmt, unitId, version: incomingVersion })
@@ -389,6 +396,8 @@ export function ListenerApp() {
           }
         } else if (msg?.type === 'reset') {
           setPatches(new Map())
+          ttsQueueRef.current = []
+          lastTtsVersionRef.current.clear()
         }
       } catch (e) {
         if (debugMode) console.warn('[Listener] Bad message', e)
