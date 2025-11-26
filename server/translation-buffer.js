@@ -206,8 +206,8 @@ class TranslationBuffer {
       unitId: `${baseSegment.unitId}#merged`, // Mark as merged
       mergedFrom: uniq.map((s) => s.segment.unitId),
       mergedCount: uniq.length,
-      // Allow TTS only if any of the merged parts were marked TTS-safe
-      ttsFinal: uniq.some((s) => s.segment?.ttsFinal !== false)
+      // Allow TTS only if any of the merged parts were explicitly TTS-safe
+      ttsFinal: uniq.some((s) => s.segment?.ttsFinal === true)
     };
 
     // Get union of all target languages

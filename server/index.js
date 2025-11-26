@@ -511,7 +511,7 @@ async function broadcastPatch(room, result) {
         ts: sourcePatch.ts,
         emittedAt: now,
         provider: 'mirror',
-        ttsFinal: sourcePatch.ttsFinal !== false
+        ttsFinal: sourcePatch.ttsFinal === true
       };
       patchesByLang.set(lang, { type: 'patch', payload: stamped });
     }
@@ -544,7 +544,7 @@ async function broadcastPatch(room, result) {
           ts: sourcePatch.ts,
           emittedAt: now,
           provider: translation.provider || 'fallback',
-          ttsFinal: sourcePatch.ttsFinal !== false
+          ttsFinal: sourcePatch.ttsFinal === true
         };
         patchesByLang.set(translation.lang, { type: 'patch', payload: stamped });
       }
@@ -642,7 +642,7 @@ async function broadcastPatch(room, result) {
 
     if (client.lang && message && message.payload.stage === 'hard' && client.wantsTts) {
       // Skip TTS for segments explicitly marked as non-final for speech (e.g., fast-finals)
-      if (message.payload.ttsFinal === false) {
+      if (message.payload.ttsFinal !== true) {
         continue;
       }
       if (!message.payload.text) {

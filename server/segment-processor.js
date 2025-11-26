@@ -742,7 +742,7 @@ class SegmentProcessor {
           srcLang,
           targetLang: lang,
           isFinal: stage === 'hard',
-          ttsFinal: segment.ttsFinal !== false,
+          ttsFinal: segment.ttsFinal === true,
           sentLen: {
             src: cached.srcSentLen,
             tgt: cached.transSentLen
@@ -820,7 +820,7 @@ class SegmentProcessor {
           this.cacheTranslation(unitId, version, translation.lang, translation);
           translatedPatches.push({
             ...payload,
-            ttsFinal: segment.ttsFinal !== false
+            ttsFinal: segment.ttsFinal === true
           });
         }
       } catch (err) {
@@ -928,8 +928,8 @@ class SegmentProcessor {
       throw new Error('Patch stage must be "soft" or "hard".');
     }
 
-    // Indicates if this segment is safe to speak (skip fast-finals for TTS)
-    const ttsReady = ttsFinal !== false;
+    // Indicates if this segment is safe to speak (only when explicitly marked)
+    const ttsReady = ttsFinal === true;
 
     const root = rootFromUnitId(unitId);
     const rawText = (text || '').trim();

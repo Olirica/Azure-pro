@@ -620,8 +620,15 @@ function createTtsQueue({
         metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
         return;
       }
-      if (safeVersion === prevVersion && prevText === trimmed) {
+      // Drop repeats even if the version increments but text is identical
+      if (prevText === trimmed) {
+        state.latestVersion.set(rootUnitId, safeVersion);
         metrics?.recordTtsEvent?.(roomId, lang, 'duplicate_text');
+        return;
+      }
+      if (safeVersion === prevVersion && prevText !== trimmed) {
+        // Same version but different text is suspicious; treat as stale
+        metrics?.recordTtsEvent?.(roomId, lang, 'duplicate_version_new_text');
         return;
       }
     }
