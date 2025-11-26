@@ -23,13 +23,40 @@ function langBase(lang) {
   return (typeof lang === 'string' ? lang.split('-')[0].toLowerCase() : '');
 }
 
+function normalizeSentence(text) {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dedupeSentences(text) {
+  if (!text) return text;
+  const parts = String(text).split(/(?<=[.!?])\s+/);
+  const out = [];
+  let lastNorm = '';
+  for (const part of parts) {
+    const norm = normalizeSentence(part);
+    if (!norm) continue;
+    if (norm === lastNorm) {
+      continue; // skip contiguous duplicate sentence
+    }
+    out.push(part);
+    lastNorm = norm;
+  }
+  return out.join(' ');
+}
+
 // Lightweight French detector to catch mislabelled segments (e.g., auto-detect returns en-US)
 function inferLikelyBase(text) {
   const t = String(text || '').toLowerCase();
   if (!t) return '';
   const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
-  const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|pour|avec|dans|semaine|aujourd'hui|aller|souliers|plais|ceux|mettez|d'accord|min)\b/.test(t);
+  const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|avant de commencer|sous-ministre|pour|avec|dans|semaine|aujourd'hui|aller|souliers|plais|ceux|mettez|d'accord|min)\b/.test(t);
   if (hasFrenchAccents || hasFrenchWords) return 'fr';
+  const hasEnglishWords = /\b(thank you|thanks|hello|hi everyone|i would like to begin|i'd like to begin|speaking to you all|from canada|today|this afternoon)\b/.test(t);
+  if (hasEnglishWords) return 'en';
   return '';
 }
 
@@ -563,13 +590,25 @@ class SegmentProcessor {
       'Performing continuation merge.'
     );
 
-    // Merge texts intelligently
+    // Merge texts intelligently, avoiding repeated prefixes
     const prevText = previousSegment.text.trim();
     const currText = newSegment.text.trim();
 
     // Remove trailing connector/ellipsis from previous, then join
     const cleanedPrev = prevText.replace(/\.\.\.$/g, '').replace(/\s+(so|and|but|or|if|because|since|when|while|as)\.?$/i, ' $1');
-    const mergedText = `${cleanedPrev} ${currText}`.trim();
+
+    const normPrev = normalizeForOverlap(cleanedPrev);
+    const normCurr = normalizeForOverlap(currText);
+    let finalCurr = currText;
+    if (normPrev && normCurr) {
+      const prefix = longestCommonPrefix(normPrev, normCurr);
+      const overlapRatio = prefix.length / Math.max(normPrev.length, 1);
+      if (overlapRatio >= 0.7) {
+        finalCurr = currText.slice(prefix.length).trimStart();
+      }
+    }
+
+    const mergedText = finalCurr ? `${cleanedPrev} ${finalCurr}`.trim() : cleanedPrev;
 
     // Re-translate merged text with context
     try {
@@ -726,38 +765,39 @@ class SegmentProcessor {
     for (const lang of uniqueTargets) {
       const cached = this.getCachedTranslation(unitId, version, lang);
       if (cached) {
-        const sourceLen = text.length;
-        const targetLen = cached.text.length;
-        const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
-        const isIncomplete = /\.\.\.$/.test(cached.text.trim());
-
-        const trimmedText = (cached.text || '').trim();
-        if (trimmedText) {
-          translatedPatches.push({
-            unitId,
-            utteranceId: unitId,
-            stage: stage || 'hard',
-            op: 'replace',
-            version,
-            rev: version,
-            text: trimmedText,
-            srcLang,
-            targetLang: lang,
-            isFinal: stage === 'hard',
-            ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard'),
-            sentLen: {
-              src: cached.srcSentLen,
-              tgt: cached.transSentLen
-            },
-            ts,
-            mergedFrom: segment.mergedFrom, // Preserve merge metadata
-            // Translation quality metadata
-            sourceText: text,
-            lengthRatio,
-            isIncomplete,
-            provider: cached.provider || 'azure'
-          });
+        const cleanedText = dedupeSentences((cached.text || '').trim());
+        if (!cleanedText) {
+          continue;
         }
+        const sourceLen = text.length;
+        const targetLen = cleanedText.length;
+        const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
+        const isIncomplete = /\.\.\.$/.test(cleanedText.trim());
+
+        translatedPatches.push({
+          unitId,
+          utteranceId: unitId,
+          stage: stage || 'hard',
+          op: 'replace',
+          version,
+          rev: version,
+          text: cleanedText,
+          srcLang,
+          targetLang: lang,
+          isFinal: stage === 'hard',
+          ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard'),
+          sentLen: {
+            src: cached.srcSentLen,
+            tgt: cached.transSentLen
+          },
+          ts,
+          mergedFrom: segment.mergedFrom, // Preserve merge metadata
+          // Translation quality metadata
+          sourceText: text,
+          lengthRatio,
+          isIncomplete,
+          provider: cached.provider || 'azure'
+        });
       } else {
         misses.push(lang);
       }
@@ -791,46 +831,42 @@ class SegmentProcessor {
           'Translator response.'
         );
         for (const translation of translations) {
+          const cleanedText = dedupeSentences((translation.text || '').trim());
+          if (!cleanedText) {
+            continue;
+          }
           // Calculate quality metrics
           const sourceLen = text.length;
-          const targetLen = translation.text.length;
+          const targetLen = cleanedText.length;
           const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
-          const isIncomplete = /\.\.\.$/.test(translation.text.trim());
+          const isIncomplete = /\.\.\.$/.test(cleanedText.trim());
 
-      const trimmedText = (translation.text || '').trim();
-      if (!trimmedText) {
-        continue;
-      }
-
-      const payload = {
-        unitId,
-        utteranceId: unitId,
-        stage: stage || 'hard',
-        op: 'replace',
-        version,
-        rev: version,
-        text: trimmedText,
-        srcLang,
-        targetLang: translation.lang,
-        isFinal: stage === 'hard',
-        sentLen: {
-          src: translation.srcSentLen,
-          tgt: translation.transSentLen
-        },
-        ts,
-        mergedFrom: segment.mergedFrom,
-        // Translation quality metadata
-        sourceText: text, // Original text for comparison
-        lengthRatio,       // Ratio for hallucination detection
-        isIncomplete,      // Flags segments ending with "..."
-        provider: translation.provider || 'azure', // Which translator was used
-        ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard')
-      };
-          this.cacheTranslation(unitId, version, translation.lang, translation);
-          translatedPatches.push({
-            ...payload,
-            ttsFinal: segment.ttsFinal === true
-          });
+          const payload = {
+            unitId,
+            utteranceId: unitId,
+            stage: stage || 'hard',
+            op: 'replace',
+            version,
+            rev: version,
+            text: cleanedText,
+            srcLang,
+            targetLang: translation.lang,
+            isFinal: stage === 'hard',
+            sentLen: {
+              src: translation.srcSentLen,
+              tgt: translation.transSentLen
+            },
+            ts,
+            mergedFrom: segment.mergedFrom,
+            // Translation quality metadata
+            sourceText: text, // Original text for comparison
+            lengthRatio,       // Ratio for hallucination detection
+            isIncomplete,      // Flags segments ending with "..."
+            provider: translation.provider || 'azure', // Which translator was used
+            ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard')
+          };
+          this.cacheTranslation(unitId, version, translation.lang, { ...translation, text: cleanedText });
+          translatedPatches.push(payload);
         }
       } catch (err) {
         this.logger.error(

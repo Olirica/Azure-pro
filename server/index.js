@@ -429,14 +429,19 @@ async function broadcastPatch(room, result) {
 
   const langBase = (lang) => (typeof lang === 'string' ? String(lang).split('-')[0].toLowerCase() : '');
 
-  // Very light heuristic to guess French content when auto-detect mislabels it as en-US
+  // Heuristic to guess language base when auto-detect mislabels content
   function inferLikelyBase(text) {
     const t = String(text || '').toLowerCase();
     if (!t) return '';
-    // Accented characters or common French function words
+    // French signals
     const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
-    const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|pour|avec|dans|semaine|aujourd'hui|aller|souliers)\b/.test(t);
+    const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|avant de commencer|sous-ministre|avec|dans|semaine|aujourd'hui|aller|souliers)\b/.test(t);
     if (hasFrenchAccents || hasFrenchWords) return 'fr';
+
+    // English signals
+    const hasEnglishWords = /\b(thank you|thanks|hello|hi everyone|i would like to begin|i'd like to begin|speaking to you all|from canada|today|this afternoon)\b/.test(t);
+    if (hasEnglishWords) return 'en';
+
     return '';
   }
 
@@ -479,8 +484,8 @@ async function broadcastPatch(room, result) {
 
       const clientBase = langBase(client.lang);
 
-      // If the text looks mislabeled, force translation even if client lang matches srcLang
-      if (textSuspicious && !patchesByLang.has(client.lang)) {
+      // If the text looks mislabeled, force translation for concrete languages (not 'source')
+      if (textSuspicious && client.lang !== 'source') {
         translateLangs.add(client.lang);
         continue;
       }

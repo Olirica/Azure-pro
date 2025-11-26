@@ -485,6 +485,14 @@ export function ListenerApp() {
             return
           }
           const p: Patch = { ...payload, receivedAt: Date.now() }
+          const base = (code?: string) => (code ? code.split('-')[0].toLowerCase() : '')
+          // Filter out patches for other languages
+          if (p.targetLang && p.targetLang !== lang) {
+            return
+          }
+          if (!p.targetLang && lang !== 'source' && base(p.srcLang) !== base(lang)) {
+            return
+          }
           patchBufferRef.current.push(p)
           schedulePatchFlush()
         } else if (msg?.type === 'tts' && msg?.payload && tts) {
