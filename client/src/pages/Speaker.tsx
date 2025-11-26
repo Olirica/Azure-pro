@@ -63,6 +63,13 @@ export function SpeakerApp() {
   const isAutoDetect = useRef(false)  // Track if using auto-detect mode
   const currentUnitLang = useRef('')
 
+  // Fast-finals state machine for prefix-based emission
+  const sttState = useRef({
+    lastText: '',
+    committedPrefix: '',   // part we've already emitted as "hard-ish"
+    lastEmitAt: 0,
+  })
+
   // Set page title
   useEffect(() => {
     document.title = 'Simo'
@@ -95,6 +102,14 @@ export function SpeakerApp() {
 
   function unitId(lang: string) { return `${sessionId.current}|${lang}|${unitIndex.current}` }
   const glossaryStorageKey = (roomId: string) => `simo-glossary-${roomId}`
+
+  // Helper to find longest common prefix between two strings
+  function longestCommonPrefix(a: string, b: string): string {
+    const max = Math.min(a.length, b.length)
+    let i = 0
+    while (i < max && a[i] === b[i]) i++
+    return a.slice(0, i)
+  }
 
   // Get stable language with persistence (15s lock + 2 consecutive threshold)
   function getStableLanguage(detected: string | undefined, fallback: string): string {
@@ -187,6 +202,7 @@ export function SpeakerApp() {
       langStability.current = { current: '', detectedAt: 0, switchCandidate: null, switchCount: 0 }
       lastSoftText.current = ''
       lastSoftAt.current = 0
+      sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state
       setStatus('Loading Speech SDK…')
       const SDK = await loadSpeechCdn()
       setStatus('Fetching token…')
@@ -290,14 +306,68 @@ export function SpeakerApp() {
 
         const now = Date.now()
         const text = e.result.text.trim()
+        if (!text) return
+
+        // PREFIX-BASED FAST FINALS (Solution 2)
+        // Find stable prefix that's consistent across multiple partials
+        const prev = sttState.current.lastText
+        const prefix = longestCommonPrefix(prev, text)
+
+        // Only consider if prefix grows beyond what we've already committed
+        if (prefix.length > sttState.current.committedPrefix.length) {
+          const extension = prefix.slice(sttState.current.committedPrefix.length)
+          const extensionChars = extension.length
+          const timeSinceEmit = now - sttState.current.lastEmitAt
+
+          // Determine if we should emit a fast-final
+          const hasNewSentence = /[.?!]\s/.test(extension)   // new boundary in extension
+          const enoughNewChars = extensionChars >= 22   // FASTFINALS_MIN_CHARS from env
+          const timeOk = timeSinceEmit >= 600               // FASTFINALS_EMIT_THROTTLE_MS from env
+
+          if ((hasNewSentence || enoughNewChars) && timeOk) {
+            // Apply tail guard on the *new* prefix, not whole text
+            const guardChars = 8  // FASTFINALS_TAIL_GUARD_CHARS from env
+            const total = prefix.length
+            const guardedLen = Math.max(
+              sttState.current.committedPrefix.length,
+              total - guardChars
+            )
+            const candidate = prefix.slice(0, guardedLen)
+
+            if (candidate.length > sttState.current.committedPrefix.length) {
+              version.current += 1
+              const rawDetected = detectedLangFrom(e.result)
+              const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
+              const stableLang = getStableLanguage(rawDetected, fallback)
+              if (!currentUnitLang.current) currentUnitLang.current = stableLang
+              const langForUnit = currentUnitLang.current || stableLang
+
+              await postPatch({
+                unitId: unitId(langForUnit),
+                stage: 'hard',       // <- fast final "hard"
+                op: 'replace',
+                version: version.current,
+                text: candidate,
+                srcLang: langForUnit,
+                ts: timestamps(e.result),
+              })
+
+              sttState.current.committedPrefix = candidate
+              sttState.current.lastEmitAt = now
+            }
+          }
+        }
+
+        sttState.current.lastText = text
+
+        // ALSO emit soft patches for UI preview (separate from fast-finals)
         const delta = text.length - lastSoftText.current.length
-        const timeOk = now - lastSoftAt.current > 1000
-        const charOk = delta > 18
+        const softTimeOk = now - lastSoftAt.current > 600  // SOFT_THROTTLE_MS from env
+        const softCharOk = delta > 10  // SOFT_MIN_DELTA_CHARS from env
         const punct = /[.?!]\s*$/.test(text)
-        if ((punct || charOk) && timeOk) {
+        if ((punct || softCharOk) && softTimeOk) {
           lastSoftText.current = text
           lastSoftAt.current = now
-          version.current += 1
           const rawDetected = detectedLangFrom(e.result)
           const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
           const stableLang = getStableLanguage(rawDetected, fallback)
@@ -347,6 +417,7 @@ export function SpeakerApp() {
           lastSoftText.current = ''
           lastSoftAt.current = Date.now()
           currentUnitLang.current = ''
+          sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state for next utterance
         }
       }
 
