@@ -55,6 +55,7 @@ export function ListenerApp() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const ttsQueueRef = useRef<{ src: string; mime: string; unitId?: string; version?: number | null }[]>([])
   const lastTtsVersionRef = useRef<Map<string, number>>(new Map())
+  const lastTtsAudioRef = useRef<Map<string, string>>(new Map())
   const [ttsEvents, setTtsEvents] = useState<TtsEvent[]>([])
   const isPlayingRef = useRef(false)
   const [audioBlocked, setAudioBlocked] = useState(false)
@@ -357,6 +358,7 @@ export function ListenerApp() {
             })
             ttsQueueRef.current = ttsQueueRef.current.filter(item => item.unitId !== payload.unitId)
             lastTtsVersionRef.current.delete(payload.unitId)
+            lastTtsAudioRef.current.delete(payload.unitId)
             return
           }
 
@@ -389,6 +391,12 @@ export function ListenerApp() {
                 if (item.version == null) return false
                 return item.version > incomingVersion
               })
+            } else if (unitId) {
+              const lastSrc = lastTtsAudioRef.current.get(unitId)
+              if (lastSrc && lastSrc === src) {
+                return
+              }
+              lastTtsAudioRef.current.set(unitId, src)
             }
             ttsQueueRef.current.push({ src, mime: fmt, unitId, version: incomingVersion })
             setTtsEvents(prev => [...prev, { timestamp: Date.now(), type: 'received', format: fmt, audioSize: base64.length }])
@@ -398,6 +406,7 @@ export function ListenerApp() {
           setPatches(new Map())
           ttsQueueRef.current = []
           lastTtsVersionRef.current.clear()
+          lastTtsAudioRef.current.clear()
         }
       } catch (e) {
         if (debugMode) console.warn('[Listener] Bad message', e)
