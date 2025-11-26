@@ -651,10 +651,6 @@ async function broadcastPatch(room, result) {
     if (client.lang && message && message.payload.stage === 'hard' && client.wantsTts) {
       // Skip TTS for segments explicitly marked as non-final for speech (e.g., fast-finals)
       if (message.payload.ttsFinal !== true) {
-        room.logger.info(
-          { component: 'tts', unitId: message.payload.unitId, ttsFinal: message.payload.ttsFinal, stage: message.payload.stage },
-          '[TTS Skip] ttsFinal is not true'
-        );
         continue;
       }
       if (!message.payload.text) {
@@ -708,7 +704,7 @@ async function broadcastPatch(room, result) {
         : Array.isArray(incomingSentLen)
         ? incomingSentLen
         : null;
-      room.logger.info(
+      room.logger.debug(
         { component: 'tts', lang, unitId: payload.unitId, textLength: payload.text?.length },
         '[TTS Enqueue] Enqueueing text for synthesis'
       );

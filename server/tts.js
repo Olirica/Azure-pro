@@ -342,6 +342,9 @@ function createTtsQueue({
     speechConfig.speechSynthesisVoiceName = ensureVoice(lang);
     speechConfig.speechSynthesisOutputFormat = resolvedAudioFormat;
 
+    // Limit how many unit IDs we track to prevent unbounded memory growth
+    const MAX_TRACKED_UNITS = 1000;
+
     const state = {
       speechConfig,
       synthesizer: null,
@@ -355,7 +358,25 @@ function createTtsQueue({
       audioFormat: resolvedAudioFormat,
       prefetch: new Map(),
       latestVersion: new Map(), // rootUnitId -> version
-      latestText: new Map() // rootUnitId -> last text at that version
+      latestText: new Map(), // rootUnitId -> last text at that version
+      versionOrder: [] // Track insertion order for LRU eviction
+    };
+
+    // Helper to prune old entries when limit exceeded
+    state.trackUnit = (rootUnitId) => {
+      // Remove from current position if exists
+      const idx = state.versionOrder.indexOf(rootUnitId);
+      if (idx !== -1) {
+        state.versionOrder.splice(idx, 1);
+      }
+      // Add to end (most recent)
+      state.versionOrder.push(rootUnitId);
+      // Evict oldest if over limit
+      while (state.versionOrder.length > MAX_TRACKED_UNITS) {
+        const oldest = state.versionOrder.shift();
+        state.latestVersion.delete(oldest);
+        state.latestText.delete(oldest);
+      }
     };
 
     queueByLang.set(lang, state);
@@ -545,10 +566,6 @@ function createTtsQueue({
       return;
     }
     const item = state.queue[0];
-    logger.info(
-      { component: 'tts', roomId, lang, unitId: item.unitId, textLength: item.text?.length, queueLen: state.queue.length },
-      '[TTS Process] Starting synthesis for queued item.'
-    );
     const latestVersion = state.latestVersion.get(item.rootUnitId || item.unitId);
     const itemVersion = typeof item.version === 'number' ? item.version : null;
     if (
@@ -571,10 +588,6 @@ function createTtsQueue({
         ensurePrefetchForItem(state, lang, nextItem, { trackSynth: false });
       }
       const { audioBuffer, voiceName } = await current;
-      logger.info(
-        { component: 'tts', roomId, lang, unitId: item.unitId, audioSize: audioBuffer?.length, cancelled: item.cancelled },
-        '[TTS Process] Synthesis completed.'
-      );
       if (!item.cancelled) {
         metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
         logger.debug(
@@ -663,6 +676,7 @@ function createTtsQueue({
       // Drop repeats even if the version increments but text is identical
       if (prevText === trimmed) {
         state.latestVersion.set(rootUnitId, safeVersion);
+        state.trackUnit(rootUnitId); // Keep LRU fresh
         metrics?.recordTtsEvent?.(roomId, lang, 'duplicate_text');
         return;
       }
@@ -675,6 +689,7 @@ function createTtsQueue({
 
     state.latestVersion.set(rootUnitId, safeVersion);
     state.latestText.set(rootUnitId, trimmed);
+    state.trackUnit(rootUnitId); // LRU tracking to prevent memory leak
 
     state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
     clearPrefetchForUnit(state, unitId);
@@ -789,6 +804,7 @@ function createTtsQueue({
       if (state.latestText) {
         state.latestText.clear();
       }
+      state.versionOrder = []; // Clear LRU tracking
       updateQueueBacklog(lang);
       persistQueueState(lang);
     }
