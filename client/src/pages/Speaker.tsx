@@ -184,13 +184,15 @@ export function SpeakerApp() {
   async function buildAudioConfig(SDK: any, deviceId?: string) {
     if (deviceId) {
       try {
+        // Prime permissions and validate the device exists
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } })
+        // Close any previous pinned stream
         if (micStreamRef.current) {
           micStreamRef.current.getTracks().forEach(t => t.stop())
-          micStreamRef.current = null
         }
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } })
         micStreamRef.current = stream
-        return SDK.AudioConfig.fromStreamInput(stream)
+        // Use SDK's device binding (more stable than direct stream)
+        return SDK.AudioConfig.fromMicrophoneInput(deviceId)
       } catch (err) {
         console.warn('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
       }
@@ -488,6 +490,12 @@ export function SpeakerApp() {
     setSelectedDeviceId(deviceId)
     if (isRecording) {
       setStatus('Switching input…')
+      try {
+        if (micStreamRef.current) {
+          micStreamRef.current.getTracks().forEach(t => t.stop())
+          micStreamRef.current = null
+        }
+      } catch {}
       await stop()
       await start(deviceId)
     }

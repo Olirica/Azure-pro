@@ -1070,14 +1070,18 @@
             let audioConfig;
             if (selectedMicId) {
               try {
+                // Prime permissions and validate the device exists
+                const testStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: selectedMicId } } });
+                if (state.micStream) {
+                  state.micStream.getTracks().forEach(track => track.stop());
+                }
+                state.micStream = testStream;
                 if (state.micStream) {
                   state.micStream.getTracks().forEach(track => track.stop());
                   state.micStream = null;
                 }
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: selectedMicId } } });
-                state.micStream = stream;
-                audioConfig = SpeechSDK.AudioConfig.fromStreamInput(stream);
-                log('Creating audio config from explicit mic stream', { deviceId: selectedMicId });
+                audioConfig = SpeechSDK.AudioConfig.fromMicrophoneInput(selectedMicId);
+                log('Creating audio config', { deviceId: selectedMicId });
               } catch (err) {
                 log('Failed to bind selected mic stream, falling back to SDK selection', {
                   deviceId: selectedMicId,
@@ -1375,6 +1379,15 @@
 
         // Populate microphones on page load
         populateMicrophoneList();
+
+        // If user changes mic while running, restart with the new device
+        document.getElementById('micSelect').addEventListener('change', () => {
+          if (state.recognizer) {
+            log('Microphone changed, restarting recognition', { deviceId: document.getElementById('micSelect').value });
+            stop();
+            setTimeout(() => start(), 10);
+          }
+        });
 
         loadConfig().catch((err) => log('Config bootstrap failed', { error: err?.message }));
 
