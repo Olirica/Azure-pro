@@ -621,10 +621,12 @@ class SegmentProcessor {
     const last = this.lastContinuationMerge.get(root);
     // Debounce identical/rapid merges per root to avoid loops
     if (last) {
-      if (normMerged && last.normText === normMerged) {
+      const sameText = normMerged && last.normText === normMerged;
+      const smallDelta = Math.abs((mergedText || '').length - (last.rawLength || 0)) < 5;
+      if (sameText || smallDelta) {
         return false;
       }
-      if (now - last.at < 1200) {
+      if (now - last.at < 3000) {
         return false;
       }
     }
@@ -758,7 +760,11 @@ class SegmentProcessor {
       );
       return false;
     } finally {
-      this.lastContinuationMerge.set(root, { at: now, normText: normMerged || mergedText.toLowerCase() });
+      this.lastContinuationMerge.set(root, {
+        at: now,
+        normText: normMerged || mergedText.toLowerCase(),
+        rawLength: mergedText.length
+      });
     }
   }
 
