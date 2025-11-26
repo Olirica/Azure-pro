@@ -475,13 +475,28 @@ function createTtsQueue({
       const onSuccess = (result) => {
         finalize();
         if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-          resolve(Buffer.from(result.audioData));
+          const audioBuffer = Buffer.from(result.audioData);
+          if (audioBuffer.length === 0) {
+            logger.warn(
+              { component: 'tts', roomId, lang: item.lang, unitId: item.unitId, textLength: item.text?.length },
+              'Azure TTS returned empty audioData despite success status.'
+            );
+          }
+          resolve(audioBuffer);
         } else {
+          logger.error(
+            { component: 'tts', roomId, lang: item.lang, reason: result.reason, errorDetails: result.errorDetails },
+            'Azure TTS synthesis failed.'
+          );
           reject(new Error(`Speech synthesis failed: ${result.errorDetails || result.reason}`));
         }
       };
       const onError = (err) => {
         finalize();
+        logger.error(
+          { component: 'tts', roomId, lang: item.lang, unitId: item.unitId, err: err?.message || err },
+          'Azure TTS synthesis threw error.'
+        );
         reject(err);
       };
 
