@@ -1352,6 +1352,7 @@
         async function populateMicrophoneList() {
           try {
             const micSelect = document.getElementById('micSelect');
+            const currentSelection = micSelect.value;
 
             // Request microphone permission first to get device labels
             await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -1371,6 +1372,13 @@
               micSelect.appendChild(option);
             });
 
+            // Restore previous selection if still present, otherwise pick first
+            if (currentSelection && audioInputs.some(d => d.deviceId === currentSelection)) {
+              micSelect.value = currentSelection;
+            } else if (audioInputs.length > 0) {
+              micSelect.value = audioInputs[0].deviceId;
+            }
+
             log('Microphone devices enumerated', { count: audioInputs.length });
           } catch (err) {
             log('Failed to enumerate microphones', { error: err?.message });
@@ -1379,6 +1387,11 @@
 
         // Populate microphones on page load
         populateMicrophoneList();
+
+        // Re-enumerate when devices change
+        if (navigator.mediaDevices?.addEventListener) {
+          navigator.mediaDevices.addEventListener('devicechange', populateMicrophoneList);
+        }
 
         // If user changes mic while running, restart with the new device
         document.getElementById('micSelect').addEventListener('change', () => {
