@@ -61,6 +61,11 @@ function maybeCapitalize(prevText: string, incoming: string): string {
   return incoming
 }
 
+function rootFromUnitId(id: string | undefined): string {
+  if (!id) return ''
+  return id.split('#')[0]
+}
+
 type TtsEvent = {
   timestamp: number
   type: 'received' | 'playing' | 'played' | 'error'
@@ -169,17 +174,38 @@ export function ListenerApp() {
   }
 
   const paragraphs = useMemo(() => {
-    const sorted = Array.from(patches.values()).sort(
+    // Collapse to the latest hard patch per root unit to avoid duplicate/revision noise
+    const latestByRoot = new Map<string, Patch>()
+    for (const p of patches.values()) {
+      if (p.stage !== 'hard') continue
+      const root = rootFromUnitId(p.unitId)
+      const prev = latestByRoot.get(root)
+      if (!prev || (p.version ?? 0) > (prev.version ?? 0) || (p.receivedAt ?? 0) > (prev.receivedAt ?? 0)) {
+        latestByRoot.set(root, p)
+      }
+    }
+
+    // Sort by arrival time
+    const sorted = Array.from(latestByRoot.values()).sort(
       (a, b) => (a.receivedAt || 0) - (b.receivedAt || 0)
     )
+
     const acc: Paragraph[] = []
+    let lastText = ''
+    let lastAt = 0
 
     for (const patch of sorted) {
       const text = (patch.text || '').trim()
       if (!text) continue
       const now = patch.receivedAt || Date.now()
+
+      // Drop rapid duplicates of the exact same text (server hiccups)
+      if (text === lastText && now - lastAt < 2000) {
+        continue
+      }
+
       const current = acc[acc.length - 1]
-      const longPause = current ? now - current.updatedAt > 5000 : true
+      const longPause = current ? now - current.updatedAt > 4500 : true
       const shouldBreak = !current || (longPause && endsWithTerminal(current.text))
 
       if (shouldBreak) {
@@ -203,6 +229,9 @@ export function ListenerApp() {
           version: patch.version
         }
       }
+
+      lastText = text
+      lastAt = now
     }
 
     return acc.slice(-20).reverse() // newest first, cap length
