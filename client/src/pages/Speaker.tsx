@@ -24,7 +24,7 @@ async function fetchToken() {
   const res = await fetch('/api/speech/token', { method: 'POST' })
   const body = await res.json().catch(() => ({}))
   if (!res.ok || !body?.ok) throw new Error(body?.error || 'Token failed')
-  return body as { token: string; region: string }
+  return body as { token: string; region: string; expiresInSeconds?: number }
 }
 
 // Helper to read room from URL params
@@ -63,6 +63,8 @@ export function SpeakerApp() {
   const isAutoDetect = useRef(false)  // Track if using auto-detect mode
   const currentUnitLang = useRef('')
   const micStreamRef = useRef<MediaStream | null>(null)
+  const speechConfigRef = useRef<any>(null)
+  const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Fast-finals state machine for prefix-based emission
   const sttState = useRef({
@@ -74,6 +76,15 @@ export function SpeakerApp() {
   // Set page title
   useEffect(() => {
     document.title = 'Simo'
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (tokenRefreshTimerRef.current) {
+        clearTimeout(tokenRefreshTimerRef.current)
+      }
+    }
   }, [])
 
   // Load persisted glossary for the current room
@@ -233,12 +244,35 @@ export function SpeakerApp() {
       setStatus('Loading Speech SDK…')
       const SDK = await loadSpeechCdn()
       setStatus('Fetching token…')
-      const { token, region } = await fetchToken()
+      const { token, region, expiresInSeconds } = await fetchToken()
       const speechConfig = SDK.SpeechConfig.fromAuthorizationToken(token, region)
+      speechConfigRef.current = speechConfig
       speechConfig.outputFormat = SDK.OutputFormat.Detailed
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_PostProcessingOption, 'TrueText') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_ContinuousLanguageIdPriority, 'Accuracy') } catch {}
       try { speechConfig.enableDictation() } catch {}
+
+      // Set up token refresh timer (refresh 1 minute before expiry)
+      const refreshMs = ((expiresInSeconds || 600) - 60) * 1000
+      if (tokenRefreshTimerRef.current) clearTimeout(tokenRefreshTimerRef.current)
+      const scheduleTokenRefresh = () => {
+        tokenRefreshTimerRef.current = setTimeout(async () => {
+          try {
+            console.log('[Speaker] Refreshing Azure Speech token...')
+            const fresh = await fetchToken()
+            if (speechConfigRef.current) {
+              speechConfigRef.current.authorizationToken = fresh.token
+              console.log('[Speaker] Token refreshed successfully')
+            }
+            scheduleTokenRefresh() // Schedule next refresh
+          } catch (err) {
+            console.error('[Speaker] Token refresh failed:', err)
+            // Retry in 30 seconds if refresh fails
+            tokenRefreshTimerRef.current = setTimeout(scheduleTokenRefresh, 30000)
+          }
+        }, refreshMs)
+      }
+      scheduleTokenRefresh()
 
       // Load room metadata to configure fixed vs. auto-detect languages
       let meta: any = null
@@ -464,6 +498,12 @@ export function SpeakerApp() {
 
   async function stop() {
     setStatus('Stopping…')
+    // Clear token refresh timer
+    if (tokenRefreshTimerRef.current) {
+      clearTimeout(tokenRefreshTimerRef.current)
+      tokenRefreshTimerRef.current = null
+    }
+    speechConfigRef.current = null
     try { wsRef.current?.close() } catch {}
     wsRef.current = null
     const r = recogRef.current
