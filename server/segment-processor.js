@@ -731,30 +731,33 @@ class SegmentProcessor {
         const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
         const isIncomplete = /\.\.\.$/.test(cached.text.trim());
 
-        translatedPatches.push({
-          unitId,
-          utteranceId: unitId,
-          stage: stage || 'hard',
-          op: 'replace',
-          version,
-          rev: version,
-          text: cached.text,
-          srcLang,
-          targetLang: lang,
-          isFinal: stage === 'hard',
-          ttsFinal: segment.ttsFinal === true,
-          sentLen: {
-            src: cached.srcSentLen,
-            tgt: cached.transSentLen
-          },
-          ts,
-          mergedFrom: segment.mergedFrom, // Preserve merge metadata
-          // Translation quality metadata
-          sourceText: text,
-          lengthRatio,
-          isIncomplete,
-          provider: cached.provider || 'azure'
-        });
+        const trimmedText = (cached.text || '').trim();
+        if (trimmedText) {
+          translatedPatches.push({
+            unitId,
+            utteranceId: unitId,
+            stage: stage || 'hard',
+            op: 'replace',
+            version,
+            rev: version,
+            text: trimmedText,
+            srcLang,
+            targetLang: lang,
+            isFinal: stage === 'hard',
+            ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard'),
+            sentLen: {
+              src: cached.srcSentLen,
+              tgt: cached.transSentLen
+            },
+            ts,
+            mergedFrom: segment.mergedFrom, // Preserve merge metadata
+            // Translation quality metadata
+            sourceText: text,
+            lengthRatio,
+            isIncomplete,
+            provider: cached.provider || 'azure'
+          });
+        }
       } else {
         misses.push(lang);
       }
@@ -794,29 +797,35 @@ class SegmentProcessor {
           const lengthRatio = sourceLen > 0 ? targetLen / sourceLen : 1;
           const isIncomplete = /\.\.\.$/.test(translation.text.trim());
 
-          const payload = {
-            unitId,
-            utteranceId: unitId,
-            stage: stage || 'hard',
-            op: 'replace',
-            version,
-            rev: version,
-            text: translation.text,
-            srcLang,
-            targetLang: translation.lang,
-            isFinal: stage === 'hard',
-            sentLen: {
-              src: translation.srcSentLen,
-              tgt: translation.transSentLen
-            },
-            ts,
-            mergedFrom: segment.mergedFrom,
-            // Translation quality metadata
-            sourceText: text, // Original text for comparison
-            lengthRatio,       // Ratio for hallucination detection
-            isIncomplete,      // Flags segments ending with "..."
-            provider: translation.provider || 'azure' // Which translator was used
-          };
+      const trimmedText = (translation.text || '').trim();
+      if (!trimmedText) {
+        continue;
+      }
+
+      const payload = {
+        unitId,
+        utteranceId: unitId,
+        stage: stage || 'hard',
+        op: 'replace',
+        version,
+        rev: version,
+        text: trimmedText,
+        srcLang,
+        targetLang: translation.lang,
+        isFinal: stage === 'hard',
+        sentLen: {
+          src: translation.srcSentLen,
+          tgt: translation.transSentLen
+        },
+        ts,
+        mergedFrom: segment.mergedFrom,
+        // Translation quality metadata
+        sourceText: text, // Original text for comparison
+        lengthRatio,       // Ratio for hallucination detection
+        isIncomplete,      // Flags segments ending with "..."
+        provider: translation.provider || 'azure', // Which translator was used
+        ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard')
+      };
           this.cacheTranslation(unitId, version, translation.lang, translation);
           translatedPatches.push({
             ...payload,
@@ -928,8 +937,8 @@ class SegmentProcessor {
       throw new Error('Patch stage must be "soft" or "hard".');
     }
 
-    // Indicates if this segment is safe to speak (only when explicitly marked)
-    const ttsReady = ttsFinal === true;
+    // Indicates if this segment is safe to speak (default to true for hard finals)
+    const ttsReady = ttsFinal === true || (ttsFinal === undefined && finalStage === 'hard');
 
     const root = rootFromUnitId(unitId);
     const rawText = (text || '').trim();
