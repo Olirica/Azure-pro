@@ -176,17 +176,31 @@ export function ListenerApp() {
   const paragraphs = useMemo(() => {
     // Collapse to the latest hard patch per root unit to avoid duplicate/revision noise
     const latestByRoot = new Map<string, Patch>()
+    const pendingSoft = new Map<string, Patch>() // soft preview until first hard
     for (const p of patches.values()) {
-      if (p.stage !== 'hard') continue
       const root = rootFromUnitId(p.unitId)
-      const prev = latestByRoot.get(root)
-      if (!prev || (p.version ?? 0) > (prev.version ?? 0) || (p.receivedAt ?? 0) > (prev.receivedAt ?? 0)) {
-        latestByRoot.set(root, p)
+      if (p.stage === 'hard') {
+        const prev = latestByRoot.get(root)
+        if (!prev || (p.version ?? 0) > (prev.version ?? 0) || (p.receivedAt ?? 0) > (prev.receivedAt ?? 0)) {
+          latestByRoot.set(root, p)
+        }
+        pendingSoft.delete(root) // hard arrived; drop soft preview
+      } else {
+        // only keep soft if no hard yet
+        if (!latestByRoot.has(root)) {
+          const prev = pendingSoft.get(root)
+          if (!prev || (p.version ?? 0) >= (prev.version ?? 0)) {
+            pendingSoft.set(root, p)
+          }
+        }
       }
     }
 
+    // Combine hards + pending soft previews
+    const combined: Patch[] = [...latestByRoot.values(), ...pendingSoft.values()]
+
     // Sort by arrival time
-    const sorted = Array.from(latestByRoot.values()).sort(
+    const sorted = combined.sort(
       (a, b) => (a.receivedAt || 0) - (b.receivedAt || 0)
     )
 

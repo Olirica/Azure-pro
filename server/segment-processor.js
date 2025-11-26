@@ -1043,7 +1043,7 @@ class SegmentProcessor {
     // ONLY translate hard finals (fast-finals + SDK finals)
     // Soft patches are mutable previews that will be superseded - skip translation
     if (uniqueTargets.length && finalStage === 'hard') {
-      const segmentForTranslation = {
+    const segmentForTranslation = {
         unitId,
         text: mergedText,
         srcLang: updatedUnit.srcLang,

@@ -607,6 +607,12 @@ function createTtsQueue({
     if (!trimmed) {
       return;
     }
+    // Drop ultra-short unless punct-final (prevents choppy fragments)
+    const words = trimmed.split(/\s+/).filter(Boolean).length;
+    const isPunctFinal = /[.?!]\s*$/.test(trimmed);
+    if (words < 2 && !isPunctFinal) {
+      return;
+    }
 
     const state = ensureLangState(lang);
     const incomingVersion = typeof options.version === 'number' ? options.version : null;
