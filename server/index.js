@@ -446,7 +446,7 @@ async function broadcastPatch(room, result) {
   }
 
   const patchesByLang = new Map();
-  if (sourcePatch) {
+  if (sourcePatch && sourcePatch.text && sourcePatch.text.trim()) {
     const stampedSource = { ...sourcePatch, emittedAt: sourcePatch.emittedAt || now };
     const langKey = sourcePatch.srcLang || 'source';
     patchesByLang.set(langKey, {
@@ -462,6 +462,9 @@ async function broadcastPatch(room, result) {
 
   if (Array.isArray(translatedPatches)) {
     for (const patch of translatedPatches) {
+      if (!patch.text || !String(patch.text).trim()) {
+        continue;
+      }
       const stampedPatch = { ...patch, emittedAt: patch.emittedAt || now };
       patchesByLang.set(patch.targetLang, {
         type: 'patch',

@@ -485,6 +485,9 @@ export function ListenerApp() {
             return
           }
           const p: Patch = { ...payload, receivedAt: Date.now() }
+          if (!p.text || !p.text.trim()) {
+            return
+          }
           const base = (code?: string) => (code ? code.split('-')[0].toLowerCase() : '')
           // Filter out patches for other languages
           if (p.targetLang && p.targetLang !== lang) {
