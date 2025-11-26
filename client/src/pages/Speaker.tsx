@@ -176,7 +176,7 @@ export function SpeakerApp() {
     ws.onclose = () => clearInterval(timer)
   }
 
-  async function start() {
+  async function start(deviceOverride?: string) {
     try {
       if (isRecording) return
       setIsRecording(true)
@@ -207,8 +207,8 @@ export function SpeakerApp() {
       } catch {}
 
       // Use selected device or default microphone
-      const audioConfig = selectedDeviceId
-        ? SDK.AudioConfig.fromMicrophoneInput(selectedDeviceId)
+      const audioConfig = (deviceOverride || selectedDeviceId)
+        ? SDK.AudioConfig.fromMicrophoneInput(deviceOverride || selectedDeviceId)
         : SDK.AudioConfig.fromDefaultMicrophoneInput()
       let recognizer: any = null
 
@@ -385,6 +385,16 @@ export function SpeakerApp() {
     currentUnitLang.current = ''
   }
 
+  // Handle device changes: if currently recording, restart with the new device
+  async function handleDeviceChange(deviceId: string) {
+    setSelectedDeviceId(deviceId)
+    if (isRecording) {
+      setStatus('Switching input…')
+      await stop()
+      await start(deviceId)
+    }
+  }
+
   // Enumerate audio input devices on mount
   useEffect(() => {
     async function getDevices() {
@@ -553,7 +563,7 @@ export function SpeakerApp() {
           <Label className="mb-2 block text-slate-300">Audio Input Device</Label>
           <select
             value={selectedDeviceId}
-            onChange={(e) => setSelectedDeviceId(e.target.value)}
+            onChange={(e) => handleDeviceChange(e.target.value)}
             className="flex h-10 w-full rounded-lg border border-slate-700 bg-slate-900/50 text-slate-100 px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:border-emerald-500 [&>option]:bg-slate-800 [&>option]:text-slate-100"
           >
             {audioDevices.map(device => (
@@ -564,6 +574,11 @@ export function SpeakerApp() {
           </select>
           {audioDevices.length === 0 && (
             <p className="text-xs text-slate-500 mt-2">No audio devices found. Allow microphone access to see devices.</p>
+          )}
+          {audioDevices.length > 0 && (
+            <p className="text-xs text-slate-500 mt-2">
+              Changing devices while recording will restart capture with the new input.
+            </p>
           )}
         </div>
 
