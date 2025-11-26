@@ -1064,9 +1064,12 @@
               maxUtteranceDurationMs: config.maxUtteranceDurationMs
             });
 
-            // Use default microphone input (fromStreamInput is broken - causes hallucinated transcriptions)
-            log('Creating audio config from default microphone');
-            const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+            // Use selected microphone or default
+            const selectedMicId = document.getElementById('micSelect').value;
+            const audioConfig = selectedMicId
+              ? SpeechSDK.AudioConfig.fromMicrophoneInput(selectedMicId)
+              : SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+            log('Creating audio config', { deviceId: selectedMicId || 'default' });
 
             let recognizer;
             if (useAutoDetect) {
