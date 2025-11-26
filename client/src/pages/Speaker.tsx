@@ -367,6 +367,8 @@ export function SpeakerApp() {
               if (!currentUnitLang.current) currentUnitLang.current = stableLang
               const langForUnit = currentUnitLang.current || stableLang
 
+              const candidateIsSentence = /[.?!]\s*$/.test(candidate)
+
               await postPatch({
                 unitId: unitId(langForUnit),
                 stage: 'hard',       // <- fast final "hard"
@@ -374,7 +376,8 @@ export function SpeakerApp() {
                 version: version.current,
                 text: candidate,
                 srcLang: langForUnit,
-                ttsFinal: false,     // Skip TTS for fast-finals; wait for full sentence
+                // Allow TTS when the fast-final ends with terminal punctuation
+                ttsFinal: candidateIsSentence,
                 ts: timestamps(e.result),
               })
 
