@@ -510,16 +510,27 @@ export function SpeakerApp() {
         const devices = await navigator.mediaDevices.enumerateDevices()
         const audioInputs = devices.filter(d => d.kind === 'audioinput')
         setAudioDevices(audioInputs)
-        // Auto-select default device
-        if (audioInputs.length > 0 && !selectedDeviceId) {
-          setSelectedDeviceId(audioInputs[0].deviceId)
+        // Preserve selection if still available, otherwise pick first
+        const stillExists = audioInputs.find(d => d.deviceId === selectedDeviceId)
+        if (!stillExists) {
+          if (audioInputs.length > 0) setSelectedDeviceId(audioInputs[0].deviceId)
+          else setSelectedDeviceId('')
         }
       } catch (err) {
         console.error('Failed to enumerate devices:', err)
       }
     }
     getDevices()
-  }, [])
+    const handler = () => { getDevices() }
+    if (navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', handler)
+    }
+    return () => {
+      if (navigator.mediaDevices?.removeEventListener) {
+        navigator.mediaDevices.removeEventListener('devicechange', handler)
+      }
+    }
+  }, [selectedDeviceId])
 
   // Unlock room with access code
   async function unlockRoom(e: React.FormEvent) {
