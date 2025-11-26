@@ -554,6 +554,17 @@ function createTtsQueue({
       const { audioBuffer, voiceName } = await current;
       if (!item.cancelled) {
         metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
+        logger.debug(
+          {
+            component: 'tts',
+            roomId,
+            lang,
+            unitId: item.unitId,
+            textLength: item.text?.length,
+            audioSize: audioBuffer?.length
+          },
+          'TTS synthesized audio.'
+        );
         emitter.emit('audio', {
           roomId,
           lang,

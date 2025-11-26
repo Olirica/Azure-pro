@@ -724,6 +724,16 @@ function broadcastAudio(room, payload) {
     }
     return;
   }
+  room.logger.debug(
+    {
+      component: 'tts',
+      lang: payload.lang,
+      unitId: payload.unitId,
+      textLength: payload.text?.length,
+      audioSize: payload.audio?.length
+    },
+    'Broadcasting TTS audio to listeners.'
+  );
   const targetClients = Array.from(room.clients).filter(c => c.wantsTts && c.lang === payload.lang);
   if (!payload.text || !String(payload.text).trim()) {
     room.logger.warn({ component: 'tts', unitId: payload?.unitId, lang: payload?.lang }, 'Skipping TTS broadcast - empty text.');
