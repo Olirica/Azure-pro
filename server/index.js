@@ -656,7 +656,7 @@ async function broadcastPatch(room, result) {
         byUnit = new Map();
         ttsEnqueueByLang.set(client.lang, byUnit);
       }
-      const version = typeof message.payload.version === 'number' ? message.payload.version : null;
+      const version = typeof message.payload.version === 'number' ? message.payload.version : 0;
       const existing = byUnit.get(message.payload.unitId);
       if (!existing) {
         byUnit.set(message.payload.unitId, { payload: message.payload, voice: client.voice, version });

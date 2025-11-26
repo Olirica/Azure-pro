@@ -354,7 +354,8 @@ function createTtsQueue({
       hydrated: false,
       audioFormat: resolvedAudioFormat,
       prefetch: new Map(),
-      latestVersion: new Map()
+      latestVersion: new Map(), // rootUnitId -> version
+      latestText: new Map() // rootUnitId -> last text at that version
     };
 
     queueByLang.set(lang, state);
@@ -609,14 +610,24 @@ function createTtsQueue({
 
     const state = ensureLangState(lang);
     const incomingVersion = typeof options.version === 'number' ? options.version : null;
-    if (incomingVersion !== null) {
-      const prev = state.latestVersion.get(unitId);
-      if (prev !== undefined && incomingVersion <= prev) {
-        metrics?.recordTtsEvent?.(roomId, lang, incomingVersion === prev ? 'duplicate_version' : 'stale_version');
+    const rootUnitId = unitId.split('#')[0];
+    const safeVersion = incomingVersion ?? 0;
+    const prevVersion = state.latestVersion.get(rootUnitId);
+    const prevText = state.latestText.get(rootUnitId);
+
+    if (prevVersion !== undefined) {
+      if (safeVersion < prevVersion) {
+        metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
         return;
       }
-      state.latestVersion.set(unitId, incomingVersion);
+      if (safeVersion === prevVersion && prevText === trimmed) {
+        metrics?.recordTtsEvent?.(roomId, lang, 'duplicate_text');
+        return;
+      }
     }
+
+    state.latestVersion.set(rootUnitId, safeVersion);
+    state.latestText.set(rootUnitId, trimmed);
 
     state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
     clearPrefetchForUnit(state, unitId);
@@ -727,6 +738,9 @@ function createTtsQueue({
       }
       if (state.latestVersion) {
         state.latestVersion.clear();
+      }
+      if (state.latestText) {
+        state.latestText.clear();
       }
       updateQueueBacklog(lang);
       persistQueueState(lang);
