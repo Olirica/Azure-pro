@@ -477,6 +477,7 @@ class SegmentProcessor {
           srcLang: previousSegment.srcLang,
           targetLang: translation.lang,
           isFinal: true,
+          ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && previousSegment.stage === 'hard'),
           sentLen: {
             src: translation.srcSentLen,
             tgt: translation.transSentLen
@@ -740,6 +741,7 @@ class SegmentProcessor {
           srcLang: newSegment.srcLang,
           targetLang: lang,
           isFinal: true,
+          ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && newSegment.stage === 'hard'),
           ts: newSegment.ts,
           mergedIntoPrevious: previousSegment.unitId,
           suppressReason: 'continuation_merge'
