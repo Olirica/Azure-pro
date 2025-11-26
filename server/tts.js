@@ -545,6 +545,10 @@ function createTtsQueue({
       return;
     }
     const item = state.queue[0];
+    logger.info(
+      { component: 'tts', roomId, lang, unitId: item.unitId, textLength: item.text?.length, queueLen: state.queue.length },
+      '[TTS Process] Starting synthesis for queued item.'
+    );
     const latestVersion = state.latestVersion.get(item.rootUnitId || item.unitId);
     const itemVersion = typeof item.version === 'number' ? item.version : null;
     if (
@@ -567,6 +571,10 @@ function createTtsQueue({
         ensurePrefetchForItem(state, lang, nextItem, { trackSynth: false });
       }
       const { audioBuffer, voiceName } = await current;
+      logger.info(
+        { component: 'tts', roomId, lang, unitId: item.unitId, audioSize: audioBuffer?.length, cancelled: item.cancelled },
+        '[TTS Process] Synthesis completed.'
+      );
       if (!item.cancelled) {
         metrics?.recordTtsEvent?.(roomId, lang, 'spoken');
         logger.debug(
