@@ -267,6 +267,7 @@ class SegmentProcessor {
     this.peekMaxSegments = peekMaxSegments;
     this.peekMinConfidence = peekMinConfidence;
     this.peekableSegments = []; // Array of {segment, targetLangs, timestamp}
+    this.lastContinuationMerge = new Map(); // root -> { at, normText }
 
     // Continuation merge window for joining truncated segments from aggressive VAD
     const continuationEnabled = process.env.CONTINUATION_MERGE_ENABLED !== 'false';
@@ -614,6 +615,19 @@ class SegmentProcessor {
     }
 
     const mergedText = finalCurr ? `${cleanedPrev} ${finalCurr}`.trim() : cleanedPrev;
+    const root = rootFromUnitId(previousSegment.unitId);
+    const now = Date.now();
+    const normMerged = normalizeForOverlap(mergedText);
+    const last = this.lastContinuationMerge.get(root);
+    // Debounce identical/rapid merges per root to avoid loops
+    if (last) {
+      if (normMerged && last.normText === normMerged) {
+        return false;
+      }
+      if (now - last.at < 1200) {
+        return false;
+      }
+    }
 
     // Re-translate merged text with context
     try {
@@ -743,6 +757,8 @@ class SegmentProcessor {
         'Continuation merge failed.'
       );
       return false;
+    } finally {
+      this.lastContinuationMerge.set(root, { at: now, normText: normMerged || mergedText.toLowerCase() });
     }
   }
 
@@ -1157,6 +1173,7 @@ class SegmentProcessor {
     this.units.clear();
     this.translationCache.clear();
     this.translationIndex.clear();
+    this.lastContinuationMerge.clear();
   }
 }
 
