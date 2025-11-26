@@ -90,6 +90,7 @@ export function ListenerApp() {
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [showDeviceSelector, setShowDeviceSelector] = useState(false)
+  const [audioOutputError, setAudioOutputError] = useState('')
 
   // TTS queue
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -331,11 +332,20 @@ export function ListenerApp() {
   // Update audio output device when selected
   useEffect(() => {
     const audio = audioRef.current
-    if (audio && selectedDeviceId && (audio as any).setSinkId) {
-      (audio as any).setSinkId(selectedDeviceId).catch((err: any) => {
-        console.error('Failed to set audio output device:', err)
-      })
+    if (!audio) return
+    const sinkSetter = (audio as any).setSinkId
+    if (typeof sinkSetter !== 'function') {
+      setAudioOutputError('Browser does not support selecting an audio output device; using system default.')
+      return
     }
+    const target = selectedDeviceId || 'default'
+    sinkSetter
+      .call(audio, target)
+      .then(() => setAudioOutputError(''))
+      .catch((err: any) => {
+        console.error('Failed to set audio output device:', err)
+        setAudioOutputError('Failed to switch audio output; using system default.')
+      })
   }, [selectedDeviceId])
 
   // Close device selector when clicking outside
@@ -659,9 +669,13 @@ export function ListenerApp() {
                       {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
                     </option>
                   ))}
+                  <option value="">System default</option>
                 </select>
                 {audioDevices.length === 0 && (
                   <p className="text-xs text-slate-500 mt-2">No audio output devices found</p>
+                )}
+                {audioOutputError && (
+                  <p className="text-xs text-amber-400 mt-2">{audioOutputError}</p>
                 )}
               </div>
             )}
