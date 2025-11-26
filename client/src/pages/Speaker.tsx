@@ -62,6 +62,14 @@ export function SpeakerApp() {
   const sessionId = useRef(crypto.randomUUID())
   const isAutoDetect = useRef(false)  // Track if using auto-detect mode
   const currentUnitLang = useRef('')
+  const micStreamRef = useRef<MediaStream | null>(null)
+
+  // Fast-finals state machine for prefix-based emission
+  const sttState = useRef({
+    lastText: '',
+    committedPrefix: '',   // part we've already emitted as "hard-ish"
+    lastEmitAt: 0,
+  })
 
   // Set page title
   useEffect(() => {
@@ -95,6 +103,14 @@ export function SpeakerApp() {
 
   function unitId(lang: string) { return `${sessionId.current}|${lang}|${unitIndex.current}` }
   const glossaryStorageKey = (roomId: string) => `simo-glossary-${roomId}`
+
+  // Helper to find longest common prefix between two strings
+  function longestCommonPrefix(a: string, b: string): string {
+    const max = Math.min(a.length, b.length)
+    let i = 0
+    while (i < max && a[i] === b[i]) i++
+    return a.slice(0, i)
+  }
 
   // Get stable language with persistence (15s lock + 2 consecutive threshold)
   function getStableLanguage(detected: string | undefined, fallback: string): string {
@@ -164,6 +180,32 @@ export function SpeakerApp() {
     try { await fetch('/api/segments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch {}
   }
 
+  // Build an AudioConfig pinned to the requested deviceId when provided
+  async function buildAudioConfig(SDK: any, deviceId?: string) {
+    if (deviceId) {
+      try {
+        // Prime permissions and validate the device exists
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } })
+        // Close any previous pinned stream
+        if (micStreamRef.current) {
+          micStreamRef.current.getTracks().forEach(t => t.stop())
+        }
+        micStreamRef.current = stream
+        // Use SDK's device binding (more stable than direct stream)
+        return SDK.AudioConfig.fromMicrophoneInput(deviceId)
+      } catch (err) {
+        console.warn('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
+      }
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+    }
+    return deviceId
+      ? SDK.AudioConfig.fromMicrophoneInput(deviceId)
+      : SDK.AudioConfig.fromDefaultMicrophoneInput()
+  }
+
   function startHeartbeat() {
     try { wsRef.current?.close() } catch {}
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -176,7 +218,7 @@ export function SpeakerApp() {
     ws.onclose = () => clearInterval(timer)
   }
 
-  async function start() {
+  async function start(deviceOverride?: string) {
     try {
       if (isRecording) return
       setIsRecording(true)
@@ -187,6 +229,7 @@ export function SpeakerApp() {
       langStability.current = { current: '', detectedAt: 0, switchCandidate: null, switchCount: 0 }
       lastSoftText.current = ''
       lastSoftAt.current = 0
+      sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state
       setStatus('Loading Speech SDK…')
       const SDK = await loadSpeechCdn()
       setStatus('Fetching token…')
@@ -206,10 +249,8 @@ export function SpeakerApp() {
         if (meta) setRoomMeta(meta)
       } catch {}
 
-      // Use selected device or default microphone
-      const audioConfig = selectedDeviceId
-        ? SDK.AudioConfig.fromMicrophoneInput(selectedDeviceId)
-        : SDK.AudioConfig.fromDefaultMicrophoneInput()
+      // Use selected device or default microphone (with exact device binding when provided)
+      const audioConfig = await buildAudioConfig(SDK, deviceOverride || selectedDeviceId)
       let recognizer: any = null
 
             // Helper to read detected language from SDK result (robust to SDK variants)
@@ -290,14 +331,68 @@ export function SpeakerApp() {
 
         const now = Date.now()
         const text = e.result.text.trim()
+        if (!text) return
+
+        // PREFIX-BASED FAST FINALS (Solution 2)
+        // Find stable prefix that's consistent across multiple partials
+        const prev = sttState.current.lastText
+        const prefix = longestCommonPrefix(prev, text)
+
+        // Only consider if prefix grows beyond what we've already committed
+        if (prefix.length > sttState.current.committedPrefix.length) {
+          const extension = prefix.slice(sttState.current.committedPrefix.length)
+          const extensionChars = extension.length
+          const timeSinceEmit = now - sttState.current.lastEmitAt
+
+          // Determine if we should emit a fast-final
+          const hasNewSentence = /[.?!]\s/.test(extension)   // new boundary in extension
+          const enoughNewChars = extensionChars >= 22   // FASTFINALS_MIN_CHARS from env
+          const timeOk = timeSinceEmit >= 600               // FASTFINALS_EMIT_THROTTLE_MS from env
+
+          if ((hasNewSentence || enoughNewChars) && timeOk) {
+            // Apply tail guard on the *new* prefix, not whole text
+            const guardChars = 8  // FASTFINALS_TAIL_GUARD_CHARS from env
+            const total = prefix.length
+            const guardedLen = Math.max(
+              sttState.current.committedPrefix.length,
+              total - guardChars
+            )
+            const candidate = prefix.slice(0, guardedLen)
+
+            if (candidate.length > sttState.current.committedPrefix.length) {
+              version.current += 1
+              const rawDetected = detectedLangFrom(e.result)
+              const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
+              const stableLang = getStableLanguage(rawDetected, fallback)
+              if (!currentUnitLang.current) currentUnitLang.current = stableLang
+              const langForUnit = currentUnitLang.current || stableLang
+
+              await postPatch({
+                unitId: unitId(langForUnit),
+                stage: 'hard',       // <- fast final "hard"
+                op: 'replace',
+                version: version.current,
+                text: candidate,
+                srcLang: langForUnit,
+                ts: timestamps(e.result),
+              })
+
+              sttState.current.committedPrefix = candidate
+              sttState.current.lastEmitAt = now
+            }
+          }
+        }
+
+        sttState.current.lastText = text
+
+        // ALSO emit soft patches for UI preview (separate from fast-finals)
         const delta = text.length - lastSoftText.current.length
-        const timeOk = now - lastSoftAt.current > 1000
-        const charOk = delta > 18
+        const softTimeOk = now - lastSoftAt.current > 600  // SOFT_THROTTLE_MS from env
+        const softCharOk = delta > 10  // SOFT_MIN_DELTA_CHARS from env
         const punct = /[.?!]\s*$/.test(text)
-        if ((punct || charOk) && timeOk) {
+        if ((punct || softCharOk) && softTimeOk) {
           lastSoftText.current = text
           lastSoftAt.current = now
-          version.current += 1
           const rawDetected = detectedLangFrom(e.result)
           const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
           const stableLang = getStableLanguage(rawDetected, fallback)
@@ -347,6 +442,7 @@ export function SpeakerApp() {
           lastSoftText.current = ''
           lastSoftAt.current = Date.now()
           currentUnitLang.current = ''
+          sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state for next utterance
         }
       }
 
@@ -379,10 +475,30 @@ export function SpeakerApp() {
       try { r.close() } catch {}
     }
     recogRef.current = null
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+    }
     setStatus('Idle')
     setTranscriptHistory([])  // Clear transcript history when stopping
     setIsRecording(false)
     currentUnitLang.current = ''
+  }
+
+  // Handle device changes: if currently recording, restart with the new device
+  async function handleDeviceChange(deviceId: string) {
+    setSelectedDeviceId(deviceId)
+    if (isRecording) {
+      setStatus('Switching input…')
+      try {
+        if (micStreamRef.current) {
+          micStreamRef.current.getTracks().forEach(t => t.stop())
+          micStreamRef.current = null
+        }
+      } catch {}
+      await stop()
+      await start(deviceId)
+    }
   }
 
   // Enumerate audio input devices on mount
@@ -553,7 +669,7 @@ export function SpeakerApp() {
           <Label className="mb-2 block text-slate-300">Audio Input Device</Label>
           <select
             value={selectedDeviceId}
-            onChange={(e) => setSelectedDeviceId(e.target.value)}
+            onChange={(e) => handleDeviceChange(e.target.value)}
             className="flex h-10 w-full rounded-lg border border-slate-700 bg-slate-900/50 text-slate-100 px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:border-emerald-500 [&>option]:bg-slate-800 [&>option]:text-slate-100"
           >
             {audioDevices.map(device => (
@@ -564,6 +680,11 @@ export function SpeakerApp() {
           </select>
           {audioDevices.length === 0 && (
             <p className="text-xs text-slate-500 mt-2">No audio devices found. Allow microphone access to see devices.</p>
+          )}
+          {audioDevices.length > 0 && (
+            <p className="text-xs text-slate-500 mt-2">
+              Changing devices while recording will restart capture with the new input.
+            </p>
           )}
         </div>
 
