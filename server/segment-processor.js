@@ -599,8 +599,13 @@ class SegmentProcessor {
 
     const normPrev = normalizeForOverlap(cleanedPrev);
     const normCurr = normalizeForOverlap(currText);
+    const lowerPrev = cleanedPrev.toLowerCase();
+    const lowerCurr = currText.toLowerCase();
     let finalCurr = currText;
-    if (normPrev && normCurr) {
+    // Prefer raw prefix match to avoid cutting inside words
+    if (lowerCurr.startsWith(lowerPrev)) {
+      finalCurr = currText.slice(cleanedPrev.length).trimStart();
+    } else if (normPrev && normCurr) {
       const prefix = longestCommonPrefix(normPrev, normCurr);
       const overlapRatio = prefix.length / Math.max(normPrev.length, 1);
       if (overlapRatio >= 0.7) {
