@@ -329,16 +329,12 @@ function ensureRoom(roomId) {
     return ttsQueues.get(lang);
   }
 
-  // Track text that's been sent to TTS per (lang, unitId) to prevent duplicates across calls
-  const ttsSentText = new Map();  // key: `${lang}:${unitId}` -> { text, version }
-
   const room = {
     id: roomId,
     logger: roomLogger,
     processor,
     clients: new Set(),
     ttsQueues,
-    ttsSentText,
     getTtsQueueForLang,
     watchdog: createWatchdog({
       logger: roomLogger.child({ component: 'watchdog' }),
@@ -736,39 +732,6 @@ async function broadcastPatch(room, result) {
         );
         continue;
       }
-      // Check if we've already sent this or similar text to TTS (cross-call deduplication)
-      const ttsKey = `${lang}:${payload.unitId}`;
-      const prevSent = room.ttsSentText.get(ttsKey);
-      const currentText = String(payload.text || '').trim();
-
-      if (prevSent) {
-        const prevText = prevSent.text;
-        const isSameText = currentText === prevText;
-        const isContinuation = currentText.startsWith(prevText) && currentText.length > prevText.length;
-        const isRevision = !isContinuation && !isSameText;
-
-        if (isSameText) {
-          // Exact same text - skip entirely
-          room.logger.debug(
-            { component: 'tts', lang, unitId: payload.unitId },
-            '[TTS Skip] Duplicate text already sent to TTS'
-          );
-          continue;
-        }
-
-        if (isRevision && currentText.length <= prevText.length) {
-          // Revision that's not longer - skip to avoid re-speaking
-          room.logger.debug(
-            { component: 'tts', lang, unitId: payload.unitId, prevLen: prevText.length, curLen: currentText.length },
-            '[TTS Skip] Revision is not longer than previous, skipping'
-          );
-          continue;
-        }
-      }
-
-      // Track this text as sent to TTS
-      room.ttsSentText.set(ttsKey, { text: currentText, version });
-
       const incomingSentLen = payload.sentLen;
       const targetSentLen = Array.isArray(incomingSentLen?.tgt)
         ? incomingSentLen.tgt

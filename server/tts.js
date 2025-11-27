@@ -161,6 +161,11 @@ function createTtsQueue({
   const queueByLang = new Map();
   let disposed = false;
 
+  // Track recently synthesized segment texts to prevent duplicates across all entry points
+  // Key: text content, Value: timestamp when synthesized
+  const recentlySynthesized = new Map();
+  const DEDUP_WINDOW_MS = 30000; // 30 seconds - same text won't repeat within this window
+
   const configuredRateBoost =
     typeof rateBoostPercent === 'number' && !Number.isNaN(rateBoostPercent)
       ? rateBoostPercent
@@ -608,6 +613,22 @@ function createTtsQueue({
       setImmediate(() => processQueueForLang(lang));
       return;
     }
+
+    // Segment-level deduplication: skip if this exact text was synthesized recently
+    const textKey = item.text?.trim();
+    const lastSynthTime = recentlySynthesized.get(textKey);
+    if (lastSynthTime && Date.now() - lastSynthTime < DEDUP_WINDOW_MS) {
+      logger.debug(
+        { component: 'tts', roomId, lang, unitId: item.unitId, textLen: textKey?.length },
+        '[TTS Dedup] Skipping recently synthesized text'
+      );
+      metrics?.recordTtsEvent?.(roomId, lang, 'dedup_skipped');
+      state.queue.shift();
+      updateQueueBacklog(lang);
+      setImmediate(() => processQueueForLang(lang));
+      return;
+    }
+
     state.playing = item;
     state.processing = true;
     updateQueueBacklog(lang);
@@ -643,6 +664,16 @@ function createTtsQueue({
           sentLen: typeof item.sentLen === 'number' ? item.sentLen : null,
           version: typeof item.version === 'number' ? item.version : null
         });
+
+        // Track this text as recently synthesized to prevent duplicates
+        recentlySynthesized.set(textKey, Date.now());
+        // Cleanup old entries periodically (keep map bounded)
+        if (recentlySynthesized.size > 500) {
+          const now = Date.now();
+          for (const [k, v] of recentlySynthesized) {
+            if (now - v > DEDUP_WINDOW_MS) recentlySynthesized.delete(k);
+          }
+        }
       } else {
         emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
       }
