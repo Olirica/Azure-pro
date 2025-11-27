@@ -2,16 +2,311 @@
 
 ## Overview
 
-This document summarizes the extensive TTS (Text-to-Speech) debugging and fixes made during the November 26-27 session. The primary goal was to resolve TTS issues where audio was either not playing, playing duplicates, or playing in the wrong language.
+This document summarizes the extensive TTS (Text-to-Speech) debugging and fixes made during the November 26-27 session, along with documentation of the Fast-Finals system, SDK configuration variables, and recognition modes.
 
 ---
 
-## Summary of Issues Addressed
+## Table of Contents
+
+1. [TTS Issues Addressed](#summary-of-tts-issues-addressed)
+2. [Fast-Finals System](#fast-finals-system)
+3. [Recognition Modes](#recognition-modes-dictation-vs-conversation)
+4. [Environment Variables Reference](#environment-variables-reference)
+5. [Detailed TTS Changes](#detailed-changes)
+6. [Language Detection](#enhanced-language-detection-patterns)
+7. [Testing & Rollback](#testing-recommendations)
+
+---
+
+## Summary of TTS Issues Addressed
 
 1. **TTS Not Firing** - Text was being translated but not spoken
 2. **Duplicate TTS** - Same segment spoken 2-3 times
 3. **Wrong Language TTS** - French source text being sent to English TTS
 4. **False Positive Language Detection** - English text with French proper nouns blocked from TTS
+
+---
+
+## Fast-Finals System
+
+### What is Fast-Finals?
+
+Fast-Finals is a **client-side STT optimization** that reduces perceived latency by emitting "hard" patches earlier than the Azure SDK's natural `recognized` event. Instead of waiting for Azure to finalize a segment (which can take several seconds of silence), Fast-Finals analyzes the `recognizing` stream and commits stable prefixes as soon as they meet certain criteria.
+
+### Why Fast-Finals?
+
+| Without Fast-Finals | With Fast-Finals |
+|---------------------|------------------|
+| Wait for 300-500ms silence | Emit as soon as text stabilizes |
+| Translation delayed until SDK final | Translation starts on fast-final |
+| TTS queued late | TTS queued earlier |
+| Higher perceived latency | Lower perceived latency |
+
+### How It Works
+
+```
+Azure SDK recognizing events:
+  "Hello"
+  "Hello, how"
+  "Hello, how are"
+  "Hello, how are you"
+  "Hello, how are you today"
+  "Hello, how are you today?"    ← Punctuation detected!
+
+Fast-Finals emits: "Hello, how are you today?" (stage: 'hard', ttsFinal: true)
+
+...later...
+
+Azure SDK recognized event:
+  "Hello, how are you today?"    ← SDK final (may be slightly different)
+
+Fast-Finals emits: stage: 'hard', ttsFinal: true (if text changed)
+```
+
+### Fast-Finals Algorithm
+
+Located in `client/src/pages/Speaker.tsx`:
+
+```javascript
+// In recognizing handler:
+const prefix = findStablePrefix(text, sttState.current.lastText, K=2)
+
+// Emit fast-final if:
+// 1. New sentence boundary detected: /[.?!]\s/
+// 2. Prefix ends with punctuation: /[.?!]\s*$/
+// 3. Enough new characters (45+)
+// AND time since last emit >= 800ms
+
+if ((hasNewSentence || prefixEndsSentence || enoughNewChars) && timeOk) {
+  // Apply tail guard (don't emit last 10 chars unless punctuation-final)
+  const candidate = applyTailGuard(prefix, guardChars=10)
+
+  await postPatch({
+    stage: 'hard',
+    ttsFinal: candidateIsSentence,  // Only TTS if ends with .?!
+    text: candidate
+  })
+}
+```
+
+### Stable Prefix Detection
+
+The `findStablePrefix` function finds the longest prefix that has appeared in K consecutive recognizing events:
+
+```javascript
+function findStablePrefix(current, previous, K=2) {
+  // Find common prefix between current and previous
+  // If it's been stable for K events, consider it "committed"
+  // This prevents emitting text that Azure might revise
+}
+```
+
+### Tail Guard
+
+To avoid emitting text that might be revised, Fast-Finals applies a "tail guard":
+- Don't emit the last N characters (default: 10)
+- UNLESS the text ends with sentence punctuation (.?!)
+- Snap to word boundary to avoid mid-word cuts
+
+### ttsFinal Flag
+
+Fast-Finals sets `ttsFinal: true` only when:
+- The candidate ends with terminal punctuation: `.` `?` `!`
+- This prevents TTS from speaking incomplete sentences
+
+The SDK `recognized` event always sets `ttsFinal: true` as it represents the definitive final.
+
+### Interaction with TTS
+
+```
+Timeline:
+  t=0:    Recognizing "Hello, how are you today?"
+  t=50ms: Fast-Final emitted (ttsFinal: true if punctuation)
+  t=100ms: Translation starts
+  t=300ms: Translation complete, TTS enqueued
+  t=500ms: SDK recognized event (ttsFinal: true)
+  t=500ms: TTS dedup prevents duplicate (already triggered for this unit)
+```
+
+---
+
+## Recognition Modes: Dictation vs Conversation
+
+### Azure Speech SDK Recognition Modes
+
+Azure Speech SDK supports three recognition modes set via `SpeechConfig`:
+
+| Mode | Use Case | Behavior |
+|------|----------|----------|
+| **Dictation** | Single speaker, long-form | Longer silence tolerance, punctuation insertion |
+| **Conversation** | Multi-speaker, back-and-forth | Shorter segments, faster finals |
+| **Interactive** | Commands, short phrases | Very short segments |
+
+### Current Configuration
+
+```javascript
+// Speaker.tsx currently hardcodes dictation mode:
+speechConfig.outputFormat = SDK.OutputFormat.Detailed
+speechConfig.setProperty(
+  SDK.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
+  '200'  // SPEECH_END_SILENCE_MS
+)
+```
+
+### Environment Variable
+
+```bash
+# .env
+RECOGNITION_MODE=dictation  # dictation | conversation | interactive
+
+# Note: Currently Speaker.tsx ignores this and uses dictation hardcoded
+```
+
+### Dictation Mode Characteristics
+
+- **Punctuation**: Azure inserts `.` `?` `!` automatically
+- **Silence Detection**: Longer tolerance before finalizing (configurable)
+- **Segment Length**: Can produce longer segments
+- **Best For**: Interpreters, meetings, lectures
+
+### Conversation Mode Characteristics
+
+- **Punctuation**: Less automatic punctuation
+- **Silence Detection**: Shorter, more responsive
+- **Segment Length**: Shorter, more frequent finals
+- **Best For**: Dialogue, Q&A sessions
+
+### Why Dictation Mode?
+
+For real-time interpretation:
+1. Speakers often pause mid-thought
+2. Dictation mode's punctuation helps segment sentences
+3. Fast-Finals compensates for dictation mode's slower finals
+4. Combined: Best of both worlds (accuracy + speed)
+
+---
+
+## Environment Variables Reference
+
+### Speech Recognition Settings
+
+```bash
+# Azure Recognition Mode
+RECOGNITION_MODE=dictation              # dictation | conversation | interactive
+
+# Silence Detection
+SPEECH_SEGMENTATION_SILENCE_MS=300      # Silence to trigger segmentation
+SPEECH_INITIAL_SILENCE_MS=3000          # Max silence before utterance starts
+SPEECH_END_SILENCE_MS=200               # Silence to end utterance
+
+# Token Management
+SPEECH_TOKEN_REFRESH_MS=540000          # Refresh token every 9 minutes
+
+# TTS Audio Format
+SPEECH_TTS_FORMAT=Audio24Khz48KBitRateMonoMp3
+```
+
+### Fast-Finals Settings
+
+```bash
+# Stability Detection
+FASTFINALS_STABLE_K=2                   # Consecutive events for stability
+FASTFINALS_MIN_STABLE_MS=350            # Min time prefix must be stable
+
+# Emission Thresholds
+FASTFINALS_MIN_CHARS=45                 # Min new chars to emit
+FASTFINALS_MIN_WORDS=6                  # Min words (alternative threshold)
+FASTFINALS_EMIT_THROTTLE_MS=800         # Min time between emissions
+
+# Tail Guard (prevents premature commits)
+FASTFINALS_TAIL_GUARD_CHARS=10          # Don't emit last N chars
+FASTFINALS_TAIL_GUARD_WORDS=2           # Word-based guard (alternative)
+
+# Punctuation Handling
+FASTFINALS_PUNCT_STABLE_MS=300          # Extra stability for punct-final
+```
+
+### Soft Patch Settings
+
+```bash
+# UI Preview Updates (separate from fast-finals)
+SOFT_THROTTLE_MS=700                    # Min time between soft patches
+SOFT_MIN_DELTA_CHARS=12                 # Min char change to emit soft
+FINAL_DEBOUNCE_MS=50                    # Debounce SDK finals
+MAX_UTTERANCE_DURATION_MS=7000          # Force segment after N ms
+```
+
+### Language Detection Settings
+
+```bash
+# Auto Language Detection
+AUTO_DETECT_LANGS=en-CA,fr-CA           # Languages to detect between
+
+# Language Stability (prevents flip-flopping)
+SPEECH_LANG_STABILITY_SEC=15            # Seconds before allowing switch
+SPEECH_LANG_SWITCH_THRESHOLD=2          # Consecutive detections to switch
+SPEECH_MIN_AUDIO_SEC=2                  # Min audio before detection valid
+```
+
+### Translation Settings
+
+```bash
+# Translation Provider
+TRANSLATOR_PROVIDER=openai              # openai | azure
+
+# OpenAI Translation
+OPENAI_API_KEY=...
+OPENAI_TRANSLATE_MODEL=gpt-4o-mini
+OPENAI_TRANSLATE_ENDPOINT=https://api.openai.com/v1/chat/completions
+
+# Azure Translator (fallback)
+TRANSLATOR_KEY=...
+TRANSLATOR_REGION=eastus
+TRANSLATOR_ENDPOINT=https://api.cognitive.microsofttranslator.com
+```
+
+### Translation Buffering
+
+```bash
+# Merge short segments before translation
+TRANSLATION_MERGE_ENABLED=true
+TRANSLATION_MERGE_WINDOW_MS=1500        # Window to collect segments
+TRANSLATION_MIN_MERGE_CHARS=50          # Min chars to trigger merge
+TRANSLATION_MAX_MERGE_COUNT=3           # Max segments to merge
+```
+
+### TTS Settings
+
+```bash
+# Speed Adjustment (for backlog)
+TTS_BASE_SPEED=1.05                     # Normal playback speed
+TTS_MAX_SPEED=1.30                      # Max speed when behind
+TTS_BACKLOG_RAMP_START_SEC=5            # Start ramping at N sec backlog
+TTS_BACKLOG_RAMP_END_SEC=20             # Max speed at N sec backlog
+TTS_MAX_SPEED_CHANGE_PERCENT=15         # Max speed change per segment
+
+# Voices
+DEFAULT_TTS_VOICE=en-US-JennyNeural
+DEFAULT_TTS_VOICE_FALLBACK=en-US-GuyNeural
+DEFAULT_TTS_VOICE_FR_CA=fr-CA-SylvieNeural
+TTS_BACKLOG_FALLBACK_VOICE=             # Faster voice when behind
+```
+
+### Patch Management
+
+```bash
+PATCH_LRU_PER_ROOM=500                  # Max patches to keep per room
+PATCH_HISTORY_MAX_MS=0                  # Patch history TTL (0 = unlimited)
+CONTINUATION_MERGE_ENABLED=false        # Merge truncated segments
+```
+
+### Watchdog Settings
+
+```bash
+WATCHDOG_EVENT_IDLE_MS=15000            # Alert if no events for N ms
+WATCHDOG_PCM_IDLE_MS=7000               # Alert if no audio for N ms
+WS_PING_INTERVAL_MS=30000               # WebSocket keepalive
+```
 
 ---
 

@@ -233,8 +233,8 @@ function createTtsQueue({
   const BASE_SPEED = parseFloat(process.env.TTS_BASE_SPEED) || 1.05;
   const RAMP_START_SEC = parseFloat(process.env.TTS_BACKLOG_RAMP_START_SEC) || 5;
   const RAMP_END_SEC = parseFloat(process.env.TTS_BACKLOG_RAMP_END_SEC) || 20;
-  const MAX_SPEED = parseFloat(process.env.TTS_MAX_SPEED) || 1.35;
-  const MAX_SPEED_CHANGE_PERCENT = parseFloat(process.env.TTS_MAX_SPEED_CHANGE_PERCENT) || 25;
+  const MAX_SPEED = parseFloat(process.env.TTS_MAX_SPEED) || 1.30;
+  const MAX_SPEED_CHANGE_PERCENT = parseFloat(process.env.TTS_MAX_SPEED_CHANGE_PERCENT) || 15;
 
   /**
    * Calculate smooth speed multiplier based on backlog using piecewise linear interpolation.
