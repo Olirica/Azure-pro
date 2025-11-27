@@ -814,7 +814,7 @@ class SegmentProcessor {
           srcLang,
           targetLang: lang,
           isFinal: stage === 'hard',
-          ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard'),
+          ttsFinal: stage === 'hard' || segment.ttsFinal === true,
           sentLen: {
             src: cached.srcSentLen,
             tgt: cached.transSentLen
@@ -892,7 +892,7 @@ class SegmentProcessor {
             lengthRatio,       // Ratio for hallucination detection
             isIncomplete,      // Flags segments ending with "..."
             provider: translation.provider || 'azure', // Which translator was used
-            ttsFinal: segment.ttsFinal === true || (segment.ttsFinal === undefined && stage === 'hard')
+            ttsFinal: stage === 'hard' || segment.ttsFinal === true
           };
           this.cacheTranslation(unitId, version, translation.lang, { ...translation, text: cleanedText });
           translatedPatches.push(payload);
@@ -1002,8 +1002,10 @@ class SegmentProcessor {
       throw new Error('Patch stage must be "soft" or "hard".');
     }
 
-    // Indicates if this segment is safe to speak (default to true for hard finals)
-    const ttsReady = ttsFinal === true || (ttsFinal === undefined && finalStage === 'hard');
+    // Always enable TTS for hard finals - French STT often lacks terminal punctuation
+    // so we can't rely on ttsFinal from fast-finals. The deduplication in index.js
+    // (ttsTriggeredUnits) prevents duplicate TTS for the same root unit.
+    const ttsReady = finalStage === 'hard' || ttsFinal === true;
 
     const root = rootFromUnitId(unitId);
     const rawText = (text || '').trim();
