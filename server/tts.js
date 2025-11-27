@@ -588,14 +588,18 @@ function createTtsQueue({
 
   async function processQueueForLang(lang) {
     if (disposed) {
+      logger.debug({ component: 'tts', roomId, lang }, '[TTS Process] Skipping - disposed');
       return;
     }
     const state = ensureLangState(lang);
+    logger.debug({ component: 'tts', roomId, lang, queueLen: state.queue.length, processing: state.processing }, '[TTS Process] Checking queue');
     if (state.processing || !state.queue.length) {
       updateQueueBacklog(lang);
+      logger.debug({ component: 'tts', roomId, lang, processing: state.processing, queueLen: state.queue.length }, '[TTS Process] Skipping - processing or empty');
       return;
     }
     const item = state.queue[0];
+    logger.debug({ component: 'tts', roomId, lang, unitId: item.unitId, text: item.text?.substring(0, 50) }, '[TTS Process] Processing item');
     state.playing = item;
     state.processing = true;
     updateQueueBacklog(lang);
@@ -669,17 +673,22 @@ function createTtsQueue({
     }
 
     const trimmed = (text || '').trim();
+    logger.debug({ component: 'tts', roomId, lang, unitId, textLen: trimmed.length }, '[TTS Enqueue] Received text for TTS');
+
     if (!trimmed) {
+      logger.debug({ component: 'tts', roomId, lang, unitId }, '[TTS Enqueue] Skipping - empty text');
       return;
     }
     // Drop ultra-short unless punct-final (prevents choppy fragments)
     const words = trimmed.split(/\s+/).filter(Boolean).length;
     const isPunctFinal = /[.?!]\s*$/.test(trimmed);
     if (words < 2 && !isPunctFinal) {
+      logger.debug({ component: 'tts', roomId, lang, unitId, words }, '[TTS Enqueue] Skipping - too short');
       return;
     }
 
     const state = ensureLangState(lang);
+    logger.debug({ component: 'tts', roomId, lang, unitId, queueLen: state.queue.length, processing: state.processing }, '[TTS Enqueue] State before enqueue');
     const rootUnitId = unitId.split('#')[0];
 
     // Clear any existing queue for this unit - ttsFinal gives us complete text
@@ -722,6 +731,7 @@ function createTtsQueue({
       });
     });
 
+    logger.debug({ component: 'tts', roomId, lang, unitId, segmentCount: segments.length, queueLen: state.queue.length }, '[TTS Enqueue] Added segments to queue');
     metrics?.recordTtsEvent?.(roomId, lang, 'enqueued');
 
     updateQueueBacklog(lang);
