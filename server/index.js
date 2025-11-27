@@ -639,44 +639,36 @@ async function broadcastPatch(room, result) {
         client.lastSeen && typeof client.lastSeen[payload.unitId] === 'number'
           ? client.lastSeen[payload.unitId]
           : undefined;
-      if (lastSeenVersion !== undefined && payload.version <= lastSeenVersion) {
-        continue;
-      }
-      safeSend(client.socket, message);
-      if (client.lastSeen) {
-        client.lastSeen[payload.unitId] = payload.version;
-      }
-    }
 
-    if (client.lang && message && message.payload.stage === 'hard' && client.wantsTts) {
-      if (!message.payload.text) {
-        continue;
-      }
-      if (!message.payload.unitId) {
-        continue;
+      // Only skip sending if already seen, but ALWAYS check TTS for ttsFinal
+      const alreadySeen = lastSeenVersion !== undefined && payload.version <= lastSeenVersion;
+      if (!alreadySeen) {
+        safeSend(client.socket, message);
+        if (client.lastSeen) {
+          client.lastSeen[payload.unitId] = payload.version;
+        }
       }
 
-      // Only trigger TTS on final patches - what you see = what you hear
-      if (!message.payload.ttsFinal) {
-        continue;
-      }
-
-      let byUnit = ttsEnqueueByLang.get(client.lang);
-      if (!byUnit) {
-        byUnit = new Map();
-        ttsEnqueueByLang.set(client.lang, byUnit);
-      }
-      const version = typeof message.payload.version === 'number' ? message.payload.version : 0;
-      const existing = byUnit.get(message.payload.unitId);
-      if (!existing) {
-        byUnit.set(message.payload.unitId, { payload: message.payload, voice: client.voice, version });
-      } else {
-        const existingVersion =
-          typeof existing.version === 'number' ? existing.version : null;
-        if (existingVersion == null || (version != null && version > existingVersion)) {
-          byUnit.set(message.payload.unitId, { payload: message.payload, voice: client.voice, version });
-        } else if (!existing.voice && client.voice) {
-          byUnit.set(message.payload.unitId, { payload: existing.payload, voice: client.voice, version: existing.version });
+      // Check TTS even if patch was already sent (ttsFinal might come on same version)
+      if (client.lang && payload.stage === 'hard' && client.wantsTts && payload.ttsFinal) {
+        if (payload.text && payload.unitId) {
+          let byUnit = ttsEnqueueByLang.get(client.lang);
+          if (!byUnit) {
+            byUnit = new Map();
+            ttsEnqueueByLang.set(client.lang, byUnit);
+          }
+          const version = typeof payload.version === 'number' ? payload.version : 0;
+          const existing = byUnit.get(payload.unitId);
+          if (!existing) {
+            byUnit.set(payload.unitId, { payload, voice: client.voice, version });
+          } else {
+            const existingVersion = typeof existing.version === 'number' ? existing.version : null;
+            if (existingVersion == null || (version != null && version > existingVersion)) {
+              byUnit.set(payload.unitId, { payload, voice: client.voice, version });
+            } else if (!existing.voice && client.voice) {
+              byUnit.set(payload.unitId, { payload: existing.payload, voice: client.voice, version: existing.version });
+            }
+          }
         }
       }
     }
