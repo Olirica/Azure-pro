@@ -65,6 +65,7 @@ export function SpeakerApp() {
   const micStreamRef = useRef<MediaStream | null>(null)
   const speechConfigRef = useRef<any>(null)
   const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Fast-finals state machine for prefix-based emission
   const sttState = useRef({
@@ -83,6 +84,9 @@ export function SpeakerApp() {
     return () => {
       if (tokenRefreshTimerRef.current) {
         clearTimeout(tokenRefreshTimerRef.current)
+      }
+      if (flushTimeoutRef.current) {
+        clearTimeout(flushTimeoutRef.current)
       }
     }
   }, [])
@@ -402,6 +406,33 @@ export function SpeakerApp() {
         const text = e.result.text.trim()
         if (!text) return
 
+        // Reset flush timeout - will fire if no speech activity for 4 seconds
+        if (flushTimeoutRef.current) clearTimeout(flushTimeoutRef.current)
+        flushTimeoutRef.current = setTimeout(async () => {
+          // Flush any uncommitted text as ttsFinal after 4 seconds of silence
+          const uncommitted = sttState.current.lastText
+          const alreadyCommitted = sttState.current.committedPrefix
+          if (uncommitted && uncommitted.length > alreadyCommitted.length) {
+            const toFlush = uncommitted.trim()
+            if (toFlush.length > alreadyCommitted.length) {
+              version.current += 1
+              const langForUnit = currentUnitLang.current || srcLang
+              await postPatch({
+                unitId: unitId(langForUnit),
+                stage: 'hard',
+                op: 'replace',
+                version: version.current,
+                text: toFlush,
+                srcLang: langForUnit,
+                ttsFinal: true,  // Force TTS on flush
+                ts: { offset: 0, duration: 0 }
+              })
+              sttState.current.committedPrefix = toFlush
+              sttState.current.lastEmitAt = Date.now()
+            }
+          }
+        }, 4000)  // 4 second flush timeout
+
         // PREFIX-BASED FAST FINALS (Solution 2)
         // Find stable prefix that's consistent across multiple partials
         const prev = sttState.current.lastText
@@ -526,6 +557,11 @@ export function SpeakerApp() {
           lastSoftAt.current = Date.now()
           currentUnitLang.current = ''
           sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state for next utterance
+          // Clear flush timeout since we got a proper final
+          if (flushTimeoutRef.current) {
+            clearTimeout(flushTimeoutRef.current)
+            flushTimeoutRef.current = null
+          }
         }
       }
 
@@ -546,6 +582,11 @@ export function SpeakerApp() {
     if (tokenRefreshTimerRef.current) {
       clearTimeout(tokenRefreshTimerRef.current)
       tokenRefreshTimerRef.current = null
+    }
+    // Clear flush timeout
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current)
+      flushTimeoutRef.current = null
     }
     speechConfigRef.current = null
     try { wsRef.current?.close() } catch {}
