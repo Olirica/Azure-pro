@@ -596,19 +596,6 @@ function createTtsQueue({
       return;
     }
     const item = state.queue[0];
-    const latestVersion = state.latestVersion.get(item.rootUnitId || item.unitId);
-    const itemVersion = typeof item.version === 'number' ? item.version : null;
-    if (
-      latestVersion !== undefined &&
-      (itemVersion === null || itemVersion < latestVersion)
-    ) {
-      state.queue.shift();
-      clearPrefetchForUnit(state, item.rootUnitId || item.unitId);
-      updateQueueBacklog(lang);
-      setImmediate(() => processQueueForLang(lang));
-      return;
-    }
-
     state.playing = item;
     state.processing = true;
     updateQueueBacklog(lang);
@@ -693,26 +680,12 @@ function createTtsQueue({
     }
 
     const state = ensureLangState(lang);
-    const incomingVersion = typeof options.version === 'number' ? options.version : null;
     const rootUnitId = unitId.split('#')[0];
-    const safeVersion = incomingVersion ?? 0;
-    const prevVersion = state.latestVersion.get(rootUnitId);
-
-    // Skip stale versions
-    if (prevVersion !== undefined && safeVersion < prevVersion) {
-      metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
-      return;
-    }
-
-    state.latestVersion.set(rootUnitId, safeVersion);
-    state.latestText.set(rootUnitId, trimmed);
-    state.trackUnit(rootUnitId);
 
     // Clear any existing queue for this unit - ttsFinal gives us complete text
-    state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
-    clearPrefetchForUnit(state, unitId);
-    if (state.segmentCounts) state.segmentCounts.delete(rootUnitId);
-    if (state.playing && (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)) {
+    state.queue = state.queue.filter((item) => item.rootUnitId !== rootUnitId);
+    clearPrefetchForUnit(state, rootUnitId);
+    if (state.playing && state.playing.rootUnitId === rootUnitId) {
       state.playing.cancelled = true;
       cleanupSynthesizer(state);
       metrics?.recordTtsEvent?.(roomId, lang, 'cancelled');
@@ -745,8 +718,7 @@ function createTtsQueue({
         voice: options.voice,
         duration: makeDuration(segment),
         createdAt: Date.now(),
-        sentLen: lengths ? lengths[index] || null : null,
-        version: incomingVersion
+        sentLen: lengths ? lengths[index] || null : null
       });
     });
 
