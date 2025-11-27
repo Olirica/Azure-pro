@@ -734,6 +734,9 @@ function createTtsQueue({
     if (!isContinuation) {
       state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
       clearPrefetchForUnit(state, unitId);
+      // Clear synthesized segments tracking for this unit - it's a revision, not continuation
+      state.synthesizedSegments.delete(rootUnitId);
+      if (state.segmentCounts) state.segmentCounts.delete(rootUnitId);
       if (state.playing && (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)) {
         state.playing.cancelled = true;
         cleanupSynthesizer(state);
