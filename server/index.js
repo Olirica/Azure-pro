@@ -279,6 +279,9 @@ function ensureRoom(roomId) {
   });
 
   const ttsQueues = new Map();
+  // Track which root units have already triggered TTS to prevent duplicate playback
+  // Key: `${lang}:${rootUnitId}`, Value: true
+  const ttsTriggeredUnits = new Map();
 
   function getTtsQueueForLang(lang) {
     if (!lang) {
@@ -335,6 +338,7 @@ function ensureRoom(roomId) {
     processor,
     clients: new Set(),
     ttsQueues,
+    ttsTriggeredUnits,
     getTtsQueueForLang,
     watchdog: createWatchdog({
       logger: roomLogger.child({ component: 'watchdog' }),
@@ -433,13 +437,15 @@ async function broadcastPatch(room, result) {
   function inferLikelyBase(text) {
     const t = String(text || '').toLowerCase();
     if (!t) return '';
-    // French signals
+    // French signals - expanded to catch common phrases
     const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
-    const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|avant de commencer|sous-ministre|avec|dans|semaine|aujourd'hui|aller|souliers)\b/.test(t);
-    if (hasFrenchAccents || hasFrenchWords) return 'fr';
+    const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|avant de commencer|sous-ministre|avec|dans|semaine|aujourd'hui|aller|souliers|je|j'ai|l'ai|vais|bien|nous|vous|ils|elles|c'est|qu'est|n'est|d'accord|pour|sont|mais|que|qui|quoi|donc|alors|parce|cette|notre|votre|leur|très|aussi|peut|dois|fait|faire|avoir|être|ça|cela|comme|tout|tous|toutes|sur|sous|entre)\b/.test(t);
+    // Additional French contractions and patterns
+    const hasFrenchPatterns = /\b(l'|d'|j'|n'|s'|c'|qu'|m'|t')\w+/.test(t);
+    if (hasFrenchAccents || hasFrenchWords || hasFrenchPatterns) return 'fr';
 
     // English signals
-    const hasEnglishWords = /\b(thank you|thanks|hello|hi everyone|i would like to begin|i'd like to begin|speaking to you all|from canada|today|this afternoon)\b/.test(t);
+    const hasEnglishWords = /\b(thank you|thanks|hello|hi everyone|i would like to begin|i'd like to begin|speaking to you all|from canada|today|this afternoon|the|this|that|with|have|has|been|will|would|could|should|they|them|their|there|here|what|when|where|which|because|about|into|from|just|some|more|other|only|also|than|then)\b/.test(t);
     if (hasEnglishWords) return 'en';
 
     return '';
@@ -681,8 +687,32 @@ async function broadcastPatch(room, result) {
       room.logger.warn({ component: 'tts', lang }, '[TTS Enqueue] No TTS queue available for language');
       continue;
     }
+    const targetLangBase = langBase(lang);
     for (const [, entry] of units.entries()) {
       const { payload, voice, version } = entry;
+      const rootUnitId = payload.unitId.split('#')[0];
+      const ttsKey = `${lang}:${rootUnitId}`;
+
+      // DEDUPLICATION: Skip if this root unit has already triggered TTS for this language
+      if (room.ttsTriggeredUnits && room.ttsTriggeredUnits.has(ttsKey)) {
+        room.logger.debug(
+          { component: 'tts', lang, unitId: payload.unitId, rootUnitId },
+          '[TTS Enqueue] Skipping - unit already triggered TTS'
+        );
+        continue;
+      }
+
+      // LANGUAGE CHECK: Skip if text appears to be in the wrong language
+      // This prevents French source text from being sent to English TTS
+      const textLangBase = inferLikelyBase(payload.text);
+      if (textLangBase && textLangBase !== targetLangBase) {
+        room.logger.warn(
+          { component: 'tts', lang, unitId: payload.unitId, textLangBase, targetLangBase, textPreview: payload.text?.substring(0, 50) },
+          '[TTS Enqueue] Skipping - text language mismatch (possible untranslated text)'
+        );
+        continue;
+      }
+
       const incomingSentLen = payload.sentLen;
       const targetSentLen = Array.isArray(incomingSentLen?.tgt)
         ? incomingSentLen.tgt
@@ -698,6 +728,11 @@ async function broadcastPatch(room, result) {
         sentLen: targetSentLen,
         version
       });
+
+      // Mark this root unit as having triggered TTS
+      if (room.ttsTriggeredUnits) {
+        room.ttsTriggeredUnits.set(ttsKey, Date.now());
+      }
     }
   }
 }
