@@ -283,13 +283,28 @@ function createTtsQueue({
   /**
    * Update TTS speed based on current backlog using smooth curve.
    * Replaces old binary on/off throttle with gradual acceleration.
+   *
+   * Key insight: Only speed up if there are items WAITING in queue.
+   * If the queue is empty (just playing, nothing waiting), use base speed.
+   * This prevents the weird effect of rushing to finish then waiting in silence.
    */
   function updateTtsSpeed(state, lang, backlog) {
     if (!state) {
       return;
     }
 
-    const targetSpeed = calculateSpeedMultiplier(backlog);
+    // Check if there are items waiting AFTER the current one
+    // When processing: queue[0] is the current item, so length > 1 means items waiting
+    // When not processing: queue only contains waiting items, so length > 0 means items waiting
+    const hasItemsWaiting = state.processing
+      ? state.queue.length > 1
+      : state.queue.length > 0;
+
+    // If nothing is waiting, relax to base speed - no reason to rush
+    // Only speed up when there's actually a backlog to catch up on
+    const effectiveBacklog = hasItemsWaiting ? backlog : 0;
+
+    const targetSpeed = calculateSpeedMultiplier(effectiveBacklog);
     const currentSpeed = state.rateMultiplier || BASE_SPEED;
     const newSpeed = smoothSpeedTransition(currentSpeed, targetSpeed);
 
@@ -311,8 +326,9 @@ function createTtsQueue({
       } else if (wasAccelerated && !isAccelerating) {
         metrics?.recordTtsEvent?.(roomId, lang, 'speed_ramp_end');
         emitter.emit('speed_ramp_end', { roomId, lang, backlog, speed: newSpeed });
+        const reason = !hasItemsWaiting ? 'queue empty - no rush' : 'backlog cleared';
         logger.debug(
-          { component: 'tts', roomId, lang, backlog, speed: newSpeed.toFixed(3) },
+          { component: 'tts', roomId, lang, backlog, effectiveBacklog, queueLen: state.queue.length, speed: newSpeed.toFixed(3), reason },
           'TTS speed returned to base'
         );
       }
