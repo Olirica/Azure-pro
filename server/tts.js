@@ -379,6 +379,7 @@ function createTtsQueue({
       prefetch: new Map(),
       latestVersion: new Map(), // rootUnitId -> version
       latestText: new Map(), // rootUnitId -> last text at that version
+      synthesizedSegments: new Map(), // rootUnitId -> Set of already synthesized segment texts
       versionOrder: [] // Track insertion order for LRU eviction
     };
 
@@ -396,6 +397,7 @@ function createTtsQueue({
         const oldest = state.versionOrder.shift();
         state.latestVersion.delete(oldest);
         state.latestText.delete(oldest);
+        state.synthesizedSegments.delete(oldest);
       }
     };
 
@@ -475,12 +477,22 @@ function createTtsQueue({
       .replace(/'/g, '&apos;');
   }
 
-  function buildSsml(text, lang, voiceName, rate) {
+  function buildSsml(text, lang, voiceName, rate, { isContinuing = false } = {}) {
     const safeText = escapeXml(text);
     const clampedRate = Math.min(Math.max(rate || 1, 0.5), 2);
     const rateAttr = clampedRate !== 1 ? ` rate="${clampedRate.toFixed(2)}"` : '';
+
+    // Detect if this segment is "continuing" (doesn't end with terminal punctuation)
+    // Use continuation prosody to sound less "final" - slight pitch rise at end
+    const endsWithTerminal = /[.!?]\s*$/.test(text);
+    const shouldContinue = isContinuing || !endsWithTerminal;
+
+    // Continuation prosody: slight pitch rise at end (80% normal, 100% +3%)
+    // This creates a natural "more coming" intonation rather than "I'm done" falling tone
+    const contourAttr = shouldContinue ? ' contour="(80%, +0%) (100%, +3%)"' : '';
+
     return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">
-  <voice name="${voiceName}"><prosody${rateAttr}>${safeText}</prosody></voice>
+  <voice name="${voiceName}"><prosody${rateAttr}${contourAttr}>${safeText}</prosody></voice>
 </speak>`;
   }
 
@@ -729,6 +741,12 @@ function createTtsQueue({
       }
     }
 
+    // Get or create the set of already-synthesized segment texts for this unit
+    if (!state.synthesizedSegments.has(rootUnitId)) {
+      state.synthesizedSegments.set(rootUnitId, new Set());
+    }
+    const synthesizedSet = state.synthesizedSegments.get(rootUnitId);
+
     // Get the starting segment index (for continuations, continue from where we left off)
     const prevSegmentCount = isContinuation ? (state.segmentCounts?.get(rootUnitId) || 0) : 0;
 
@@ -746,11 +764,25 @@ function createTtsQueue({
       lengthDelta <= Math.max(5, Math.floor(textToSynthesize.length * 0.02));
     const segments =
       (useLengths ? segmentsFromLengths : segmentText(textToSynthesize)) || [textToSynthesize];
+
+    // Filter out segments that have already been synthesized (segment-level deduplication)
+    const newSegments = segments.filter((seg) => !synthesizedSet.has(seg));
+
+    if (newSegments.length === 0) {
+      // All segments already synthesized, nothing to do
+      logger.debug(
+        { component: 'tts', roomId, lang, unitId, segmentCount: segments.length },
+        'All segments already synthesized, skipping.'
+      );
+      metrics?.recordTtsEvent?.(roomId, lang, 'all_segments_duplicate');
+      return;
+    }
+
     // Duration accounts for current playback speed
     const currentRate = state.rateMultiplier || BASE_SPEED;
     const makeDuration = (input) => estimateSeconds(input) / currentRate;
-    segments.forEach((segment, index) => {
-      const segmentIndex = prevSegmentCount + index;
+    let segmentIndex = prevSegmentCount;
+    newSegments.forEach((segment) => {
       const segmentId = `${unitId}#${segmentIndex}`;
       state.queue.push({
         lang,
@@ -760,14 +792,17 @@ function createTtsQueue({
         voice: options.voice,
         duration: makeDuration(segment),
         createdAt: Date.now(),
-        sentLen: lengths ? lengths[index] || null : null,
+        sentLen: lengths ? lengths[segmentIndex - prevSegmentCount] || null : null,
         version: incomingVersion
       });
+      // Mark this segment as synthesized
+      synthesizedSet.add(segment);
+      segmentIndex++;
     });
 
     // Track segment count for continuations
     if (!state.segmentCounts) state.segmentCounts = new Map();
-    state.segmentCounts.set(rootUnitId, prevSegmentCount + segments.length);
+    state.segmentCounts.set(rootUnitId, segmentIndex);
 
     metrics?.recordTtsEvent?.(roomId, lang, 'enqueued');
 
@@ -843,6 +878,12 @@ function createTtsQueue({
       }
       if (state.latestText) {
         state.latestText.clear();
+      }
+      if (state.synthesizedSegments) {
+        state.synthesizedSegments.clear();
+      }
+      if (state.segmentCounts) {
+        state.segmentCounts.clear();
       }
       state.versionOrder = []; // Clear LRU tracking
       updateQueueBacklog(lang);
