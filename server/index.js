@@ -699,9 +699,10 @@ async function broadcastPatch(room, result) {
         continue;
       }
       // Skip segments that look incomplete (end with preposition/article + punctuation)
-      // These will be superseded by a more complete version
+      // Only apply to SHORT segments - long sentences ending in prepositions are valid
+      // (e.g., "they have no interest in." is complete, but "I went to." is not)
       const INCOMPLETE_ENDING = /\b(for|to|the|a|an|and|or|but|with|of|in|on|at|by|from)\s*[.!?]\s*$/i;
-      if (INCOMPLETE_ENDING.test(String(payload.text || ''))) {
+      if (words < 10 && INCOMPLETE_ENDING.test(String(payload.text || ''))) {
         room.logger.debug(
           { component: 'tts', lang, unitId: payload.unitId, text: payload.text },
           '[TTS Skip] Segment looks incomplete, waiting for revision'
