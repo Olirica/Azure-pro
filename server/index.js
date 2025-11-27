@@ -691,26 +691,6 @@ async function broadcastPatch(room, result) {
     }
     for (const [, entry] of units.entries()) {
       const { payload, voice, version } = entry;
-      const words = countWords(payload.text);
-      const isPunctFinal = /[.?!]\s*$/.test(String(payload.text || ''));
-      if (words < 2 && !isPunctFinal) {
-        room.logger.debug(
-          { component: 'tts', lang, unitId: payload.unitId },
-          '[TTS Skip] Segment too short for synthesis'
-        );
-        continue;
-      }
-      // Skip segments that look incomplete (end with preposition/article + punctuation)
-      // Only apply to SHORT segments - long sentences ending in prepositions are valid
-      // (e.g., "they have no interest in." is complete, but "I went to." is not)
-      const INCOMPLETE_ENDING = /\b(for|to|the|a|an|and|or|but|with|of|in|on|at|by|from)\s*[.!?]\s*$/i;
-      if (words < 10 && INCOMPLETE_ENDING.test(String(payload.text || ''))) {
-        room.logger.debug(
-          { component: 'tts', lang, unitId: payload.unitId, text: payload.text },
-          '[TTS Skip] Segment looks incomplete, waiting for revision'
-        );
-        continue;
-      }
       const incomingSentLen = payload.sentLen;
       const targetSentLen = Array.isArray(incomingSentLen?.tgt)
         ? incomingSentLen.tgt

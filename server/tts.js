@@ -161,11 +161,6 @@ function createTtsQueue({
   const queueByLang = new Map();
   let disposed = false;
 
-  // Track recently synthesized segment texts to prevent duplicates across all entry points
-  // Key: text content, Value: timestamp when synthesized
-  const recentlySynthesized = new Map();
-  const DEDUP_WINDOW_MS = 30000; // 30 seconds - same text won't repeat within this window
-
   const configuredRateBoost =
     typeof rateBoostPercent === 'number' && !Number.isNaN(rateBoostPercent)
       ? rateBoostPercent
@@ -614,22 +609,6 @@ function createTtsQueue({
       return;
     }
 
-    // Segment-level deduplication: skip if this segment ID was synthesized recently
-    // This prevents revisions of already-spoken segments from being re-spoken
-    const segmentKey = item.unitId; // e.g., "roomId|fr-CA|1#0"
-    const lastSynthTime = recentlySynthesized.get(segmentKey);
-    if (lastSynthTime && Date.now() - lastSynthTime < DEDUP_WINDOW_MS) {
-      logger.debug(
-        { component: 'tts', roomId, lang, unitId: item.unitId },
-        '[TTS Dedup] Skipping revision of recently synthesized segment'
-      );
-      metrics?.recordTtsEvent?.(roomId, lang, 'dedup_skipped');
-      state.queue.shift();
-      updateQueueBacklog(lang);
-      setImmediate(() => processQueueForLang(lang));
-      return;
-    }
-
     state.playing = item;
     state.processing = true;
     updateQueueBacklog(lang);
@@ -665,16 +644,6 @@ function createTtsQueue({
           sentLen: typeof item.sentLen === 'number' ? item.sentLen : null,
           version: typeof item.version === 'number' ? item.version : null
         });
-
-        // Track this segment as recently synthesized to prevent revisions
-        recentlySynthesized.set(segmentKey, Date.now());
-        // Cleanup old entries periodically (keep map bounded)
-        if (recentlySynthesized.size > 500) {
-          const now = Date.now();
-          for (const [k, v] of recentlySynthesized) {
-            if (now - v > DEDUP_WINDOW_MS) recentlySynthesized.delete(k);
-          }
-        }
       } else {
         emitter.emit('cancelled', { roomId, lang, unitId: item.unitId });
       }
@@ -728,74 +697,46 @@ function createTtsQueue({
     const rootUnitId = unitId.split('#')[0];
     const safeVersion = incomingVersion ?? 0;
     const prevVersion = state.latestVersion.get(rootUnitId);
-    const prevText = state.latestText.get(rootUnitId);
 
-    if (prevVersion !== undefined) {
-      if (safeVersion < prevVersion) {
-        metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
-        return;
-      }
-      // Drop repeats even if the version increments but text is identical
-      if (prevText === trimmed) {
-        state.latestVersion.set(rootUnitId, safeVersion);
-        state.trackUnit(rootUnitId); // Keep LRU fresh
-        metrics?.recordTtsEvent?.(roomId, lang, 'duplicate_text');
-        return;
-      }
-      if (safeVersion === prevVersion && prevText !== trimmed) {
-        // Same version but different text is suspicious; treat as stale
-        metrics?.recordTtsEvent?.(roomId, lang, 'duplicate_version_new_text');
-        return;
-      }
+    // Skip stale versions
+    if (prevVersion !== undefined && safeVersion < prevVersion) {
+      metrics?.recordTtsEvent?.(roomId, lang, 'stale_version');
+      return;
     }
-
-    // Check if new text is a continuation of previous text (to avoid re-synthesizing)
-    const isContinuation = prevText && trimmed.startsWith(prevText) && trimmed.length > prevText.length;
-    const continuationText = isContinuation ? trimmed.slice(prevText.length).trim() : null;
 
     state.latestVersion.set(rootUnitId, safeVersion);
     state.latestText.set(rootUnitId, trimmed);
-    state.trackUnit(rootUnitId); // LRU tracking to prevent memory leak
+    state.trackUnit(rootUnitId);
 
-    // If this is a continuation, only synthesize the new portion
-    const textToSynthesize = continuationText || trimmed;
-
-    // Only clear queue if NOT a continuation (continuations add to existing)
-    if (!isContinuation) {
-      state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
-      clearPrefetchForUnit(state, unitId);
-      if (state.segmentCounts) state.segmentCounts.delete(rootUnitId);
-      if (state.playing && (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)) {
-        state.playing.cancelled = true;
-        cleanupSynthesizer(state);
-        metrics?.recordTtsEvent?.(roomId, lang, 'cancelled');
-      }
+    // Clear any existing queue for this unit - ttsFinal gives us complete text
+    state.queue = state.queue.filter((item) => item.rootUnitId !== unitId && item.unitId !== unitId);
+    clearPrefetchForUnit(state, unitId);
+    if (state.segmentCounts) state.segmentCounts.delete(rootUnitId);
+    if (state.playing && (state.playing.unitId === unitId || state.playing.rootUnitId === unitId)) {
+      state.playing.cancelled = true;
+      cleanupSynthesizer(state);
+      metrics?.recordTtsEvent?.(roomId, lang, 'cancelled');
     }
 
-    // Get the starting segment index (for continuations, continue from where we left off)
-    const prevSegmentCount = isContinuation ? (state.segmentCounts?.get(rootUnitId) || 0) : 0;
-
     const lengths = normalizeLengths(options.sentLen);
-    const segmentsFromLengths = splitByCharLengths(textToSynthesize, lengths);
+    const segmentsFromLengths = splitByCharLengths(trimmed, lengths);
     const totalFromLengths = Array.isArray(segmentsFromLengths)
       ? segmentsFromLengths.reduce((sum, part) => sum + part.length, 0)
       : 0;
-    const lengthDelta = Math.abs(totalFromLengths - textToSynthesize.length);
+    const lengthDelta = Math.abs(totalFromLengths - trimmed.length);
     // Use sentLen only when it closely matches translated text (stricter threshold)
-    // sentLen is from source language transcription and often misaligns after translation
     const useLengths =
       segmentsFromLengths &&
       segmentsFromLengths.length &&
-      lengthDelta <= Math.max(5, Math.floor(textToSynthesize.length * 0.02));
+      lengthDelta <= Math.max(5, Math.floor(trimmed.length * 0.02));
     const segments =
-      (useLengths ? segmentsFromLengths : segmentText(textToSynthesize)) || [textToSynthesize];
+      (useLengths ? segmentsFromLengths : segmentText(trimmed)) || [trimmed];
 
     // Duration accounts for current playback speed
     const currentRate = state.rateMultiplier || BASE_SPEED;
     const makeDuration = (input) => estimateSeconds(input) / currentRate;
     segments.forEach((segment, index) => {
-      const segmentIndex = prevSegmentCount + index;
-      const segmentId = `${unitId}#${segmentIndex}`;
+      const segmentId = `${unitId}#${index}`;
       state.queue.push({
         lang,
         unitId: segmentId,
@@ -808,10 +749,6 @@ function createTtsQueue({
         version: incomingVersion
       });
     });
-
-    // Track segment count for continuations
-    if (!state.segmentCounts) state.segmentCounts = new Map();
-    state.segmentCounts.set(rootUnitId, prevSegmentCount + segments.length);
 
     metrics?.recordTtsEvent?.(roomId, lang, 'enqueued');
 
