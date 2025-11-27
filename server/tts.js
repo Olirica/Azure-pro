@@ -614,13 +614,14 @@ function createTtsQueue({
       return;
     }
 
-    // Segment-level deduplication: skip if this exact text was synthesized recently
-    const textKey = item.text?.trim();
-    const lastSynthTime = recentlySynthesized.get(textKey);
+    // Segment-level deduplication: skip if this segment ID was synthesized recently
+    // This prevents revisions of already-spoken segments from being re-spoken
+    const segmentKey = item.unitId; // e.g., "roomId|fr-CA|1#0"
+    const lastSynthTime = recentlySynthesized.get(segmentKey);
     if (lastSynthTime && Date.now() - lastSynthTime < DEDUP_WINDOW_MS) {
       logger.debug(
-        { component: 'tts', roomId, lang, unitId: item.unitId, textLen: textKey?.length },
-        '[TTS Dedup] Skipping recently synthesized text'
+        { component: 'tts', roomId, lang, unitId: item.unitId },
+        '[TTS Dedup] Skipping revision of recently synthesized segment'
       );
       metrics?.recordTtsEvent?.(roomId, lang, 'dedup_skipped');
       state.queue.shift();
@@ -665,8 +666,8 @@ function createTtsQueue({
           version: typeof item.version === 'number' ? item.version : null
         });
 
-        // Track this text as recently synthesized to prevent duplicates
-        recentlySynthesized.set(textKey, Date.now());
+        // Track this segment as recently synthesized to prevent revisions
+        recentlySynthesized.set(segmentKey, Date.now());
         // Cleanup old entries periodically (keep map bounded)
         if (recentlySynthesized.size > 500) {
           const now = Date.now();
