@@ -277,7 +277,7 @@ export function SpeakerApp() {
       try { speechConfig.enableDictation() } catch {}
 
       // Accuracy-focused SDK properties (conservative settings, not aggressive VAD)
-      // Note: Avoid StablePartialResultThreshold as it may reduce partial frequency needed for fast-finals
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold, '2') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestSentenceBoundary, 'true') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestWordBoundary, 'true') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestPunctuationBoundary, 'true') } catch {}
@@ -416,8 +416,8 @@ export function SpeakerApp() {
           // Determine if we should emit a fast-final
           const hasNewSentence = /[.?!]\s/.test(extension)   // new boundary in extension
           const prefixEndsSentence = /[.?!]\s*$/.test(prefix)  // prefix ends with punctuation
-          const enoughNewChars = extensionChars >= 30   // FASTFINALS_MIN_CHARS (prod: 30)
-          const timeOk = timeSinceEmit >= 500               // FASTFINALS_EMIT_THROTTLE_MS (prod: 500)
+          const enoughNewChars = extensionChars >= 45   // FASTFINALS_MIN_CHARS (45 for more complete segments)
+          const timeOk = timeSinceEmit >= 800               // FASTFINALS_EMIT_THROTTLE_MS (800 for more stabilization)
 
           if ((hasNewSentence || prefixEndsSentence || enoughNewChars) && timeOk) {
             // Apply tail guard with word boundary snapping

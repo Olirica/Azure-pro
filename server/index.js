@@ -698,6 +698,16 @@ async function broadcastPatch(room, result) {
         );
         continue;
       }
+      // Skip segments that look incomplete (end with preposition/article + punctuation)
+      // These will be superseded by a more complete version
+      const INCOMPLETE_ENDING = /\b(for|to|the|a|an|and|or|but|with|of|in|on|at|by|from)\s*[.!?]\s*$/i;
+      if (INCOMPLETE_ENDING.test(String(payload.text || ''))) {
+        room.logger.debug(
+          { component: 'tts', lang, unitId: payload.unitId, text: payload.text },
+          '[TTS Skip] Segment looks incomplete, waiting for revision'
+        );
+        continue;
+      }
       const incomingSentLen = payload.sentLen;
       const targetSentLen = Array.isArray(incomingSentLen?.tgt)
         ? incomingSentLen.tgt
