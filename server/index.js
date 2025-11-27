@@ -742,6 +742,18 @@ async function broadcastPatch(room, result) {
       // Mark this root unit as having triggered TTS
       if (room.ttsTriggeredUnits) {
         room.ttsTriggeredUnits.set(ttsKey, Date.now());
+
+        // Periodic cleanup: evict entries older than 10 minutes to prevent unbounded growth
+        // Only run cleanup occasionally (every 100 entries) to minimize overhead
+        if (room.ttsTriggeredUnits.size % 100 === 0) {
+          const TTS_DEDUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+          const cutoff = Date.now() - TTS_DEDUP_TTL_MS;
+          for (const [key, timestamp] of room.ttsTriggeredUnits.entries()) {
+            if (timestamp < cutoff) {
+              room.ttsTriggeredUnits.delete(key);
+            }
+          }
+        }
       }
     }
   }
