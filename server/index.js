@@ -437,16 +437,26 @@ async function broadcastPatch(room, result) {
   function inferLikelyBase(text) {
     const t = String(text || '').toLowerCase();
     if (!t) return '';
-    // French signals - expanded to catch common phrases
-    const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
+
+    // English signals - check first to handle mixed content with French proper nouns
+    const hasEnglishWords = /\b(thank you|thanks|hello|hi everyone|i would like to begin|i'd like to begin|speaking to you all|from canada|today|this afternoon|the|this|that|with|have|has|been|will|would|could|should|they|them|their|there|here|what|when|where|which|because|about|into|from|just|some|more|other|only|also|than|then)\b/.test(t);
+
+    // French signals - strong indicators (words and patterns, not just accents)
     const hasFrenchWords = /\b(merci|bonjour|s'il|svp|s'il te plaît|avant de commencer|sous-ministre|avec|dans|semaine|aujourd'hui|aller|souliers|je|j'ai|l'ai|vais|bien|nous|vous|ils|elles|c'est|qu'est|n'est|d'accord|pour|sont|mais|que|qui|quoi|donc|alors|parce|cette|notre|votre|leur|très|aussi|peut|dois|fait|faire|avoir|être|ça|cela|comme|tout|tous|toutes|sur|sous|entre)\b/.test(t);
     // Additional French contractions and patterns
     const hasFrenchPatterns = /\b(l'|d'|j'|n'|s'|c'|qu'|m'|t')\w+/.test(t);
-    if (hasFrenchAccents || hasFrenchWords || hasFrenchPatterns) return 'fr';
+    // French accents alone are weak signal (could be proper nouns in English text)
+    const hasFrenchAccents = /[àâäæçéèêëîïôœùûüÿ]/.test(t);
 
-    // English signals
-    const hasEnglishWords = /\b(thank you|thanks|hello|hi everyone|i would like to begin|i'd like to begin|speaking to you all|from canada|today|this afternoon|the|this|that|with|have|has|been|will|would|could|should|they|them|their|there|here|what|when|where|which|because|about|into|from|just|some|more|other|only|also|than|then)\b/.test(t);
-    if (hasEnglishWords) return 'en';
+    // If English words are present, require strong French signals (words/patterns) to override
+    // This prevents false positives from French proper nouns like "Geneviève" in English text
+    if (hasEnglishWords) {
+      if (hasFrenchWords || hasFrenchPatterns) return 'fr';
+      return 'en';
+    }
+
+    // No English words detected - French accents alone are enough
+    if (hasFrenchAccents || hasFrenchWords || hasFrenchPatterns) return 'fr';
 
     return '';
   }
