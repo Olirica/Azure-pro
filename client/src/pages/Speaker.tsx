@@ -299,9 +299,11 @@ export function SpeakerApp() {
           try {
             console.log('[Speaker] Refreshing Azure Speech token...')
             const fresh = await fetchToken()
-            if (speechConfigRef.current) {
-              speechConfigRef.current.authorizationToken = fresh.token
-              console.log('[Speaker] Token refreshed successfully')
+            // Fix: Update token on the recognizer itself, not just the config
+            // The recognizer has its own internal auth token that must be refreshed
+            if (recogRef.current) {
+              recogRef.current.authorizationToken = fresh.token
+              console.log('[Speaker] Token refreshed on recognizer successfully')
             }
             scheduleTokenRefresh() // Schedule next refresh
           } catch (err) {
