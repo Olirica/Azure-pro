@@ -186,6 +186,22 @@ export function SpeakerApp() {
     return { t0: offsetMs, t1: offsetMs + durationMs }
   }
 
+  // Snap a character position to the nearest word boundary (end of complete word)
+  // Note: Azure's NBest[0].Words is typically only in 'recognized' events, not partials
+  // So for fast-finals (which use 'recognizing' partials), we rely on space-based detection
+  function snapToWordBoundary(text: string, charPos: number): number {
+    if (charPos >= text.length) return text.length
+    // If we're already at a space or end, we're at a boundary
+    if (charPos === 0 || /\s/.test(text[charPos])) return charPos
+    // Find last space before charPos to snap to end of previous word
+    const lastSpace = text.lastIndexOf(' ', charPos - 1)
+    if (lastSpace > 0) {
+      return lastSpace  // Return position of space (trim will clean it up)
+    }
+    // No space found - this is a single long word, keep original position
+    return charPos
+  }
+
   async function postPatch(patch: any) {
     const payload = { roomId: room, targets: targets.split(',').map(s=>s.trim()).filter(Boolean), patch }
     try { await fetch('/api/segments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch {}
@@ -193,10 +209,17 @@ export function SpeakerApp() {
 
   // Build an AudioConfig pinned to the requested deviceId when provided
   async function buildAudioConfig(SDK: any, deviceId?: string) {
+    // Audio constraints for speech recognition (conservative settings for accuracy)
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: true,      // Remove speaker feedback
+      noiseSuppression: true,      // Reduce background noise
+      autoGainControl: true,       // Normalize volume levels
+      ...(deviceId ? { deviceId: { ideal: deviceId } } : {})
+    }
     if (deviceId) {
       try {
         // Prime permissions and validate the device exists
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { ideal: deviceId } } })
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
         // Close any previous pinned stream
         if (micStreamRef.current) {
           micStreamRef.current.getTracks().forEach(t => t.stop())
@@ -250,7 +273,19 @@ export function SpeakerApp() {
       speechConfig.outputFormat = SDK.OutputFormat.Detailed
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_PostProcessingOption, 'TrueText') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_ContinuousLanguageIdPriority, 'Accuracy') } catch {}
+      // Dictation mode: better punctuation/capitalization via TrueText processing
       try { speechConfig.enableDictation() } catch {}
+
+      // Accuracy-focused SDK properties (conservative settings, not aggressive VAD)
+      // Note: Avoid StablePartialResultThreshold as it may reduce partial frequency needed for fast-finals
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestSentenceBoundary, 'true') } catch {}
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestWordBoundary, 'true') } catch {}
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestPunctuationBoundary, 'true') } catch {}
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_EnableAudioProcessing, 'true') } catch {}
+      // Conservative silence timeouts (keep accuracy, don't rush) - affects 'recognized' events only
+      try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '5000') } catch {}
+      // Note: Semantic segmentation delays 'recognized' but fast-finals use 'recognizing' partials
+      // Keeping default segmentation to avoid delaying finals too much
 
       // Set up token refresh timer (refresh 1 minute before expiry)
       const refreshMs = ((expiresInSeconds || 600) - 60) * 1000
@@ -381,13 +416,13 @@ export function SpeakerApp() {
           // Determine if we should emit a fast-final
           const hasNewSentence = /[.?!]\s/.test(extension)   // new boundary in extension
           const prefixEndsSentence = /[.?!]\s*$/.test(prefix)  // prefix ends with punctuation
-          const enoughNewChars = extensionChars >= 22   // FASTFINALS_MIN_CHARS from env
-          const timeOk = timeSinceEmit >= 600               // FASTFINALS_EMIT_THROTTLE_MS from env
+          const enoughNewChars = extensionChars >= 30   // FASTFINALS_MIN_CHARS (prod: 30)
+          const timeOk = timeSinceEmit >= 500               // FASTFINALS_EMIT_THROTTLE_MS (prod: 500)
 
           if ((hasNewSentence || prefixEndsSentence || enoughNewChars) && timeOk) {
-            // Apply tail guard on the *new* prefix, not whole text
+            // Apply tail guard with word boundary snapping
             // BUT: if prefix ends with sentence punctuation, don't guard it off
-            const guardChars = 8  // FASTFINALS_TAIL_GUARD_CHARS from env
+            const guardChars = 10  // FASTFINALS_TAIL_GUARD_CHARS (prod: 10)
             const total = prefix.length
             let guardedLen = Math.max(
               sttState.current.committedPrefix.length,
@@ -396,8 +431,11 @@ export function SpeakerApp() {
             // If prefix ends with punctuation, extend to include it
             if (prefixEndsSentence && guardedLen < total) {
               guardedLen = total
+            } else if (guardedLen < total) {
+              // Snap to word boundary to avoid mid-word cuts
+              guardedLen = snapToWordBoundary(prefix, guardedLen)
             }
-            const candidate = prefix.slice(0, guardedLen)
+            const candidate = prefix.slice(0, guardedLen).trim()
 
             if (candidate.length > sttState.current.committedPrefix.length) {
               version.current += 1
@@ -431,8 +469,8 @@ export function SpeakerApp() {
 
         // ALSO emit soft patches for UI preview (separate from fast-finals)
         const delta = text.length - lastSoftText.current.length
-        const softTimeOk = now - lastSoftAt.current > 600  // SOFT_THROTTLE_MS from env
-        const softCharOk = delta > 10  // SOFT_MIN_DELTA_CHARS from env
+        const softTimeOk = now - lastSoftAt.current > 700  // SOFT_THROTTLE_MS (prod: 700)
+        const softCharOk = delta > 12  // SOFT_MIN_DELTA_CHARS (prod: 12)
         const punct = /[.?!]\s*$/.test(text)
         if ((punct || softCharOk) && softTimeOk) {
           lastSoftText.current = text
