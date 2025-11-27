@@ -656,39 +656,18 @@ async function broadcastPatch(room, result) {
         continue;
       }
 
-      // Determine if this patch should trigger TTS
-      const text = String(message.payload.text || '');
-      const endsWithSentence = /[.!?]\s*$/.test(text);
-
-      // Get previously queued text for this unit (if any)
-      let byUnit = ttsEnqueueByLang.get(client.lang);
-      const existing = byUnit?.get(message.payload.unitId);
-      const prevText = existing?.payload?.text || '';
-
-      // Allow TTS if:
-      // 1. Explicitly marked as ttsFinal (always allow), OR
-      // 2. Ends with sentence punctuation AND is a continuation of previous TTS text
-      //    (prevents re-speaking when text is revised, only speaks NEW sentences)
-      const isContinuation = !prevText || (text.startsWith(prevText) && text.length > prevText.length);
-      const allowEarlyTts = endsWithSentence && isContinuation;
-
-      if (!message.payload.ttsFinal && !allowEarlyTts) {
+      // Only trigger TTS on final patches - what you see = what you hear
+      if (!message.payload.ttsFinal) {
         continue;
       }
 
-      // Log early TTS triggers for debugging
-      if (!message.payload.ttsFinal && allowEarlyTts) {
-        room.logger.debug(
-          { component: 'tts', unitId: message.payload.unitId, textLen: text.length, prevLen: prevText.length },
-          '[TTS Early] Triggering TTS at sentence boundary before ttsFinal'
-        );
-      }
+      let byUnit = ttsEnqueueByLang.get(client.lang);
       if (!byUnit) {
         byUnit = new Map();
         ttsEnqueueByLang.set(client.lang, byUnit);
       }
       const version = typeof message.payload.version === 'number' ? message.payload.version : 0;
-      // Note: 'existing' was already fetched above for continuation check
+      const existing = byUnit.get(message.payload.unitId);
       if (!existing) {
         byUnit.set(message.payload.unitId, { payload: message.payload, voice: client.voice, version });
       } else {
