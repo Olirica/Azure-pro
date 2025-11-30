@@ -229,8 +229,8 @@ export function SpeakerApp() {
           micStreamRef.current.getTracks().forEach(t => t.stop())
         }
         micStreamRef.current = stream
-        // Use SDK's device binding (more stable than direct stream)
-        return SDK.AudioConfig.fromMicrophoneInput(deviceId)
+        // Use the actual stream directly - more reliable than passing deviceId string
+        return SDK.AudioConfig.fromStreamInput(stream)
       } catch (err) {
         console.warn('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
       }
