@@ -1070,14 +1070,23 @@
             let audioConfig;
             if (selectedMicId) {
               try {
-                // Prime permissions and validate the device exists - use ideal instead of exact
+                // Prime permissions and validate the device exists
+                log('Requesting device', { deviceId: selectedMicId });
                 const testStream = await navigator.mediaDevices.getUserMedia({
                   audio: {
-                    deviceId: { ideal: selectedMicId },
+                    deviceId: { exact: selectedMicId },
                     echoCancellation: true,
                     noiseSuppression: true,
                     autoGainControl: true
                   }
+                });
+                const track = testStream.getAudioTracks()[0];
+                const actualDevice = track.getSettings();
+                log('Got stream from device', {
+                  actualDeviceId: actualDevice.deviceId,
+                  actualLabel: actualDevice.label,
+                  requestedDeviceId: selectedMicId,
+                  match: actualDevice.deviceId === selectedMicId
                 });
                 if (state.micStream) {
                   state.micStream.getTracks().forEach(track => track.stop());
@@ -1087,6 +1096,7 @@
                 audioConfig = SpeechSDK.AudioConfig.fromStreamInput(testStream);
                 log('Creating audio config from stream', { deviceId: selectedMicId });
               } catch (err) {
+                console.error('[Speaker] Failed to bind selected mic stream, falling back to SDK selection', err);
                 log('Failed to bind selected mic stream, falling back to SDK selection', {
                   deviceId: selectedMicId,
                   error: err?.message

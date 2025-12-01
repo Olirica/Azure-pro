@@ -218,21 +218,27 @@ export function SpeakerApp() {
       echoCancellation: true,      // Remove speaker feedback
       noiseSuppression: true,      // Reduce background noise
       autoGainControl: true,       // Normalize volume levels
-      ...(deviceId ? { deviceId: { ideal: deviceId } } : {})
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {})
     }
     if (deviceId) {
       try {
         // Prime permissions and validate the device exists
+        console.log('[Speaker] Requesting device:', deviceId, 'with constraints:', audioConstraints)
         const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
+        const track = stream.getAudioTracks()[0]
+        const actualDevice = track.getSettings()
+        console.log('[Speaker] Got stream from device:', actualDevice.deviceId, actualDevice.label)
+        console.log('[Speaker] Requested vs Actual match:', actualDevice.deviceId === deviceId)
         // Close any previous pinned stream
         if (micStreamRef.current) {
           micStreamRef.current.getTracks().forEach(t => t.stop())
         }
         micStreamRef.current = stream
         // Use the actual stream directly - more reliable than passing deviceId string
+        console.log('[Speaker] Creating AudioConfig with fromStreamInput')
         return SDK.AudioConfig.fromStreamInput(stream)
       } catch (err) {
-        console.warn('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
+        console.error('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
       }
     }
     if (micStreamRef.current) {
