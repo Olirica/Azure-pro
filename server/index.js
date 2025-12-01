@@ -1110,13 +1110,14 @@ app.post('/api/speech/token', async (_req, res) => {
 
 app.post('/api/segments', async (req, res) => {
   const { roomId = 'default', patch, targets = [] } = req.body || {};
+  const normalizedRoomId = String(roomId).toLowerCase();
   if (!patch || typeof patch !== 'object') {
-    metrics.dropPatch(roomId, 'missing_patch');
+    metrics.dropPatch(normalizedRoomId, 'missing_patch');
     return res.status(400).json({ ok: false, error: 'Invalid patch payload.' });
   }
   // Enforce room window if registry has metadata
   try {
-    const meta = await roomRegistry.get(roomId);
+    const meta = await roomRegistry.get(normalizedRoomId);
     if (meta) {
       const win = roomRegistry.windowState(meta);
       if (win.state === 'early') {
@@ -1129,7 +1130,7 @@ app.post('/api/segments', async (req, res) => {
   } catch (e) {
     logger.warn({ component: 'admin', err: e?.message }, 'Room window check failed');
   }
-  const room = ensureRoom(roomId);
+  const room = ensureRoom(normalizedRoomId);
   if (room.ready) {
     await room.ready;
   }
@@ -1140,14 +1141,14 @@ app.post('/api/segments', async (req, res) => {
     const listenerTargets = defaultRoomTargets(room);
     // Include Admin defaults if present so Speaker doesn't need to pass targets
     try {
-      const meta2 = await roomRegistry.get(roomId);
+      const meta2 = await roomRegistry.get(normalizedRoomId);
       if (meta2 && Array.isArray(meta2.defaultTargetLangs)) {
         for (const t of meta2.defaultTargetLangs) {
           if (t && t !== 'source') listenerTargets.add(t);
         }
       }
     } catch (e) {
-      logger.debug({ component: 'admin', roomId, err: e?.message }, 'Failed to read room meta for default targets.');
+      logger.debug({ component: 'admin', roomId: normalizedRoomId, err: e?.message }, 'Failed to read room meta for default targets.');
     }
     for (const target of targets) {
       listenerTargets.add(target);
@@ -1176,7 +1177,7 @@ const wsServer = new WS.WebSocketServer({ server, path: '/ws' });
 wsServer.on('connection', async (socket, request) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-    const roomId = url.searchParams.get('room') || 'default';
+    const roomId = (url.searchParams.get('room') || 'default').toLowerCase();
     const role = url.searchParams.get('role') || 'listener';
     const lang = url.searchParams.get('lang') || 'source';
     const wantsTts = url.searchParams.get('tts') === 'true';

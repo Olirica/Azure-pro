@@ -30,7 +30,7 @@ function getRoomFromUrl(): string {
     if (typeof window === 'undefined') return 'demo-room'
     const url = new URL(window.location.href)
     const r = url.searchParams.get('room')
-    return (r && r.trim()) ? r : 'demo-room'
+    return (r && r.trim()) ? r.trim().toLowerCase() : 'demo-room'
   } catch {
     return 'demo-room'
   }
