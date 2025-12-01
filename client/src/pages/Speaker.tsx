@@ -852,7 +852,7 @@ export function SpeakerApp() {
 
         <div className="flex items-center gap-3 pt-4 border-t border-slate-700/50">
           <Button
-            onClick={start}
+            onClick={() => start()}
             disabled={isRecording}
             className="bg-gradient-to-r from-emerald-500 to-blue-500 hover:from-emerald-600 hover:to-blue-600 transition-all"
           >
