@@ -115,7 +115,7 @@ function createRoomRegistryPg({ logger } = {}) {
 
   function cleanMeta(meta) {
     if (!meta) return null;
-    const { speakerCodeHash, listenerCodeHash, ...clean } = meta;
+    const { speakerCode, listenerCode, ...clean } = meta;
     return clean;
   }
 

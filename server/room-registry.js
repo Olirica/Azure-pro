@@ -107,8 +107,8 @@ function createRoomRegistry({ logger, redisClient } = {}) {
       ? input.defaultTargetLangs.map((s) => String(s).trim()).filter(Boolean)
       : [];
     const title = (input.title || '').trim();
-    const speakerCodeHash = input.speakerCodeHash || null;
-    const listenerCodeHash = input.listenerCodeHash || null;
+    const speakerCode = input.speakerCode || null;
+    const listenerCode = input.listenerCode || null;
     return {
       slug: String(input.slug || '').trim().toLowerCase(),
       title,
@@ -117,8 +117,8 @@ function createRoomRegistry({ logger, redisClient } = {}) {
       sourceLang: srcLang,
       autoDetectLangs,
       defaultTargetLangs,
-      speakerCodeHash,
-      listenerCodeHash,
+      speakerCode,
+      listenerCode,
       createdAt: Number(input.createdAt || now),
       updatedAt: now,
       status: input.status || 'scheduled'
@@ -127,7 +127,7 @@ function createRoomRegistry({ logger, redisClient } = {}) {
 
   function cleanMeta(meta) {
     if (!meta) return null;
-    const { speakerCodeHash, listenerCodeHash, ...clean } = meta;
+    const { speakerCode, listenerCode, ...clean } = meta;
     return clean;
   }
 
@@ -145,8 +145,8 @@ function createRoomRegistry({ logger, redisClient } = {}) {
   async function upsert(meta, { speakerCode, listenerCode } = {}) {
     const normalized = normalizeMeta({
       ...meta,
-      speakerCodeHash: speakerCode ? sha256(speakerCode) : meta?.speakerCodeHash || null,
-      listenerCodeHash: listenerCode ? sha256(listenerCode) : meta?.listenerCodeHash || null
+      speakerCode: speakerCode ? String(speakerCode).trim() : meta?.speakerCode || null,
+      listenerCode: listenerCode ? String(listenerCode).trim() : meta?.listenerCode || null
     });
     if (!normalized || !normalized.slug) {
       throw new Error('Invalid room meta');
@@ -281,12 +281,18 @@ function createRoomRegistry({ logger, redisClient } = {}) {
     if (parsed) {
       const meta = await get(parsed.slug);
       if (meta) {
-        if (!meta.speakerCodeHash && !meta.listenerCodeHash) {
+        // No custom codes set - allow default slug-based access
+        if (!meta.speakerCode && !meta.listenerCode) {
           return { slug: meta.slug, role: parsed.role };
         }
-        const hashed = sha256(String(code || ''));
-        const role = hashed === meta.speakerCodeHash ? 'speaker' : hashed === meta.listenerCodeHash ? 'listener' : null;
-        if (role) return { slug: meta.slug, role };
+        // Case-insensitive comparison of custom access codes
+        const inputCode = String(code || '').trim();
+        if (meta.speakerCode && inputCode.toLowerCase() === meta.speakerCode.toLowerCase()) {
+          return { slug: meta.slug, role: 'speaker' };
+        }
+        if (meta.listenerCode && inputCode.toLowerCase() === meta.listenerCode.toLowerCase()) {
+          return { slug: meta.slug, role: 'listener' };
+        }
       }
     }
     return null;
