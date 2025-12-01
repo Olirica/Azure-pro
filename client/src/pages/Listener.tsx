@@ -110,6 +110,12 @@ export function ListenerApp() {
       isPlayingRef.current = false
       return
     }
+    // Validate src before setting to avoid MEDIA_ELEMENT_ERROR
+    if (!next.src || next.src.length < 20) {
+      console.warn('[TTS] Skipping invalid/empty src:', next.src?.substring(0, 50))
+      playNextTts()
+      return
+    }
     try {
       el.src = next.src
       const p = el.play()
