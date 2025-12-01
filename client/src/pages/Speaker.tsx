@@ -213,6 +213,19 @@ export function SpeakerApp() {
 
   // Build an AudioConfig pinned to the requested deviceId when provided
   async function buildAudioConfig(SDK: any, deviceId?: string) {
+    // Check microphone permission status first
+    try {
+      if (navigator.permissions) {
+        const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName })
+        console.log('[Speaker] Microphone permission status:', permissionStatus.state)
+        if (permissionStatus.state === 'denied') {
+          console.error('[Speaker] Microphone permission DENIED - user must grant permission in browser settings')
+        }
+      }
+    } catch (e) {
+      console.log('[Speaker] Could not check permission status:', e)
+    }
+
     // Audio constraints for speech recognition (conservative settings for accuracy)
     const audioConstraints: MediaTrackConstraints = {
       echoCancellation: true,      // Remove speaker feedback
@@ -263,8 +276,12 @@ export function SpeakerApp() {
   }
 
   async function start(deviceOverride?: string) {
+    console.log('[Speaker] Start button clicked, deviceOverride:', deviceOverride, 'selectedDeviceId:', selectedDeviceId)
     try {
-      if (isRecording) return
+      if (isRecording) {
+        console.log('[Speaker] Already recording, ignoring start')
+        return
+      }
       setIsRecording(true)
       sessionId.current = crypto.randomUUID()
       unitIndex.current = 0
@@ -275,6 +292,7 @@ export function SpeakerApp() {
       lastSoftAt.current = 0
       sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state
       setStatus('Loading Speech SDK…')
+      console.log('[Speaker] Starting SDK initialization...')
       const SDK = await loadSpeechCdn()
       setStatus('Fetching token…')
       const { token, region, expiresInSeconds } = await fetchToken()
@@ -331,7 +349,10 @@ export function SpeakerApp() {
       } catch {}
 
       // Use selected device or default microphone (with exact device binding when provided)
-      const audioConfig = await buildAudioConfig(SDK, deviceOverride || selectedDeviceId)
+      const deviceToUse = deviceOverride || selectedDeviceId
+      console.log('[Speaker] Building audio config with device:', deviceToUse)
+      const audioConfig = await buildAudioConfig(SDK, deviceToUse)
+      console.log('[Speaker] Audio config created successfully')
       let recognizer: any = null
 
             // Helper to read detected language from SDK result (robust to SDK variants)
@@ -577,7 +598,11 @@ export function SpeakerApp() {
       recognizer.sessionStopped = () => { setStatus('Session stopped'); setIsRecording(false); currentUnitLang.current = '' }
       recognizer.canceled = (_s: any, e: any) => { setStatus('Canceled'); setIsRecording(false); currentUnitLang.current = '' }
       recognizer.startContinuousRecognitionAsync()
+      console.log('[Speaker] Recognition started successfully')
     } catch (e: any) {
+      console.error('[Speaker] Failed to start:', e)
+      console.error('[Speaker] Error name:', e?.name)
+      console.error('[Speaker] Error message:', e?.message)
       setStatus('Error: ' + (e?.message || 'unknown'))
       try { wsRef.current?.close() } catch {}
       setIsRecording(false)
