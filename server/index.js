@@ -17,6 +17,7 @@ const { createWatchdog } = require('./watchdog');
 const { createStateStore } = require('./state-store');
 const { createRoomRegistry } = require('./room-registry');
 const { createRoomRegistryPg } = require('./room-registry-pg');
+const { createSttSession, isDeepgramConfigured } = require('./stt-session');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -170,6 +171,7 @@ const AUTO_DETECT_LANGS = (process.env.AUTO_DETECT_LANGS || '')
   .filter(Boolean);
 const SPEECH_TTS_FORMAT = process.env.SPEECH_TTS_FORMAT || '';
 const RECOGNITION_MODE = process.env.RECOGNITION_MODE || 'conversation';
+const STT_PROVIDER = process.env.STT_PROVIDER || 'azure';  // 'azure' or 'deepgram'
 
 const translator = createTranslator({ logger, metrics });
 const stateStore = createStateStore({
@@ -1037,6 +1039,7 @@ app.post('/api/access/resolve', async (req, res) => {
 
 app.get('/api/config', (_req, res) => {
   res.json({
+    sttProvider: STT_PROVIDER,  // 'azure' or 'deepgram'
     recognitionMode: RECOGNITION_MODE,
     stablePartials: STABLE_PARTIALS,
     segmentationSilenceMs: SEG_SILENCE_MS,
@@ -1182,6 +1185,7 @@ wsServer.on('connection', async (socket, request) => {
     const lang = url.searchParams.get('lang') || 'source';
     const wantsTts = url.searchParams.get('tts') === 'true';
     const requestedVoice = url.searchParams.get('voice') || undefined;
+    const sttMode = url.searchParams.get('stt');  // 'stream' for server-side STT
     // Enforce room window if registry has metadata
     try {
       const meta = await roomRegistry.get(roomId);
@@ -1218,9 +1222,53 @@ wsServer.on('connection', async (socket, request) => {
         roomId,
         role,
         lang,
-        wantsTts
+        wantsTts,
+        sttMode: sttMode || null
       }
     });
+
+    // Server-side STT session for speakers in stream mode
+    let sttSession = null;
+    if (role === 'speaker' && sttMode === 'stream' && STT_PROVIDER === 'deepgram') {
+      if (!isDeepgramConfigured()) {
+        room.logger.warn({ component: 'stt' }, 'Deepgram not configured, falling back to client-side STT');
+        safeSend(socket, { type: 'stt:error', payload: { error: 'Deepgram not configured' } });
+      } else {
+        try {
+          // Get room metadata for language config
+          const meta = await roomRegistry.get(roomId);
+          const sourceLang = meta?.sourceLang || 'en-US';
+          const autoDetectLangs = meta?.autoDetectLangs || AUTO_DETECT_LANGS;
+          const defaultTargets = meta?.defaultTargetLangs || [];
+
+          // Broadcast function for STT patches
+          const broadcastSttPatch = async (result) => {
+            if (!result.stale) {
+              await broadcastPatch(room, result);
+            }
+          };
+
+          sttSession = createSttSession(
+            {
+              roomId,
+              sourceLang,
+              autoDetectLangs,
+              targetLangs: defaultTargets,
+              phraseHints: PHRASE_HINTS
+            },
+            room.processor,
+            broadcastSttPatch,
+            room.logger.child({ component: 'stt' })
+          );
+
+          room.logger.info({ component: 'stt', sourceLang }, 'Server-side STT session created');
+          safeSend(socket, { type: 'stt:ready', payload: { provider: 'deepgram' } });
+        } catch (err) {
+          room.logger.error({ component: 'stt', err: err?.message }, 'Failed to create STT session');
+          safeSend(socket, { type: 'stt:error', payload: { error: err?.message } });
+        }
+      }
+    }
 
     let history = [];
     const now = Date.now();
@@ -1272,12 +1320,26 @@ wsServer.on('connection', async (socket, request) => {
       if (role === 'speaker') {
         room.watchdog.markEvent();
       }
+
+      // Handle binary audio data for server-side STT
+      if (sttSession && Buffer.isBuffer(data)) {
+        room.watchdog.markPcm();
+        sttSession.feedAudio(data);
+        return;
+      }
+
       let parsed = null;
       let raw = '';
       try {
         raw = typeof data === 'string' ? data : data?.toString?.() || '';
         parsed = JSON.parse(raw);
       } catch (err) {
+        // Could be binary data that we didn't handle
+        if (sttSession && data instanceof ArrayBuffer) {
+          room.watchdog.markPcm();
+          sttSession.feedAudio(Buffer.from(data));
+          return;
+        }
         wsVerbose(roomId, 'bad-json', { role, error: err?.message, raw: raw.slice(0, 160) });
         room.logger.debug({ component: 'ws', err: err?.message }, 'Failed to parse WS message.');
         return;
@@ -1307,6 +1369,42 @@ wsServer.on('connection', async (socket, request) => {
         client.lastSeen = parsed.payload.versions || {};
         return;
       }
+
+      // Handle STT control messages
+      if (sttSession && parsed?.type?.startsWith('stt:')) {
+        const sttCommand = parsed.type;
+        const payload = parsed.payload || {};
+
+        if (sttCommand === 'stt:start') {
+          sttSession.start().then(() => {
+            safeSend(socket, { type: 'stt:started', payload: {} });
+          }).catch((err) => {
+            room.logger.error({ component: 'stt', err: err?.message }, 'Failed to start STT');
+            safeSend(socket, { type: 'stt:error', payload: { error: err?.message } });
+          });
+          return;
+        }
+
+        if (sttCommand === 'stt:stop') {
+          sttSession.stop().then(() => {
+            safeSend(socket, { type: 'stt:stopped', payload: {} });
+          }).catch((err) => {
+            room.logger.error({ component: 'stt', err: err?.message }, 'Failed to stop STT');
+          });
+          return;
+        }
+
+        if (sttCommand === 'stt:config') {
+          // Update STT configuration mid-session
+          if (payload.targetLangs) {
+            sttSession.updateConfig({ targetLangs: payload.targetLangs });
+          }
+          if (payload.phraseHints) {
+            sttSession.updateConfig({ phraseHints: payload.phraseHints });
+          }
+          return;
+        }
+      }
     });
 
     socket.on('pong', () => {
@@ -1316,6 +1414,11 @@ wsServer.on('connection', async (socket, request) => {
     socket.on('close', () => {
       room.clients.delete(client);
       metrics.trackWsConnection(roomId, role, -1);
+      // Clean up STT session if active
+      if (sttSession) {
+        sttSession.dispose();
+        sttSession = null;
+      }
     });
 
     socket.on('error', (err) => {

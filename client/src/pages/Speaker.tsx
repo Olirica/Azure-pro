@@ -53,6 +53,7 @@ export function SpeakerApp() {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [glossary, setGlossary] = useState('')
   const [isRecording, setIsRecording] = useState(false)
+  const [sttProvider, setSttProvider] = useState<'azure' | 'deepgram'>('azure')  // STT provider mode
   const recogRef = useRef<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSoftAt = useRef(0)
@@ -67,6 +68,11 @@ export function SpeakerApp() {
   const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Deepgram streaming mode refs
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const audioWorkletRef = useRef<AudioWorkletNode | null>(null)
+  const deepgramWsRef = useRef<WebSocket | null>(null)
+
   // Fast-finals state machine for prefix-based emission
   const sttState = useRef({
     lastText: '',
@@ -79,6 +85,27 @@ export function SpeakerApp() {
     document.title = 'Simo'
   }, [])
 
+  // Fetch STT provider from server config
+  useEffect(() => {
+    async function fetchConfig() {
+      try {
+        const res = await fetch('/api/config')
+        const config = await res.json()
+        if (config.sttProvider === 'deepgram') {
+          setSttProvider('deepgram')
+          console.log('[Speaker] Using Deepgram STT (server-side)')
+        } else {
+          setSttProvider('azure')
+          console.log('[Speaker] Using Azure STT (client-side)')
+        }
+      } catch (err) {
+        console.warn('[Speaker] Failed to fetch config, defaulting to Azure STT:', err)
+        setSttProvider('azure')
+      }
+    }
+    fetchConfig()
+  }, [])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -87,6 +114,19 @@ export function SpeakerApp() {
       }
       if (flushTimeoutRef.current) {
         clearTimeout(flushTimeoutRef.current)
+      }
+      // Cleanup Deepgram mode resources
+      if (audioWorkletRef.current) {
+        audioWorkletRef.current.disconnect()
+        audioWorkletRef.current = null
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
+        audioContextRef.current = null
+      }
+      if (deepgramWsRef.current) {
+        deepgramWsRef.current.close()
+        deepgramWsRef.current = null
       }
     }
   }, [])
@@ -275,22 +315,190 @@ export function SpeakerApp() {
     ws.onclose = () => clearInterval(timer)
   }
 
-  async function start(deviceOverride?: string) {
-    console.log('[Speaker] Start button clicked, deviceOverride:', deviceOverride, 'selectedDeviceId:', selectedDeviceId)
+  // ============================================================================
+  // Deepgram Streaming Mode (Server-Side STT)
+  // ============================================================================
+  async function startDeepgram(deviceOverride?: string) {
+    console.log('[Speaker:Deepgram] Starting server-side STT mode')
     try {
-      if (isRecording) {
-        console.log('[Speaker] Already recording, ignoring start')
-        return
+      setStatus('Connecting to server…')
+
+      // Request microphone access
+      const deviceToUse = deviceOverride || selectedDeviceId
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(deviceToUse ? { deviceId: { exact: deviceToUse } } : {})
+        }
       }
-      setIsRecording(true)
-      sessionId.current = crypto.randomUUID()
-      unitIndex.current = 0
-      version.current = 0
-      currentUnitLang.current = ''
-      langStability.current = { current: '', detectedAt: 0, switchCandidate: null, switchCount: 0 }
-      lastSoftText.current = ''
-      lastSoftAt.current = 0
-      sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      micStreamRef.current = stream
+      console.log('[Speaker:Deepgram] Got microphone stream')
+
+      // Connect WebSocket with stt=stream parameter
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      const wsUrl = `${proto}://${window.location.host}/ws?role=speaker&room=${encodeURIComponent(room)}&stt=stream`
+      const ws = new WebSocket(wsUrl)
+      deepgramWsRef.current = ws
+
+      // Wait for WebSocket to open
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000)
+        ws.onopen = () => {
+          clearTimeout(timeout)
+          resolve()
+        }
+        ws.onerror = (err) => {
+          clearTimeout(timeout)
+          reject(err)
+        }
+      })
+      console.log('[Speaker:Deepgram] WebSocket connected')
+
+      // Set up WebSocket message handler for patches from server
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+
+          if (msg.type === 'stt:ready') {
+            console.log('[Speaker:Deepgram] Server STT ready, provider:', msg.payload?.provider)
+            setStatus('Listening (Deepgram)')
+          }
+
+          if (msg.type === 'stt:started') {
+            console.log('[Speaker:Deepgram] STT started')
+          }
+
+          if (msg.type === 'stt:error') {
+            console.error('[Speaker:Deepgram] Server STT error:', msg.payload?.error)
+            setStatus('Error: ' + (msg.payload?.error || 'STT error'))
+          }
+
+          // Handle incoming patches for transcript display
+          if (msg.type === 'patch' && msg.payload) {
+            const patch = msg.payload
+            // Show hard finals in transcript history
+            if (patch.stage === 'hard' && patch.text && !patch.lang) {
+              // Source patch (not translated)
+              setTranscriptHistory(prev => {
+                const updated = [...prev, patch.text]
+                return updated.slice(-7)
+              })
+            }
+          }
+        } catch (err) {
+          console.debug('[Speaker:Deepgram] Failed to parse message:', err)
+        }
+      }
+
+      ws.onclose = () => {
+        console.log('[Speaker:Deepgram] WebSocket closed')
+        if (isRecording) {
+          setStatus('Disconnected')
+          setIsRecording(false)
+        }
+      }
+
+      ws.onerror = (err) => {
+        console.error('[Speaker:Deepgram] WebSocket error:', err)
+      }
+
+      // Set up AudioContext and AudioWorklet for PCM capture
+      const audioCtx = new AudioContext({ sampleRate: 16000 })
+      audioContextRef.current = audioCtx
+
+      // Load the PCM worklet
+      await audioCtx.audioWorklet.addModule('/pcm-worklet.js')
+      console.log('[Speaker:Deepgram] AudioWorklet loaded')
+
+      // Create worklet node
+      const worklet = new AudioWorkletNode(audioCtx, 'pcm-processor')
+      audioWorkletRef.current = worklet
+
+      // Connect microphone to worklet
+      const source = audioCtx.createMediaStreamSource(stream)
+      source.connect(worklet)
+
+      // Send PCM chunks to server
+      worklet.port.onmessage = (e) => {
+        if (ws.readyState === WebSocket.OPEN && e.data instanceof ArrayBuffer) {
+          ws.send(e.data)
+        }
+      }
+
+      // Send start command to server
+      ws.send(JSON.stringify({
+        type: 'stt:start',
+        payload: {
+          targetLangs: targets.split(',').map(s => s.trim()).filter(Boolean),
+          phraseHints: glossary.split(/\n|,|;/).map(p => p.trim()).filter(Boolean)
+        }
+      }))
+
+      setStatus('Listening (Deepgram)')
+      console.log('[Speaker:Deepgram] Started successfully')
+
+    } catch (err: any) {
+      console.error('[Speaker:Deepgram] Failed to start:', err)
+      setStatus('Error: ' + (err?.message || 'unknown'))
+      setIsRecording(false)
+      // Cleanup on error
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(t => t.stop())
+        micStreamRef.current = null
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
+        audioContextRef.current = null
+      }
+      if (deepgramWsRef.current) {
+        deepgramWsRef.current.close()
+        deepgramWsRef.current = null
+      }
+    }
+  }
+
+  async function stopDeepgram() {
+    console.log('[Speaker:Deepgram] Stopping')
+    setStatus('Stopping…')
+
+    // Send stop command
+    if (deepgramWsRef.current?.readyState === WebSocket.OPEN) {
+      deepgramWsRef.current.send(JSON.stringify({ type: 'stt:stop', payload: {} }))
+    }
+
+    // Cleanup audio
+    if (audioWorkletRef.current) {
+      audioWorkletRef.current.disconnect()
+      audioWorkletRef.current = null
+    }
+    if (audioContextRef.current) {
+      await audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+    }
+    if (deepgramWsRef.current) {
+      deepgramWsRef.current.close()
+      deepgramWsRef.current = null
+    }
+
+    setStatus('Idle')
+    setTranscriptHistory([])
+    setIsRecording(false)
+  }
+
+  // ============================================================================
+  // Azure STT Mode (Client-Side) - Original implementation
+  // ============================================================================
+  async function startAzure(deviceOverride?: string) {
+    console.log('[Speaker:Azure] Starting client-side STT mode, deviceOverride:', deviceOverride, 'selectedDeviceId:', selectedDeviceId)
+    try {
       setStatus('Loading Speech SDK…')
       console.log('[Speaker] Starting SDK initialization...')
       const SDK = await loadSpeechCdn()
@@ -609,7 +817,7 @@ export function SpeakerApp() {
     }
   }
 
-  async function stop() {
+  async function stopAzure() {
     setStatus('Stopping…')
     // Clear token refresh timer
     if (tokenRefreshTimerRef.current) {
@@ -646,6 +854,39 @@ export function SpeakerApp() {
     setTranscriptHistory([])  // Clear transcript history when stopping
     setIsRecording(false)
     currentUnitLang.current = ''
+  }
+
+  // ============================================================================
+  // Dispatcher functions - select provider based on sttProvider state
+  // ============================================================================
+  async function start(deviceOverride?: string) {
+    if (isRecording) {
+      console.log('[Speaker] Already recording, ignoring start')
+      return
+    }
+    setIsRecording(true)
+    sessionId.current = crypto.randomUUID()
+    unitIndex.current = 0
+    version.current = 0
+    currentUnitLang.current = ''
+    langStability.current = { current: '', detectedAt: 0, switchCandidate: null, switchCount: 0 }
+    lastSoftText.current = ''
+    lastSoftAt.current = 0
+    sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }
+
+    if (sttProvider === 'deepgram') {
+      await startDeepgram(deviceOverride)
+    } else {
+      await startAzure(deviceOverride)
+    }
+  }
+
+  async function stop() {
+    if (sttProvider === 'deepgram') {
+      await stopDeepgram()
+    } else {
+      await stopAzure()
+    }
   }
 
   // Handle device changes: if currently recording, restart with the new device
