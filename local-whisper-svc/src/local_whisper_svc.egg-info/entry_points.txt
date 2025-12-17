@@ -1,0 +1,2 @@
+[console_scripts]
+whisper-svc = local_whisper_svc.server:main
