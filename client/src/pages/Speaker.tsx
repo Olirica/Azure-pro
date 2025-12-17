@@ -1,9 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Input } from '../components/ui/input'
-import { Label } from '../components/ui/label'
-import { Button } from '../components/ui/button'
-import { Textarea } from '../components/ui/textarea'
-import { cn } from '../lib/utils'
 
 declare global { interface Window { SpeechSDK?: any } }
 
@@ -27,7 +22,6 @@ async function fetchToken() {
   return body as { token: string; region: string; expiresInSeconds?: number }
 }
 
-// Helper to read room from URL params
 function getRoomFromUrl(): string {
   try {
     if (typeof window === 'undefined') return 'demo-room'
@@ -39,6 +33,33 @@ function getRoomFromUrl(): string {
   }
 }
 
+// ============================================================================
+// Aurora Glass Design System
+// ============================================================================
+const glassPanel = "relative backdrop-blur-xl bg-white/[0.03] border border-white/[0.08] rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)]"
+const glassInput = "w-full bg-white/[0.03] backdrop-blur border border-white/[0.1] rounded-xl px-4 py-3 text-white/90 placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50 focus:ring-1 focus:ring-cyan-400/30 transition-all duration-200"
+const glassSelect = "w-full bg-white/[0.03] backdrop-blur border border-white/[0.1] rounded-xl px-4 py-3 text-white/90 focus:outline-none focus:border-cyan-400/50 focus:ring-1 focus:ring-cyan-400/30 transition-all duration-200 appearance-none cursor-pointer"
+const glassTextarea = "w-full bg-white/[0.03] backdrop-blur border border-white/[0.1] rounded-xl px-4 py-3 text-white/90 placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50 focus:ring-1 focus:ring-cyan-400/30 transition-all duration-200 resize-none"
+const btnPrimary = "relative px-6 py-3 rounded-xl font-semibold text-sm tracking-wide transition-all duration-200 bg-gradient-to-br from-cyan-500/80 to-teal-600/80 text-white shadow-[0_4px_20px_rgba(20,184,166,0.3),inset_0_1px_0_rgba(255,255,255,0.2)] hover:shadow-[0_6px_24px_rgba(20,184,166,0.4),inset_0_1px_0_rgba(255,255,255,0.3)] hover:translate-y-[-1px] active:translate-y-[1px] active:shadow-[0_2px_12px_rgba(20,184,166,0.3),inset_0_1px_0_rgba(255,255,255,0.1)] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+const btnSecondary = "px-5 py-3 rounded-xl text-sm font-medium transition-all duration-200 bg-white/[0.03] border border-white/[0.1] text-white/70 hover:bg-white/[0.06] hover:border-white/[0.15] hover:text-white/90 disabled:opacity-40 disabled:cursor-not-allowed"
+const btnDanger = "px-5 py-3 rounded-xl text-sm font-medium transition-all duration-200 bg-red-500/20 border border-red-500/30 text-red-300 hover:bg-red-500/30 hover:border-red-500/40 hover:text-red-200 disabled:opacity-40 disabled:cursor-not-allowed"
+
+const StatusDot = ({ active, color = 'emerald' }: { active: boolean; color?: 'emerald' | 'amber' | 'cyan' | 'red' }) => {
+  const colors = {
+    emerald: { bg: 'bg-emerald-400', glow: 'bg-emerald-400/20' },
+    amber: { bg: 'bg-amber-400', glow: 'bg-amber-400/20' },
+    cyan: { bg: 'bg-cyan-400', glow: 'bg-cyan-400/20' },
+    red: { bg: 'bg-red-400', glow: 'bg-red-400/20' }
+  }
+  const c = colors[color]
+  return (
+    <div className={`relative w-2.5 h-2.5 rounded-full ${active ? c.bg : 'bg-white/20'}`}>
+      {active && <div className={`absolute inset-0 rounded-full ${c.bg} animate-ping opacity-50`} />}
+      {active && <div className={`absolute inset-[-3px] rounded-full ${c.glow} blur-sm`} />}
+    </div>
+  )
+}
+
 export function SpeakerApp() {
   const [room, setRoom] = useState(getRoomFromUrl())
   const [roomInput, setRoomInput] = useState('')
@@ -48,12 +69,14 @@ export function SpeakerApp() {
   const [targets, setTargets] = useState('fr-CA')
   const [status, setStatus] = useState('Idle')
   const [roomMeta, setRoomMeta] = useState<any>(null)
-  const [transcriptHistory, setTranscriptHistory] = useState<string[]>([])  // Store recent transcriptions
+  const [transcriptHistory, setTranscriptHistory] = useState<string[]>([])
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [glossary, setGlossary] = useState('')
   const [isRecording, setIsRecording] = useState(false)
-  const [sttProvider, setSttProvider] = useState<'azure' | 'deepgram'>('azure')  // STT provider mode
+  const [sttProvider, setSttProvider] = useState<'azure' | 'deepgram' | 'elevenlabs' | 'local-whisper'>('azure')
+  const [availableProviders, setAvailableProviders] = useState<{name: string, available: boolean, isServerSide: boolean}[]>([])
+  const [sttLimitations, setSttLimitations] = useState<{feature: string, message: string}[]>([])
   const recogRef = useRef<any>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSoftAt = useRef(0)
@@ -61,7 +84,7 @@ export function SpeakerApp() {
   const unitIndex = useRef(0)
   const version = useRef(0)
   const sessionId = useRef(crypto.randomUUID())
-  const isAutoDetect = useRef(false)  // Track if using auto-detect mode
+  const isAutoDetect = useRef(false)
   const currentUnitLang = useRef('')
   const micStreamRef = useRef<MediaStream | null>(null)
   const speechConfigRef = useRef<any>(null)
@@ -71,51 +94,54 @@ export function SpeakerApp() {
   // Deepgram streaming mode refs
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioWorkletRef = useRef<AudioWorkletNode | null>(null)
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const deepgramWsRef = useRef<WebSocket | null>(null)
 
-  // Fast-finals state machine for prefix-based emission
+  // Fast-finals state machine
   const sttState = useRef({
     lastText: '',
-    committedPrefix: '',   // part we've already emitted as "hard-ish"
+    committedPrefix: '',
     lastEmitAt: 0,
   })
 
-  // Set page title
   useEffect(() => {
     document.title = 'Simo'
   }, [])
 
-  // Fetch STT provider from server config
   useEffect(() => {
     async function fetchConfig() {
       try {
         const res = await fetch('/api/config')
         const config = await res.json()
-        if (config.sttProvider === 'deepgram') {
-          setSttProvider('deepgram')
-          console.log('[Speaker] Using Deepgram STT (server-side)')
-        } else {
-          setSttProvider('azure')
-          console.log('[Speaker] Using Azure STT (client-side)')
+
+        // Set available providers
+        if (config.sttProviders && Array.isArray(config.sttProviders)) {
+          setAvailableProviders(config.sttProviders)
         }
-      } catch (err) {
-        console.warn('[Speaker] Failed to fetch config, defaulting to Azure STT:', err)
+
+        // Restore preference from localStorage or use server default
+        const saved = localStorage.getItem('stt-provider-preference')
+        const available = config.sttProviders?.find((p: any) => p.name === saved && p.available)
+        if (available) {
+          setSttProvider(saved as typeof sttProvider)
+        } else if (config.sttProvider) {
+          setSttProvider(config.sttProvider as typeof sttProvider)
+        }
+      } catch {
         setSttProvider('azure')
       }
     }
     fetchConfig()
   }, [])
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (tokenRefreshTimerRef.current) {
-        clearTimeout(tokenRefreshTimerRef.current)
+      if (tokenRefreshTimerRef.current) clearTimeout(tokenRefreshTimerRef.current)
+      if (flushTimeoutRef.current) clearTimeout(flushTimeoutRef.current)
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect()
+        audioSourceRef.current = null
       }
-      if (flushTimeoutRef.current) {
-        clearTimeout(flushTimeoutRef.current)
-      }
-      // Cleanup Deepgram mode resources
       if (audioWorkletRef.current) {
         audioWorkletRef.current.disconnect()
         audioWorkletRef.current = null
@@ -131,7 +157,6 @@ export function SpeakerApp() {
     }
   }, [])
 
-  // Load persisted glossary for the current room
   useEffect(() => {
     if (typeof window === 'undefined' || !room) return
     try {
@@ -140,7 +165,6 @@ export function SpeakerApp() {
     } catch {}
   }, [room])
 
-  // Persist glossary per room so it survives sessions
   useEffect(() => {
     if (typeof window === 'undefined' || !roomUnlocked || !room) return
     try {
@@ -148,18 +172,31 @@ export function SpeakerApp() {
     } catch {}
   }, [roomUnlocked, room, glossary])
 
-  // Language stability tracking (for auto-detect mode)
   const langStability = useRef({
-    current: '',  // Currently active language
-    detectedAt: 0,  // Timestamp when language was locked
-    switchCandidate: null as string | null,  // Candidate new language
-    switchCount: 0  // Consecutive detections of candidate
+    current: '',
+    detectedAt: 0,
+    switchCandidate: null as string | null,
+    switchCount: 0
   })
 
   function unitId(lang: string) { return `${sessionId.current}|${lang}|${unitIndex.current}` }
   const glossaryStorageKey = (roomId: string) => `simo-glossary-${roomId}`
 
-  // Helper to find longest common prefix between two strings
+  function getProviderLabel(name: string) {
+    switch (name) {
+      case 'azure': return 'Azure Speech (Browser)'
+      case 'deepgram': return 'Deepgram'
+      case 'elevenlabs': return 'ElevenLabs Scribe'
+      case 'local-whisper': return 'Local Whisper'
+      default: return name
+    }
+  }
+
+  function handleProviderChange(newProvider: typeof sttProvider) {
+    setSttProvider(newProvider)
+    localStorage.setItem('stt-provider-preference', newProvider)
+  }
+
   function longestCommonPrefix(a: string, b: string): string {
     const max = Math.min(a.length, b.length)
     let i = 0
@@ -167,40 +204,23 @@ export function SpeakerApp() {
     return a.slice(0, i)
   }
 
-  // Get stable language with persistence (15s lock + 2 consecutive threshold)
   function getStableLanguage(detected: string | undefined, fallback: string): string {
-    // If not in auto-detect mode or no detection, use fallback
-    if (!isAutoDetect.current || !detected) {
-      return fallback
-    }
-
+    if (!isAutoDetect.current || !detected) return fallback
     const now = Date.now()
     const stability = langStability.current
-
-    // Initialize on first detection
     if (!stability.current) {
       stability.current = detected
       stability.detectedAt = now
       return detected
     }
-
     const timeSinceLock = now - stability.detectedAt
-
-    // Lock language for 8 seconds after detection to avoid flapping
-    const lockDurationMs = 8000  // TODO: Make configurable
-    if (timeSinceLock < lockDurationMs) {
-      return stability.current
-    }
-
-    // After lock period, allow switching but require 2 consecutive detections
+    const lockDurationMs = 8000
+    if (timeSinceLock < lockDurationMs) return stability.current
     if (detected !== stability.current) {
       if (detected === stability.switchCandidate) {
         stability.switchCount++
-
-        // Require 2 consecutive detections before switching (configurable via SPEECH_LANG_SWITCH_THRESHOLD)
-        const switchThreshold = 2  // TODO: Make configurable
+        const switchThreshold = 2
         if (stability.switchCount >= switchThreshold) {
-          // Switch to new language
           stability.current = detected
           stability.detectedAt = now
           stability.switchCandidate = null
@@ -208,16 +228,11 @@ export function SpeakerApp() {
           return detected
         }
       } else {
-        // New candidate language
         stability.switchCandidate = detected
         stability.switchCount = 1
       }
-
-      // Keep current language while evaluating candidate
       return stability.current
     }
-
-    // Same language detected, reset switch tracking
     stability.switchCandidate = null
     stability.switchCount = 0
     return detected
@@ -230,19 +245,11 @@ export function SpeakerApp() {
     return { t0: offsetMs, t1: offsetMs + durationMs }
   }
 
-  // Snap a character position to the nearest word boundary (end of complete word)
-  // Note: Azure's NBest[0].Words is typically only in 'recognized' events, not partials
-  // So for fast-finals (which use 'recognizing' partials), we rely on space-based detection
   function snapToWordBoundary(text: string, charPos: number): number {
     if (charPos >= text.length) return text.length
-    // If we're already at a space or end, we're at a boundary
     if (charPos === 0 || /\s/.test(text[charPos])) return charPos
-    // Find last space before charPos to snap to end of previous word
     const lastSpace = text.lastIndexOf(' ', charPos - 1)
-    if (lastSpace > 0) {
-      return lastSpace  // Return position of space (trim will clean it up)
-    }
-    // No space found - this is a single long word, keep original position
+    if (lastSpace > 0) return lastSpace
     return charPos
   }
 
@@ -251,47 +258,32 @@ export function SpeakerApp() {
     try { await fetch('/api/segments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch {}
   }
 
-  // Build an AudioConfig pinned to the requested deviceId when provided
   async function buildAudioConfig(SDK: any, deviceId?: string) {
-    // Check microphone permission status first
     try {
       if (navigator.permissions) {
         const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName })
-        console.log('[Speaker] Microphone permission status:', permissionStatus.state)
         if (permissionStatus.state === 'denied') {
-          console.error('[Speaker] Microphone permission DENIED - user must grant permission in browser settings')
+          console.error('[Speaker] Microphone permission DENIED')
         }
       }
-    } catch (e) {
-      console.log('[Speaker] Could not check permission status:', e)
-    }
+    } catch {}
 
-    // Audio constraints for speech recognition (conservative settings for accuracy)
     const audioConstraints: MediaTrackConstraints = {
-      echoCancellation: true,      // Remove speaker feedback
-      noiseSuppression: true,      // Reduce background noise
-      autoGainControl: true,       // Normalize volume levels
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
       ...(deviceId ? { deviceId: { exact: deviceId } } : {})
     }
     if (deviceId) {
       try {
-        // Prime permissions and validate the device exists
-        console.log('[Speaker] Requesting device:', deviceId, 'with constraints:', audioConstraints)
         const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
-        const track = stream.getAudioTracks()[0]
-        const actualDevice = track.getSettings()
-        console.log('[Speaker] Got stream from device:', actualDevice.deviceId, actualDevice.label)
-        console.log('[Speaker] Requested vs Actual match:', actualDevice.deviceId === deviceId)
-        // Close any previous pinned stream
         if (micStreamRef.current) {
           micStreamRef.current.getTracks().forEach(t => t.stop())
         }
         micStreamRef.current = stream
-        // Use the actual stream directly - more reliable than passing deviceId string
-        console.log('[Speaker] Creating AudioConfig with fromStreamInput')
         return SDK.AudioConfig.fromStreamInput(stream)
-      } catch (err) {
-        console.error('[Speaker] Failed to bind mic stream, falling back to SDK mic selection', err)
+      } catch {
+        // fallback
       }
     }
     if (micStreamRef.current) {
@@ -316,14 +308,11 @@ export function SpeakerApp() {
   }
 
   // ============================================================================
-  // Deepgram Streaming Mode (Server-Side STT)
+  // Deepgram Streaming Mode
   // ============================================================================
   async function startDeepgram(deviceOverride?: string) {
-    console.log('[Speaker:Deepgram] Starting server-side STT mode')
     try {
-      setStatus('Connecting to server…')
-
-      // Request microphone access
+      setStatus('Connecting…')
       const deviceToUse = deviceOverride || selectedDeviceId
       const constraints: MediaStreamConstraints = {
         audio: {
@@ -336,100 +325,80 @@ export function SpeakerApp() {
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints)
       micStreamRef.current = stream
-      console.log('[Speaker:Deepgram] Got microphone stream')
 
-      // Connect WebSocket with stt=stream parameter
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const wsUrl = `${proto}://${window.location.host}/ws?role=speaker&room=${encodeURIComponent(room)}&stt=stream`
+      const wsUrl = `${proto}://${window.location.host}/ws?role=speaker&room=${encodeURIComponent(room)}&stt=stream&provider=${encodeURIComponent(sttProvider)}`
       const ws = new WebSocket(wsUrl)
       deepgramWsRef.current = ws
 
-      // Wait for WebSocket to open
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000)
-        ws.onopen = () => {
-          clearTimeout(timeout)
-          resolve()
-        }
-        ws.onerror = (err) => {
-          clearTimeout(timeout)
-          reject(err)
-        }
+        const timeout = setTimeout(() => reject(new Error('Connection timeout')), 10000)
+        ws.onopen = () => { clearTimeout(timeout); resolve() }
+        ws.onerror = (err) => { clearTimeout(timeout); reject(err) }
       })
-      console.log('[Speaker:Deepgram] WebSocket connected')
 
-      // Set up WebSocket message handler for patches from server
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
-
           if (msg.type === 'stt:ready') {
-            console.log('[Speaker:Deepgram] Server STT ready, provider:', msg.payload?.provider)
-            setStatus('Listening (Deepgram)')
+            setStatus('Listening')
+            if (msg.payload?.limitations?.length > 0) {
+              setSttLimitations(msg.payload.limitations)
+            } else {
+              setSttLimitations([])
+            }
           }
-
-          if (msg.type === 'stt:started') {
-            console.log('[Speaker:Deepgram] STT started')
-          }
-
-          if (msg.type === 'stt:error') {
-            console.error('[Speaker:Deepgram] Server STT error:', msg.payload?.error)
-            setStatus('Error: ' + (msg.payload?.error || 'STT error'))
-          }
-
-          // Handle incoming patches for transcript display
+          if (msg.type === 'stt:error') setStatus('Error: ' + (msg.payload?.error || 'STT error'))
           if (msg.type === 'patch' && msg.payload) {
             const patch = msg.payload
-            // Show hard finals in transcript history
-            if (patch.stage === 'hard' && patch.text && !patch.lang) {
-              // Source patch (not translated)
+            // Show both soft and hard patches (Deepgram produces many interim results)
+            if (patch.text && !patch.targetLang) {
               setTranscriptHistory(prev => {
-                const updated = [...prev, patch.text]
-                return updated.slice(-7)
+                // For soft patches, update the last entry if same unitId
+                if (patch.stage === 'soft' && prev.length > 0) {
+                  const updated = [...prev]
+                  updated[updated.length - 1] = patch.text
+                  return updated
+                }
+                // For hard patches, add new entry
+                return [...prev, patch.text].slice(-7)
               })
             }
           }
-        } catch (err) {
-          console.debug('[Speaker:Deepgram] Failed to parse message:', err)
-        }
+        } catch {}
       }
 
       ws.onclose = () => {
-        console.log('[Speaker:Deepgram] WebSocket closed')
         if (isRecording) {
           setStatus('Disconnected')
           setIsRecording(false)
         }
       }
 
-      ws.onerror = (err) => {
-        console.error('[Speaker:Deepgram] WebSocket error:', err)
-      }
-
-      // Set up AudioContext and AudioWorklet for PCM capture
       const audioCtx = new AudioContext({ sampleRate: 16000 })
       audioContextRef.current = audioCtx
 
-      // Load the PCM worklet
-      await audioCtx.audioWorklet.addModule('/pcm-worklet.js')
-      console.log('[Speaker:Deepgram] AudioWorklet loaded')
+      // Resume if suspended (browser autoplay policy)
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume()
+      }
 
-      // Create worklet node
+      await audioCtx.audioWorklet.addModule('/pcm-worklet.js')
+
       const worklet = new AudioWorkletNode(audioCtx, 'pcm-processor')
       audioWorkletRef.current = worklet
-
-      // Connect microphone to worklet
       const source = audioCtx.createMediaStreamSource(stream)
+      audioSourceRef.current = source  // Prevent GC
       source.connect(worklet)
+      // Connect to destination to keep audio graph alive (output is silent)
+      worklet.connect(audioCtx.destination)
 
-      // Send PCM chunks to server
       worklet.port.onmessage = (e) => {
         if (ws.readyState === WebSocket.OPEN && e.data instanceof ArrayBuffer) {
           ws.send(e.data)
         }
       }
 
-      // Send start command to server
       ws.send(JSON.stringify({
         type: 'stt:start',
         payload: {
@@ -438,69 +407,38 @@ export function SpeakerApp() {
         }
       }))
 
-      setStatus('Listening (Deepgram)')
-      console.log('[Speaker:Deepgram] Started successfully')
-
+      setStatus('Listening')
     } catch (err: any) {
-      console.error('[Speaker:Deepgram] Failed to start:', err)
       setStatus('Error: ' + (err?.message || 'unknown'))
       setIsRecording(false)
-      // Cleanup on error
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach(t => t.stop())
-        micStreamRef.current = null
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close()
-        audioContextRef.current = null
-      }
-      if (deepgramWsRef.current) {
-        deepgramWsRef.current.close()
-        deepgramWsRef.current = null
-      }
+      if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null }
+      if (audioSourceRef.current) { audioSourceRef.current.disconnect(); audioSourceRef.current = null }
+      if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null }
+      if (deepgramWsRef.current) { deepgramWsRef.current.close(); deepgramWsRef.current = null }
     }
   }
 
   async function stopDeepgram() {
-    console.log('[Speaker:Deepgram] Stopping')
     setStatus('Stopping…')
-
-    // Send stop command
     if (deepgramWsRef.current?.readyState === WebSocket.OPEN) {
       deepgramWsRef.current.send(JSON.stringify({ type: 'stt:stop', payload: {} }))
     }
-
-    // Cleanup audio
-    if (audioWorkletRef.current) {
-      audioWorkletRef.current.disconnect()
-      audioWorkletRef.current = null
-    }
-    if (audioContextRef.current) {
-      await audioContextRef.current.close()
-      audioContextRef.current = null
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop())
-      micStreamRef.current = null
-    }
-    if (deepgramWsRef.current) {
-      deepgramWsRef.current.close()
-      deepgramWsRef.current = null
-    }
-
+    if (audioSourceRef.current) { audioSourceRef.current.disconnect(); audioSourceRef.current = null }
+    if (audioWorkletRef.current) { audioWorkletRef.current.disconnect(); audioWorkletRef.current = null }
+    if (audioContextRef.current) { await audioContextRef.current.close(); audioContextRef.current = null }
+    if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null }
+    if (deepgramWsRef.current) { deepgramWsRef.current.close(); deepgramWsRef.current = null }
     setStatus('Idle')
     setTranscriptHistory([])
     setIsRecording(false)
   }
 
   // ============================================================================
-  // Azure STT Mode (Client-Side) - Original implementation
+  // Azure STT Mode
   // ============================================================================
   async function startAzure(deviceOverride?: string) {
-    console.log('[Speaker:Azure] Starting client-side STT mode, deviceOverride:', deviceOverride, 'selectedDeviceId:', selectedDeviceId)
     try {
-      setStatus('Loading Speech SDK…')
-      console.log('[Speaker] Starting SDK initialization...')
+      setStatus('Loading SDK…')
       const SDK = await loadSpeechCdn()
       setStatus('Fetching token…')
       const { token, region, expiresInSeconds } = await fetchToken()
@@ -509,45 +447,29 @@ export function SpeakerApp() {
       speechConfig.outputFormat = SDK.OutputFormat.Detailed
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_PostProcessingOption, 'TrueText') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_ContinuousLanguageIdPriority, 'Accuracy') } catch {}
-      // Dictation mode: better punctuation/capitalization via TrueText processing
       try { speechConfig.enableDictation() } catch {}
-
-      // Accuracy-focused SDK properties (conservative settings, not aggressive VAD)
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold, '2') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestSentenceBoundary, 'true') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestWordBoundary, 'true') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_RequestPunctuationBoundary, 'true') } catch {}
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_EnableAudioProcessing, 'true') } catch {}
-      // Conservative silence timeouts (keep accuracy, don't rush) - affects 'recognized' events only
       try { speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '5000') } catch {}
-      // Note: Semantic segmentation delays 'recognized' but fast-finals use 'recognizing' partials
-      // Keeping default segmentation to avoid delaying finals too much
 
-      // Set up token refresh timer (refresh 1 minute before expiry)
       const refreshMs = ((expiresInSeconds || 600) - 60) * 1000
       if (tokenRefreshTimerRef.current) clearTimeout(tokenRefreshTimerRef.current)
       const scheduleTokenRefresh = () => {
         tokenRefreshTimerRef.current = setTimeout(async () => {
           try {
-            console.log('[Speaker] Refreshing Azure Speech token...')
             const fresh = await fetchToken()
-            // Fix: Update token on the recognizer itself, not just the config
-            // The recognizer has its own internal auth token that must be refreshed
-            if (recogRef.current) {
-              recogRef.current.authorizationToken = fresh.token
-              console.log('[Speaker] Token refreshed on recognizer successfully')
-            }
-            scheduleTokenRefresh() // Schedule next refresh
-          } catch (err) {
-            console.error('[Speaker] Token refresh failed:', err)
-            // Retry in 30 seconds if refresh fails
+            if (recogRef.current) recogRef.current.authorizationToken = fresh.token
+            scheduleTokenRefresh()
+          } catch {
             tokenRefreshTimerRef.current = setTimeout(scheduleTokenRefresh, 30000)
           }
         }, refreshMs)
       }
       scheduleTokenRefresh()
 
-      // Load room metadata to configure fixed vs. auto-detect languages
       let meta: any = null
       try {
         const r = await fetch(`/api/rooms/${encodeURIComponent(room)}`, { cache: 'no-store' })
@@ -556,14 +478,10 @@ export function SpeakerApp() {
         if (meta) setRoomMeta(meta)
       } catch {}
 
-      // Use selected device or default microphone (with exact device binding when provided)
       const deviceToUse = deviceOverride || selectedDeviceId
-      console.log('[Speaker] Building audio config with device:', deviceToUse)
       const audioConfig = await buildAudioConfig(SDK, deviceToUse)
-      console.log('[Speaker] Audio config created successfully')
       let recognizer: any = null
 
-            // Helper to read detected language from SDK result (robust to SDK variants)
       function detectedLangFrom(result: any): string | undefined {
         try {
           if ((result as any)?.language) return String((result as any).language)
@@ -584,25 +502,19 @@ export function SpeakerApp() {
         return undefined
       }
 
-      // Configure recognizer from room meta from room meta
       if (meta && meta.sourceLang === 'auto' && Array.isArray(meta.autoDetectLangs) && meta.autoDetectLangs.length) {
         const candidates: string[] = meta.autoDetectLangs.slice(0, 4)
-        isAutoDetect.current = true  // Mark as auto-detect mode
-        // If multiple languages, use continuous language ID to allow switching
+        isAutoDetect.current = true
         if (candidates.length >= 2) {
-          speechConfig.setProperty(
-            SDK.PropertyId.SpeechServiceConnection_LanguageIdMode,
-            'Continuous'
-          )
+          speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_LanguageIdMode, 'Continuous')
         }
         const autoCfg = SDK.AutoDetectSourceLanguageConfig.fromLanguages(candidates)
         recognizer = SDK.SpeechRecognizer.FromConfig(speechConfig, autoCfg, audioConfig)
-        // If targets were not set manually, default from room meta
         if ((!targets || !targets.trim()) && Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
           setTargets(meta.defaultTargetLangs.join(','))
         }
       } else {
-        isAutoDetect.current = false  // Fixed language mode
+        isAutoDetect.current = false
         const fixed = meta && meta.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang
         speechConfig.speechRecognitionLanguage = fixed
         recognizer = new SDK.SpeechRecognizer(speechConfig, audioConfig)
@@ -612,11 +524,7 @@ export function SpeakerApp() {
       }
 
       recogRef.current = recognizer
-      // Apply glossary/phrase list hints to improve domain accuracy
-      const phrases = glossary
-        .split(/\n|,|;/)
-        .map((p) => p.trim())
-        .filter(Boolean)
+      const phrases = glossary.split(/\n|,|;/).map((p) => p.trim()).filter(Boolean)
       if (phrases.length) {
         try {
           const phraseList = SDK.PhraseListGrammar.fromRecognizer(recognizer)
@@ -630,23 +538,16 @@ export function SpeakerApp() {
 
       recognizer.recognizing = async (_s: any, e: any) => {
         if (!e?.result?.text) return
-
-        // In auto-detect mode, require minimum 2 seconds of audio for accurate detection
         if (isAutoDetect.current && e.result?.duration) {
-          const audioDurationMs = e.result.duration / 10000  // Convert from 100ns ticks to ms
-          if (audioDurationMs < 2000) {
-            return  // Wait for more audio before attempting language detection
-          }
+          const audioDurationMs = e.result.duration / 10000
+          if (audioDurationMs < 2000) return
         }
-
         const now = Date.now()
         const text = e.result.text.trim()
         if (!text) return
 
-        // Reset flush timeout - will fire if no speech activity for 4 seconds
         if (flushTimeoutRef.current) clearTimeout(flushTimeoutRef.current)
         flushTimeoutRef.current = setTimeout(async () => {
-          // Flush any uncommitted text as ttsFinal after 4 seconds of silence
           const uncommitted = sttState.current.lastText
           const alreadyCommitted = sttState.current.committedPrefix
           if (uncommitted && uncommitted.length > alreadyCommitted.length) {
@@ -661,50 +562,36 @@ export function SpeakerApp() {
                 version: version.current,
                 text: toFlush,
                 srcLang: langForUnit,
-                ttsFinal: true,  // Force TTS on flush
+                ttsFinal: true,
                 ts: { offset: 0, duration: 0 }
               })
               sttState.current.committedPrefix = toFlush
               sttState.current.lastEmitAt = Date.now()
             }
           }
-        }, 4000)  // 4 second flush timeout
+        }, 4000)
 
-        // PREFIX-BASED FAST FINALS (Solution 2)
-        // Find stable prefix that's consistent across multiple partials
         const prev = sttState.current.lastText
         const prefix = longestCommonPrefix(prev, text)
-
-        // Only consider if prefix grows beyond what we've already committed
         if (prefix.length > sttState.current.committedPrefix.length) {
           const extension = prefix.slice(sttState.current.committedPrefix.length)
           const extensionChars = extension.length
           const timeSinceEmit = now - sttState.current.lastEmitAt
-
-          // Determine if we should emit a fast-final
-          const hasNewSentence = /[.?!]\s/.test(extension)   // new boundary in extension
-          const prefixEndsSentence = /[.?!]\s*$/.test(prefix)  // prefix ends with punctuation
-          const enoughNewChars = extensionChars >= 45   // FASTFINALS_MIN_CHARS (45 for more complete segments)
-          const timeOk = timeSinceEmit >= 800               // FASTFINALS_EMIT_THROTTLE_MS (800 for more stabilization)
+          const hasNewSentence = /[.?!]\s/.test(extension)
+          const prefixEndsSentence = /[.?!]\s*$/.test(prefix)
+          const enoughNewChars = extensionChars >= 45
+          const timeOk = timeSinceEmit >= 800
 
           if ((hasNewSentence || prefixEndsSentence || enoughNewChars) && timeOk) {
-            // Apply tail guard with word boundary snapping
-            // BUT: if prefix ends with sentence punctuation, don't guard it off
-            const guardChars = 10  // FASTFINALS_TAIL_GUARD_CHARS (prod: 10)
+            const guardChars = 10
             const total = prefix.length
-            let guardedLen = Math.max(
-              sttState.current.committedPrefix.length,
-              total - guardChars
-            )
-            // If prefix ends with punctuation, extend to include it
+            let guardedLen = Math.max(sttState.current.committedPrefix.length, total - guardChars)
             if (prefixEndsSentence && guardedLen < total) {
               guardedLen = total
             } else if (guardedLen < total) {
-              // Snap to word boundary to avoid mid-word cuts
               guardedLen = snapToWordBoundary(prefix, guardedLen)
             }
             const candidate = prefix.slice(0, guardedLen).trim()
-
             if (candidate.length > sttState.current.committedPrefix.length) {
               version.current += 1
               const rawDetected = detectedLangFrom(e.result)
@@ -712,33 +599,27 @@ export function SpeakerApp() {
               const stableLang = getStableLanguage(rawDetected, fallback)
               if (!currentUnitLang.current) currentUnitLang.current = stableLang
               const langForUnit = currentUnitLang.current || stableLang
-
               const candidateIsSentence = /[.?!]\s*$/.test(candidate)
-
               await postPatch({
                 unitId: unitId(langForUnit),
-                stage: 'hard',       // <- fast final "hard"
+                stage: 'hard',
                 op: 'replace',
                 version: version.current,
                 text: candidate,
                 srcLang: langForUnit,
-                // Allow TTS when the fast-final ends with terminal punctuation
                 ttsFinal: candidateIsSentence,
                 ts: timestamps(e.result),
               })
-
               sttState.current.committedPrefix = candidate
               sttState.current.lastEmitAt = now
             }
           }
         }
-
         sttState.current.lastText = text
 
-        // ALSO emit soft patches for UI preview (separate from fast-finals)
         const delta = text.length - lastSoftText.current.length
-        const softTimeOk = now - lastSoftAt.current > 700  // SOFT_THROTTLE_MS (prod: 700)
-        const softCharOk = delta > 12  // SOFT_MIN_DELTA_CHARS (prod: 12)
+        const softTimeOk = now - lastSoftAt.current > 700
+        const softCharOk = delta > 12
         const punct = /[.?!]\s*$/.test(text)
         if ((punct || softCharOk) && softTimeOk) {
           lastSoftText.current = text
@@ -765,13 +646,7 @@ export function SpeakerApp() {
         if (e.result.reason === SDK.ResultReason.RecognizedSpeech) {
           const text = e.result.text.trim()
           if (!text) return
-
-          // Update transcript history (keep last 7 sentences)
-          setTranscriptHistory(prev => {
-            const updated = [...prev, text]
-            return updated.slice(-7)  // Keep only last 7 sentences
-          })
-
+          setTranscriptHistory(prev => [...prev, text].slice(-7))
           version.current += 1
           const rawDetected = detectedLangFrom(e.result)
           const fallback = (meta?.sourceLang && meta.sourceLang !== 'auto' ? meta.sourceLang : srcLang)
@@ -785,7 +660,7 @@ export function SpeakerApp() {
             version: version.current,
             text,
             srcLang: langForUnit,
-            ttsFinal: true,   // Only queue TTS on the definitive final
+            ttsFinal: true,
             ts: timestamps(e.result)
           })
           unitIndex.current += 1
@@ -793,8 +668,7 @@ export function SpeakerApp() {
           lastSoftText.current = ''
           lastSoftAt.current = Date.now()
           currentUnitLang.current = ''
-          sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }  // Reset fast-finals state for next utterance
-          // Clear flush timeout since we got a proper final
+          sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }
           if (flushTimeoutRef.current) {
             clearTimeout(flushTimeoutRef.current)
             flushTimeoutRef.current = null
@@ -802,15 +676,11 @@ export function SpeakerApp() {
         }
       }
 
-      recognizer.sessionStarted = () => setStatus('Session started')
-      recognizer.sessionStopped = () => { setStatus('Session stopped'); setIsRecording(false); currentUnitLang.current = '' }
-      recognizer.canceled = (_s: any, e: any) => { setStatus('Canceled'); setIsRecording(false); currentUnitLang.current = '' }
+      recognizer.sessionStarted = () => setStatus('Listening')
+      recognizer.sessionStopped = () => { setStatus('Idle'); setIsRecording(false); currentUnitLang.current = '' }
+      recognizer.canceled = () => { setStatus('Canceled'); setIsRecording(false); currentUnitLang.current = '' }
       recognizer.startContinuousRecognitionAsync()
-      console.log('[Speaker] Recognition started successfully')
     } catch (e: any) {
-      console.error('[Speaker] Failed to start:', e)
-      console.error('[Speaker] Error name:', e?.name)
-      console.error('[Speaker] Error message:', e?.message)
       setStatus('Error: ' + (e?.message || 'unknown'))
       try { wsRef.current?.close() } catch {}
       setIsRecording(false)
@@ -819,16 +689,8 @@ export function SpeakerApp() {
 
   async function stopAzure() {
     setStatus('Stopping…')
-    // Clear token refresh timer
-    if (tokenRefreshTimerRef.current) {
-      clearTimeout(tokenRefreshTimerRef.current)
-      tokenRefreshTimerRef.current = null
-    }
-    // Clear flush timeout
-    if (flushTimeoutRef.current) {
-      clearTimeout(flushTimeoutRef.current)
-      flushTimeoutRef.current = null
-    }
+    if (tokenRefreshTimerRef.current) { clearTimeout(tokenRefreshTimerRef.current); tokenRefreshTimerRef.current = null }
+    if (flushTimeoutRef.current) { clearTimeout(flushTimeoutRef.current); flushTimeoutRef.current = null }
     speechConfigRef.current = null
     try { wsRef.current?.close() } catch {}
     wsRef.current = null
@@ -836,34 +698,24 @@ export function SpeakerApp() {
     if (r) {
       try {
         await new Promise<void>((resolve) => {
-          try {
-            r.stopContinuousRecognitionAsync(()=>resolve(), ()=>resolve())
-          } catch {
-            resolve()
-          }
+          try { r.stopContinuousRecognitionAsync(()=>resolve(), ()=>resolve()) } catch { resolve() }
         })
       } catch {}
       try { r.close() } catch {}
     }
     recogRef.current = null
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop())
-      micStreamRef.current = null
-    }
+    if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null }
     setStatus('Idle')
-    setTranscriptHistory([])  // Clear transcript history when stopping
+    setTranscriptHistory([])
     setIsRecording(false)
     currentUnitLang.current = ''
   }
 
   // ============================================================================
-  // Dispatcher functions - select provider based on sttProvider state
+  // Dispatcher
   // ============================================================================
   async function start(deviceOverride?: string) {
-    if (isRecording) {
-      console.log('[Speaker] Already recording, ignoring start')
-      return
-    }
+    if (isRecording) return
     setIsRecording(true)
     sessionId.current = crypto.randomUUID()
     unitIndex.current = 0
@@ -874,7 +726,12 @@ export function SpeakerApp() {
     lastSoftAt.current = 0
     sttState.current = { lastText: '', committedPrefix: '', lastEmitAt: 0 }
 
-    if (sttProvider === 'deepgram') {
+    // Check if selected provider is server-side
+    const provider = availableProviders.find(p => p.name === sttProvider)
+    const isServerSide = provider?.isServerSide ?? (sttProvider !== 'azure')
+
+    if (isServerSide) {
+      // All server-side providers use same WebSocket streaming
       await startDeepgram(deviceOverride)
     } else {
       await startAzure(deviceOverride)
@@ -882,47 +739,41 @@ export function SpeakerApp() {
   }
 
   async function stop() {
-    if (sttProvider === 'deepgram') {
+    const provider = availableProviders.find(p => p.name === sttProvider)
+    const isServerSide = provider?.isServerSide ?? (sttProvider !== 'azure')
+
+    if (isServerSide) {
       await stopDeepgram()
     } else {
       await stopAzure()
     }
   }
 
-  // Handle device changes: if currently recording, restart with the new device
   async function handleDeviceChange(deviceId: string) {
     setSelectedDeviceId(deviceId)
     if (isRecording) {
-      setStatus('Switching input…')
+      setStatus('Switching…')
       try {
-        if (micStreamRef.current) {
-          micStreamRef.current.getTracks().forEach(t => t.stop())
-          micStreamRef.current = null
-        }
+        if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null }
       } catch {}
       await stop()
       await start(deviceId)
     }
   }
 
-  // Enumerate audio input devices on mount
   useEffect(() => {
     async function getDevices() {
       try {
-        // Request microphone permission first
         await navigator.mediaDevices.getUserMedia({ audio: true })
         const devices = await navigator.mediaDevices.enumerateDevices()
         const audioInputs = devices.filter(d => d.kind === 'audioinput')
         setAudioDevices(audioInputs)
-        // Preserve selection if still available, otherwise pick first
         const stillExists = audioInputs.find(d => d.deviceId === selectedDeviceId)
         if (!stillExists) {
           if (audioInputs.length > 0) setSelectedDeviceId(audioInputs[0].deviceId)
           else setSelectedDeviceId('')
         }
-      } catch (err) {
-        console.error('Failed to enumerate devices:', err)
-      }
+      } catch {}
     }
     getDevices()
     const handler = () => { getDevices() }
@@ -936,40 +787,31 @@ export function SpeakerApp() {
     }
   }, [selectedDeviceId])
 
-  // Unlock room with access code
   async function unlockRoom(e: React.FormEvent) {
     e.preventDefault()
     setUnlockError('')
     const code = roomInput.trim()
-    if (!code) {
-      setUnlockError('Please enter a room code')
-      return
-    }
+    if (!code) { setUnlockError('Please enter a room code'); return }
     try {
       const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`, { cache: 'no-store' })
       const body = await res.json().catch(() => ({} as any))
       if (!res.ok || !body?.ok || !body?.room) {
-        setUnlockError('Invalid room code. Please check and try again.')
+        setUnlockError('Invalid room code')
         return
       }
       const meta = body.room
       setRoom(code)
       setRoomMeta(meta)
       setRoomUnlocked(true)
-      // If fixed source, reflect in input
-      if (meta.sourceLang && meta.sourceLang !== 'auto') {
-        setSrcLang(meta.sourceLang)
-      }
-      // Default targets from meta
+      if (meta.sourceLang && meta.sourceLang !== 'auto') setSrcLang(meta.sourceLang)
       if (Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
         setTargets(meta.defaultTargetLangs.join(','))
       }
-    } catch (err) {
-      setUnlockError('Failed to validate room code. Please try again.')
+    } catch {
+      setUnlockError('Failed to validate room code')
     }
   }
 
-  // When room changes, fetch its meta to populate fields
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -981,11 +823,7 @@ export function SpeakerApp() {
           const meta = body.room
           setRoomMeta(meta)
           setRoomUnlocked(true)
-          // If fixed source, reflect in input
-          if (meta.sourceLang && meta.sourceLang !== 'auto') {
-            setSrcLang(meta.sourceLang)
-          }
-          // Default targets from meta
+          if (meta.sourceLang && meta.sourceLang !== 'auto') setSrcLang(meta.sourceLang)
           if (Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
             setTargets(meta.defaultTargetLangs.join(','))
           }
@@ -996,201 +834,286 @@ export function SpeakerApp() {
     return () => { cancelled = true }
   }, [room])
 
-  // Access gate - show unlock screen if not authenticated
+  // ============================================================================
+  // Render: Room Unlock Screen
+  // ============================================================================
   if (!roomUnlocked) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6">
-        <div className="w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-blue-500/20 border border-emerald-500/30 flex items-center justify-center">
-              <svg className="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
+      <>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap');
+          @keyframes aurora { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+          @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+          .aurora-bg { background: linear-gradient(-45deg, #0a0f1c, #1a1f3c, #0f172a, #1e1b4b, #0c1929); background-size: 400% 400%; animation: aurora 20s ease infinite; }
+          .float-animation { animation: float 6s ease-in-out infinite; }
+        `}</style>
+        <main className="aurora-bg min-h-screen flex items-center justify-center p-6" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <div className="w-full max-w-md">
+            {/* Logo & Title */}
+            <div className="text-center mb-8">
+              <div className="float-animation w-20 h-20 mx-auto mb-6 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-teal-500/20 border border-cyan-400/20 flex items-center justify-center shadow-[0_0_40px_rgba(6,182,212,0.15)]">
+                <svg className="w-10 h-10 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+              </div>
+              <h1 className="text-3xl font-semibold text-white/90 mb-2" style={{ fontFamily: "'Outfit', sans-serif" }}>Speaker Access</h1>
+              <p className="text-white/40 text-sm">Enter your room code to begin broadcasting</p>
             </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-blue-400 bg-clip-text text-transparent mb-2">Speaker Access</h1>
-            <p className="text-slate-400">Enter your room code to begin</p>
-          </div>
-          <form onSubmit={unlockRoom} className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-8 shadow-2xl space-y-4">
-            <div>
-              <Label className="mb-2 block text-slate-300">Room Code</Label>
-              <Input
-                value={roomInput}
-                onChange={(e) => setRoomInput(e.target.value)}
-                placeholder="Enter your room code"
-                className="bg-slate-900/50 border-slate-700 focus:border-emerald-500 transition-colors text-center text-lg tracking-wider"
-                autoFocus
-              />
-            </div>
-            <div className="pt-2">
-              <Button type="submit" className="w-full bg-gradient-to-r from-emerald-500 to-blue-500 hover:from-emerald-600 hover:to-blue-600 transition-all">
+
+            {/* Unlock Form */}
+            <form onSubmit={unlockRoom} className={`${glassPanel} p-8`}>
+              <div className="mb-6">
+                <label className="block text-white/50 text-xs font-medium uppercase tracking-wider mb-2">Room Code</label>
+                <input
+                  type="text"
+                  value={roomInput}
+                  onChange={(e) => setRoomInput(e.target.value)}
+                  placeholder="Enter room code"
+                  className={`${glassInput} text-center text-lg tracking-widest`}
+                  autoFocus
+                />
+              </div>
+              <button type="submit" className={`${btnPrimary} w-full flex items-center justify-center gap-2`}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                </svg>
                 Access Room
-              </Button>
+              </button>
               {unlockError && (
-                <p className="text-sm mt-3 text-center text-red-400">{unlockError}</p>
+                <div className="mt-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20">
+                  <p className="text-sm text-red-300 text-center">{unlockError}</p>
+                </div>
               )}
-            </div>
-          </form>
-        </div>
-      </main>
+            </form>
+          </div>
+        </main>
+      </>
     )
   }
 
+  // ============================================================================
+  // Render: Main Speaker Interface
+  // ============================================================================
+  const isListening = status === 'Listening' || status === 'Session started'
+  const hasError = status.startsWith('Error')
+
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 px-4 py-8">
-      <div className="container mx-auto max-w-4xl">
-        <div className="mb-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-blue-400 bg-clip-text text-transparent mb-2">Speaker</h1>
-              <p className="text-slate-400">Configure your audio input and start translating</p>
-            </div>
-            <div className="text-right">
-              <div className="text-xs text-slate-500 mb-1">Room</div>
-              <code className="text-sm text-slate-300 bg-slate-800/50 px-3 py-1 rounded-lg border border-slate-700/50">{room}</code>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-6 shadow-xl mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          <div>
-            <Label className="mb-2 block text-slate-300">Source Language</Label>
-            {roomMeta?.sourceLang === 'auto' ? (
-              <Input
-                value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(',')})`}
-                readOnly
-                className="bg-slate-900/30 border-slate-700 text-slate-400"
-              />
-            ) : (
-              <Input
-                value={srcLang}
-                onChange={(e)=>setSrcLang(e.target.value)}
-                className="bg-slate-900/50 border-slate-700 focus:border-emerald-500 transition-colors"
-              />
-            )}
-          </div>
-          <div>
-            <Label className="mb-2 block text-slate-300">Target Languages</Label>
-            <Input
-              value={targets}
-              onChange={(e)=>setTargets(e.target.value)}
-              className="bg-slate-900/50 border-slate-700 focus:border-emerald-500 transition-colors"
-              placeholder="e.g., fr-CA, es-ES"
-            />
-          </div>
-        </div>
-
-        <div className="mb-6">
-          <Label className="mb-2 block text-slate-300">Audio Input Device</Label>
-          <select
-            value={selectedDeviceId}
-            onChange={(e) => handleDeviceChange(e.target.value)}
-            className="flex h-10 w-full rounded-lg border border-slate-700 bg-slate-900/50 text-slate-100 px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:border-emerald-500 [&>option]:bg-slate-800 [&>option]:text-slate-100"
-          >
-            {audioDevices.map(device => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
-              </option>
-            ))}
-          </select>
-          {audioDevices.length === 0 && (
-            <p className="text-xs text-slate-500 mt-2">No audio devices found. Allow microphone access to see devices.</p>
-          )}
-          {audioDevices.length > 0 && (
-            <p className="text-xs text-slate-500 mt-2">
-              Changing devices while recording will restart capture with the new input.
-            </p>
-          )}
-        </div>
-
-        <div className="mb-6">
-          <Label className="mb-2 block text-slate-300">Glossary / Phrase Hints</Label>
-          <Textarea
-            value={glossary}
-            onChange={(e)=> setGlossary(e.target.value)}
-            placeholder="Product names, acronyms, people... one per line"
-            className="bg-slate-900/50 border-slate-700 focus-visible:ring-emerald-500 text-slate-100 min-h-[110px]"
-          />
-          <p className="text-xs text-slate-500 mt-2">
-            Sent to Azure as a phrase list to improve recognition. Saved locally for this room.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3 pt-4 border-t border-slate-700/50">
-          <Button
-            onClick={() => start()}
-            disabled={isRecording}
-            className="bg-gradient-to-r from-emerald-500 to-blue-500 hover:from-emerald-600 hover:to-blue-600 transition-all"
-          >
-            <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-            Start Recording
-          </Button>
-          <Button
-            variant="outline"
-            onClick={stop}
-            disabled={!isRecording && status === 'Idle'}
-            className="border-slate-700 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M6 6h12v12H6z" />
-            </svg>
-            Stop
-          </Button>
-          <div className="flex items-center gap-2">
-            <div className={cn(
-              'w-2 h-2 rounded-full',
-              status === 'Listening' || status === 'Session started' ? 'bg-emerald-400 animate-pulse' :
-              status.startsWith('Error') ? 'bg-red-400' :
-              'bg-slate-600'
-            )}></div>
-            <span className="text-sm text-slate-400">{status}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Live Transcription Monitor */}
-      {transcriptHistory.length > 0 && (
-        <div className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-6 shadow-xl">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
-            <h2 className="text-lg font-semibold text-slate-200">Live Transcription</h2>
-            <span className="text-xs text-slate-500 ml-auto">Original audio</span>
-          </div>
-          <div className="bg-slate-900/50 rounded-lg p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-            {transcriptHistory.map((text, idx) => (
-              <div
-                key={idx}
-                className="text-sm text-slate-200 bg-slate-800/50 rounded-md p-3 border border-slate-700/50 hover:bg-slate-800/70 transition-colors"
-              >
-                {text}
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap');
+        @keyframes aurora { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+        @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+        @keyframes pulse-ring { 0% { transform: scale(0.95); opacity: 1; } 50% { transform: scale(1.1); opacity: 0.5; } 100% { transform: scale(0.95); opacity: 1; } }
+        .aurora-bg { background: linear-gradient(-45deg, #0a0f1c, #1a1f3c, #0f172a, #1e1b4b, #0c1929); background-size: 400% 400%; animation: aurora 20s ease infinite; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+        .pulse-ring { animation: pulse-ring 2s ease-in-out infinite; }
+      `}</style>
+      <main className="aurora-bg min-h-screen px-4 py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+        <div className="container mx-auto max-w-3xl">
+          {/* Header */}
+          <header className="mb-8">
+            <div className="flex items-start justify-between">
+              <div>
+                <h1 className="text-3xl font-semibold text-white/90 mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Speaker</h1>
+                <p className="text-white/40 text-sm">Configure and start your broadcast</p>
               </div>
-            ))}
-          </div>
-          <p className="text-xs text-slate-500 mt-3">
-            Showing last {transcriptHistory.length} sentence{transcriptHistory.length !== 1 ? 's' : ''}
-          </p>
-        </div>
-      )}
+              <div className={`${glassPanel} px-4 py-2`}>
+                <div className="text-white/40 text-[10px] uppercase tracking-wider mb-0.5">Room</div>
+                <code className="text-cyan-400 text-sm font-medium">{room}</code>
+              </div>
+            </div>
+          </header>
 
-      {/* Debug Info */}
-      {status.startsWith('Error') && (
-        <div className="rounded-xl border border-red-500/50 bg-red-900/20 backdrop-blur-sm p-4 shadow-xl">
-          <div className="flex items-center gap-2 mb-2">
-            <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span className="font-semibold text-red-300">Error</span>
+          {/* Main Control Panel */}
+          <div className={`${glassPanel} p-6 mb-6`}>
+            {/* Language Configuration */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div>
+                <label className="block text-white/50 text-xs font-medium uppercase tracking-wider mb-2">Source Language</label>
+                {roomMeta?.sourceLang === 'auto' ? (
+                  <input
+                    value={`auto (${(roomMeta.autoDetectLangs||[]).slice(0,4).join(', ')})`}
+                    readOnly
+                    className={`${glassInput} opacity-60`}
+                  />
+                ) : (
+                  <input
+                    value={srcLang}
+                    onChange={(e)=>setSrcLang(e.target.value)}
+                    className={glassInput}
+                    placeholder="e.g., en-US"
+                  />
+                )}
+              </div>
+              <div>
+                <label className="block text-white/50 text-xs font-medium uppercase tracking-wider mb-2">Target Languages</label>
+                <input
+                  value={targets}
+                  onChange={(e)=>setTargets(e.target.value)}
+                  className={glassInput}
+                  placeholder="e.g., fr-CA, es-ES"
+                />
+              </div>
+            </div>
+
+            {/* Audio Device */}
+            <div className="mb-6">
+              <label className="block text-white/50 text-xs font-medium uppercase tracking-wider mb-2">Audio Input</label>
+              <div className="relative">
+                <select
+                  value={selectedDeviceId}
+                  onChange={(e) => handleDeviceChange(e.target.value)}
+                  className={glassSelect}
+                  style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23ffffff40'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', backgroundSize: '20px' }}
+                >
+                  {audioDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId} className="bg-slate-900 text-white">
+                      {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {audioDevices.length === 0 && (
+                <p className="text-white/30 text-xs mt-2">No audio devices found. Allow microphone access.</p>
+              )}
+            </div>
+
+            {/* STT Provider */}
+            {availableProviders.length > 0 && (
+              <div className="mb-6">
+                <label className="block text-white/50 text-xs font-medium uppercase tracking-wider mb-2">Speech Recognition</label>
+                <div className="relative">
+                  <select
+                    value={sttProvider}
+                    onChange={(e) => handleProviderChange(e.target.value as typeof sttProvider)}
+                    disabled={isRecording}
+                    className={glassSelect}
+                    style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23ffffff40'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', backgroundSize: '20px' }}
+                  >
+                    {availableProviders.map(p => (
+                      <option key={p.name} value={p.name} disabled={!p.available} className="bg-slate-900 text-white">
+                        {getProviderLabel(p.name)}{!p.available ? ' (unavailable)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {isRecording && (
+                  <p className="text-white/30 text-xs mt-2">Stop recording to change provider</p>
+                )}
+                {sttLimitations.length > 0 && (
+                  <div className="mt-2 flex items-start gap-2 p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
+                    <span className="text-yellow-400 text-sm mt-0.5">⚠</span>
+                    <div className="text-yellow-200/80 text-xs">
+                      {sttLimitations.map((l, i) => (
+                        <p key={i}>{l.message}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Glossary */}
+            <div className="mb-6">
+              <label className="block text-white/50 text-xs font-medium uppercase tracking-wider mb-2">Glossary / Phrase Hints</label>
+              <textarea
+                value={glossary}
+                onChange={(e)=> setGlossary(e.target.value)}
+                placeholder="Product names, acronyms, people names... one per line"
+                className={`${glassTextarea} h-24`}
+              />
+              <p className="text-white/30 text-xs mt-2">
+                These hints improve recognition accuracy for domain-specific terms.
+              </p>
+            </div>
+
+            {/* Control Bar */}
+            <div className="flex items-center gap-3 pt-4 border-t border-white/[0.06]">
+              <button
+                onClick={() => start()}
+                disabled={isRecording}
+                className={btnPrimary}
+              >
+                <span className="flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  Start Recording
+                </span>
+              </button>
+              <button
+                onClick={stop}
+                disabled={!isRecording && status === 'Idle'}
+                className={btnDanger}
+              >
+                <span className="flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <rect x="6" y="6" width="12" height="12" rx="1" />
+                  </svg>
+                  Stop
+                </span>
+              </button>
+              <div className="flex items-center gap-2 ml-auto">
+                <StatusDot active={isListening} color={hasError ? 'red' : isListening ? 'emerald' : 'amber'} />
+                <span className={`text-sm ${hasError ? 'text-red-400' : isListening ? 'text-emerald-400' : 'text-white/50'}`}>
+                  {status}
+                </span>
+              </div>
+            </div>
           </div>
-          <p className="text-sm text-red-200">
-            {status.includes('Token failed') ?
-              'Failed to get Azure Speech token. Please check your SPEECH_KEY and SPEECH_REGION in .env file.' :
-              status}
-          </p>
+
+          {/* Live Transcription */}
+          {transcriptHistory.length > 0 && (
+            <div className={`${glassPanel} p-6`}>
+              <div className="flex items-center gap-2 mb-4">
+                <div className="relative">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                  <div className="absolute inset-0 rounded-full bg-emerald-400 pulse-ring" />
+                </div>
+                <h2 className="text-white/80 font-medium" style={{ fontFamily: "'Outfit', sans-serif" }}>Live Transcription</h2>
+                <span className="text-white/30 text-xs ml-auto">Source audio</span>
+              </div>
+              <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
+                {transcriptHistory.map((text, idx) => (
+                  <div
+                    key={idx}
+                    className="text-sm text-white/80 bg-white/[0.02] rounded-xl p-4 border border-white/[0.05] hover:bg-white/[0.04] transition-colors"
+                  >
+                    {text}
+                  </div>
+                ))}
+              </div>
+              <p className="text-white/30 text-xs mt-3">
+                Showing last {transcriptHistory.length} utterance{transcriptHistory.length !== 1 ? 's' : ''}
+              </p>
+            </div>
+          )}
+
+          {/* Error Display */}
+          {hasError && (
+            <div className={`${glassPanel} p-4 mt-6 border-red-500/30`}>
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-red-300 text-sm font-medium mb-1">Connection Error</p>
+                  <p className="text-red-300/70 text-sm">
+                    {status.includes('Token failed') ?
+                      'Failed to get Azure Speech token. Check SPEECH_KEY and SPEECH_REGION.' :
+                      status.replace('Error: ', '')}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      )}
-      </div>
-    </main>
+      </main>
+    </>
   )
 }
