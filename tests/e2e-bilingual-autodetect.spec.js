@@ -34,7 +34,7 @@ test.describe('Bilingual Auto-Detection Pipeline Test', () => {
     };
 
     // Launch browser with microphone permission
-    const browser = await chromium.launch({ headless: false }); // Show browser
+    const browser = await chromium.launch({ headless: true }); // Headless for WSL2
     const speakerContext = await browser.newContext({
       permissions: ['microphone'],
       bypassCSP: true

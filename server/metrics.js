@@ -52,6 +52,40 @@ const wsClientsGauge = new client.Gauge({
   labelNames: ['room', 'role']
 });
 
+// STT Metrics
+const sttTtftHistogram = new client.Histogram({
+  name: 'polyglot_rt_stt_ttft_seconds',
+  help: 'Time to first token (soft patch) in seconds.',
+  labelNames: ['room', 'provider'],
+  buckets: [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5]
+});
+
+const sttTtfcHistogram = new client.Histogram({
+  name: 'polyglot_rt_stt_ttfc_seconds',
+  help: 'Time to first commit (hard patch) in seconds.',
+  labelNames: ['room', 'provider'],
+  buckets: [0.5, 1, 1.5, 2, 3, 4, 5, 7, 10]
+});
+
+const sttLatencyHistogram = new client.Histogram({
+  name: 'polyglot_rt_stt_latency_seconds',
+  help: 'STT end-to-end latency per patch in seconds.',
+  labelNames: ['room', 'provider', 'stage'],
+  buckets: [0.1, 0.25, 0.5, 1, 2, 3, 5]
+});
+
+const sttSessionCounter = new client.Counter({
+  name: 'polyglot_rt_stt_sessions_total',
+  help: 'Total STT sessions created.',
+  labelNames: ['room', 'provider']
+});
+
+const sttFallbackCounter = new client.Counter({
+  name: 'polyglot_rt_stt_fallback_total',
+  help: 'STT provider fallback events.',
+  labelNames: ['primary', 'fallback']
+});
+
 const requestDuration = new client.Histogram({
   name: 'polyglot_rt_http_duration_seconds',
   help: 'HTTP request duration.',
@@ -99,6 +133,27 @@ function recordWatchdogTrigger(room) {
   watchdogCounter.inc({ room });
 }
 
+// STT metric helpers
+function observeSttTtft(room, provider, seconds) {
+  sttTtftHistogram.observe({ room, provider }, seconds);
+}
+
+function observeSttTtfc(room, provider, seconds) {
+  sttTtfcHistogram.observe({ room, provider }, seconds);
+}
+
+function observeSttLatency(room, provider, stage, seconds) {
+  sttLatencyHistogram.observe({ room, provider, stage }, seconds);
+}
+
+function recordSttSession(room, provider) {
+  sttSessionCounter.inc({ room, provider });
+}
+
+function recordSttFallback(primary, fallback) {
+  sttFallbackCounter.inc({ primary, fallback });
+}
+
 async function sendMetrics(req, res) {
   res.setHeader('Content-Type', client.register.contentType);
   res.send(await client.register.metrics());
@@ -114,6 +169,12 @@ module.exports = {
   recordTtsEvent,
   trackWsConnection,
   recordWatchdogTrigger,
+  // STT metrics
+  observeSttTtft,
+  observeSttTtfc,
+  observeSttLatency,
+  recordSttSession,
+  recordSttFallback,
   sendMetrics,
   register: client.register
 };

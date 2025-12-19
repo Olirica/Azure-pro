@@ -8,6 +8,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_TRANSLATE_MODEL = process.env.OPENAI_TRANSLATE_MODEL || 'gpt-4o-mini';
 const OPENAI_TRANSLATE_ENDPOINT =
   process.env.OPENAI_TRANSLATE_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
+const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === 'true';
 
 // Startup logging to verify OpenAI configuration
 console.log('[translator] OpenAI Configuration:', {
@@ -193,19 +194,62 @@ function createTranslator({ logger, metrics, observeLatency }) {
         return [];
       }
 
+      // Filter out same-language targets to avoid unnecessary API calls
+      const fromBase = (fromLang || '').split('-')[0].toLowerCase();
+      const sameLangTargets = [];
+      const diffLangTargets = [];
+      for (const lang of targetLangs) {
+        const toBase = (lang || '').split('-')[0].toLowerCase();
+        if (fromBase && toBase && fromBase === toBase) {
+          sameLangTargets.push(lang);
+        } else {
+          diffLangTargets.push(lang);
+        }
+      }
+
+      // Debug: log incoming translation request
+      if (DEBUG_TRANSLATION) {
+        logger.info({
+          component: 'translator-debug',
+          roomId,
+          fromLang,
+          targetLangs,
+          textPreview: trimmed.substring(0, 100),
+          sameLangTargets,
+          diffLangTargets
+        }, 'Translation request received');
+      }
+
+      // Build pass-through results for same-language targets
+      const sameLangResults = sameLangTargets.map((lang) => {
+        logger.info({ component: 'translator', roomId, lang, fromLang }, 'Skipping same-language translation');
+        return {
+          lang,
+          text: trimmed,
+          srcSentLen: [trimmed.length],
+          transSentLen: [trimmed.length],
+          provider: 'passthrough'
+        };
+      });
+
+      // If all targets are same-language, return early
+      if (diffLangTargets.length === 0) {
+        return sameLangResults;
+      }
+
       // Try OpenAI first if configured as primary provider
       if (TRANSLATOR_PROVIDER === 'openai') {
         const openaiTranslations = await translateWithOpenAI({
           roomId,
           text: trimmed,
           fromLang,
-          targetLangs,
+          targetLangs: diffLangTargets,
           contextTexts,
           logger,
           metrics
         });
         if (openaiTranslations) {
-          return openaiTranslations.map(t => ({ ...t, provider: 'openai' }));
+          return [...sameLangResults, ...openaiTranslations.map(t => ({ ...t, provider: 'openai' }))];
         }
         // Fall through to Azure if OpenAI fails
         logger.warn(
@@ -230,7 +274,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
         params.set('profanityMarker', PROFANITY_MARKER);
       }
 
-      for (const lang of targetLangs) {
+      for (const lang of diffLangTargets) {
         params.append('to', lang);
       }
 
@@ -251,11 +295,11 @@ function createTranslator({ logger, metrics, observeLatency }) {
         const elapsedNs = Number(process.hrtime.bigint() - start);
         const elapsedSeconds = elapsedNs / 1e9;
         if (typeof observeLatency === 'function') {
-          for (const lang of targetLangs) {
+          for (const lang of diffLangTargets) {
             observeLatency(roomId, lang, elapsedSeconds);
           }
         } else if (metrics?.observeTranslationLatency) {
-          for (const lang of targetLangs) {
+          for (const lang of diffLangTargets) {
             metrics.observeTranslationLatency(roomId, lang, elapsedSeconds);
           }
         }
@@ -264,7 +308,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
         // We only want the LAST entry (current segment), context is discarded
         const entry = Array.isArray(data) ? data[data.length - 1] : undefined;
         const targetMap = new Map();
-        for (const lang of targetLangs) {
+        for (const lang of diffLangTargets) {
           const lower = lang.toLowerCase();
           targetMap.set(lower, lang);
           const base = lower.split('-')[0];
@@ -278,13 +322,13 @@ function createTranslator({ logger, metrics, observeLatency }) {
             'Unexpected translator response structure.'
           );
           metrics?.observeTranslator?.(roomId, 'unknown', 'malformed');
-          return [];
+          return sameLangResults;
         }
 
-        return entry.translations
+        const azureResults = entry.translations
           .map((translation) => {
             const toLower = (translation.to || '').toLowerCase();
-            const mappedLang = targetMap.get(toLower) || translation.to || targetLangs[0];
+            const mappedLang = targetMap.get(toLower) || translation.to || diffLangTargets[0];
             const sentLen = translation.sentLen || {};
             metrics?.observeTranslator?.(roomId, mappedLang, 'ok');
             return {
@@ -296,6 +340,7 @@ function createTranslator({ logger, metrics, observeLatency }) {
             };
           })
           .filter((translation) => Boolean(translation.lang));
+        return [...sameLangResults, ...azureResults];
       } catch (err) {
         const elapsedNsErr = Number(process.hrtime.bigint() - start);
         const elapsedSecondsErr = elapsedNsErr / 1e9;
@@ -304,17 +349,17 @@ function createTranslator({ logger, metrics, observeLatency }) {
           'Translator request failed.'
         );
         if (typeof observeLatency === 'function') {
-          for (const lang of targetLangs) {
+          for (const lang of diffLangTargets) {
             observeLatency(roomId, lang, elapsedSecondsErr);
           }
         } else if (metrics?.observeTranslationLatency) {
-          for (const lang of targetLangs) {
+          for (const lang of diffLangTargets) {
             metrics.observeTranslationLatency(roomId, lang, elapsedSecondsErr);
           }
         }
         const outcome =
           err?.response?.status && err.response.status >= 500 ? 'server_error' : 'error';
-        for (const lang of targetLangs) {
+        for (const lang of diffLangTargets) {
           metrics?.observeTranslator?.(roomId, lang, outcome);
         }
 
@@ -322,23 +367,23 @@ function createTranslator({ logger, metrics, observeLatency }) {
           roomId,
           text: trimmed,
           fromLang,
-          targetLangs,
+          targetLangs: diffLangTargets,
           contextTexts,
           logger,
           metrics
         });
         if (fallbackTranslations) {
-          return fallbackTranslations.map(t => ({ ...t, provider: t.provider || 'openai' }));
+          return [...sameLangResults, ...fallbackTranslations.map(t => ({ ...t, provider: t.provider || 'openai' }))];
         }
 
-        return targetLangs.map((lang) => ({
+        return [...sameLangResults, ...diffLangTargets.map((lang) => ({
           lang,
           text: trimmed,
           srcSentLen: [trimmed.length],
           transSentLen: [trimmed.length],
           error: true,
           provider: 'none'
-        }));
+        }))];
       }
     }
   };

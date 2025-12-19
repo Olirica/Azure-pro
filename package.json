@@ -18,7 +18,6 @@
   "dependencies": {
     "@deepgram/sdk": "^4.11.2",
     "axios": "^1.12.2",
-    "compromise": "^14.14.4",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "ioredis": "^5.8.1",

@@ -20,6 +20,8 @@ const DEEPGRAM_SMART_FORMAT = process.env.DEEPGRAM_SMART_FORMAT !== 'false'
 const DEEPGRAM_UTTERANCE_END_MS = parseInt(process.env.DEEPGRAM_UTTERANCE_END_MS || '1000', 10)
 const DEEPGRAM_VAD_EVENTS = process.env.DEEPGRAM_VAD_EVENTS !== 'false'
 const DEEPGRAM_INTERIM_RESULTS = process.env.DEEPGRAM_INTERIM_RESULTS !== 'false'
+const DEEPGRAM_DETECT_ENTITIES = process.env.DEEPGRAM_DETECT_ENTITIES === 'true'
+const DEEPGRAM_DIARIZE = process.env.DEEPGRAM_DIARIZE === 'true'
 
 // Language code mapping: Deepgram short codes → full BCP-47 codes
 const LANG_CODE_MAP = {
@@ -109,6 +111,9 @@ class SttSession {
     // Track pending audio during connection
     this.pendingAudio = []
     this.maxPendingAudio = 50  // Max buffered chunks during connection
+
+    // Track feature limitations/degradations
+    this.limitations = []
   }
 
   /**
@@ -170,6 +175,27 @@ class SttSession {
   }
 
   /**
+   * Extract dominant language from word-level language tags (multilingual mode)
+   */
+  extractLanguageFromWords(words) {
+    if (!words?.length) return null
+
+    const langCounts = {}
+    for (const word of words) {
+      if (word.language) {
+        langCounts[word.language] = (langCounts[word.language] || 0) + 1
+      }
+    }
+
+    if (Object.keys(langCounts).length === 0) return null
+
+    // Return the most frequent language
+    const dominant = Object.entries(langCounts)
+      .sort((a, b) => b[1] - a[1])[0]?.[0]
+    return dominant
+  }
+
+  /**
    * Build a patch from Deepgram result
    */
   buildPatch(result, isFinal) {
@@ -188,10 +214,25 @@ class SttSession {
       }
     }
 
-    // Determine language
-    const detectedLang = mapLangCode(result.channel?.detected_language)
+    // Determine language - prefer word-level detection (multilingual mode)
+    let detectedLang = this.extractLanguageFromWords(words)
+    const detectionSource = detectedLang ? 'word-level' : 'fallback'
+    if (!detectedLang) {
+      // Fall back to channel-level detection or languages array
+      detectedLang = result.channel?.detected_language
+      if (!detectedLang && alt.languages?.length > 0) {
+        detectedLang = alt.languages[0]  // First language is most frequent
+      }
+    }
+    detectedLang = mapLangCode(detectedLang)
+
     const fallback = this.sourceLang !== 'auto' ? this.sourceLang : 'en-US'
     const stableLang = this.getStableLanguage(detectedLang, fallback)
+
+    // Log language detection in multilingual mode
+    if (this.isAutoDetect && isFinal && detectedLang) {
+      this.logger.debug(`[SttSession:${this.roomId}] Language: ${detectedLang} (${detectionSource}) → stable: ${stableLang}`)
+    }
 
     if (!this.currentLang) {
       this.currentLang = stableLang
@@ -211,9 +252,35 @@ class SttSession {
 
     // Set ttsFinal for finals
     if (isFinal) {
-      // Check if Deepgram marked this as speech_final (end of utterance)
       const isSpeechFinal = result.speech_final === true
       patch.ttsFinal = isSpeechFinal
+    }
+
+    // Extract entities (only present in final results when detect_entities=true)
+    if (isFinal && alt.entities?.length > 0) {
+      patch.entities = alt.entities.map(e => ({
+        label: e.label,
+        value: e.value,
+        confidence: e.confidence,
+        startWord: e.start_word,
+        endWord: e.end_word
+      }))
+      this.logger.debug(`[SttSession:${this.roomId}] Entities detected: ${JSON.stringify(patch.entities)}`)
+    }
+
+    // Extract speaker info (when diarize=true)
+    if (DEEPGRAM_DIARIZE && words.length > 0 && words[0].speaker !== undefined) {
+      // Get dominant speaker for this segment
+      const speakerCounts = {}
+      for (const word of words) {
+        const spk = word.speaker
+        speakerCounts[spk] = (speakerCounts[spk] || 0) + 1
+      }
+      const dominantSpeaker = Object.entries(speakerCounts)
+        .sort((a, b) => b[1] - a[1])[0]?.[0]
+      if (dominantSpeaker !== undefined) {
+        patch.speaker = parseInt(dominantSpeaker, 10)
+      }
     }
 
     return patch
@@ -236,7 +303,9 @@ class SttSession {
     this.logger.info(`[SttSession:${this.roomId}] Starting Deepgram connection`, {
       model: DEEPGRAM_MODEL,
       sourceLang: this.sourceLang,
-      isAutoDetect: this.isAutoDetect
+      isAutoDetect: this.isAutoDetect,
+      detectEntities: DEEPGRAM_DETECT_ENTITIES,
+      diarize: DEEPGRAM_DIARIZE
     })
 
     try {
@@ -252,16 +321,29 @@ class SttSession {
         vad_events: DEEPGRAM_VAD_EVENTS,
         encoding: 'linear16',
         sample_rate: 16000,
-        channels: 1
+        channels: 1,
+        // Entity detection - extracts names, orgs, phone numbers, etc.
+        detect_entities: DEEPGRAM_DETECT_ENTITIES,
+        // Speaker diarization - identifies speaker changes
+        diarize: DEEPGRAM_DIARIZE
       }
 
       // Language configuration
-      if (this.isAutoDetect) {
-        options.detect_language = true
-      } else {
-        // Map full code to Deepgram format
-        const dgLang = this.sourceLang.split('-')[0]  // 'en-US' → 'en'
+      if (this.isAutoDetect && this.autoDetectLangs.length >= 2) {
+        // Use Nova's multilingual code-switching mode for bilingual/multilingual rooms
+        // This provides word-level language detection for streaming
+        options.language = 'multi'
+        options.endpointing = 100  // Recommended for code-switching
+        this.logger.info(`[SttSession:${this.roomId}] Multilingual mode enabled (language=multi) for: ${this.autoDetectLangs.join(', ')}`)
+      } else if (this.isAutoDetect && this.autoDetectLangs.length === 1) {
+        const dgLang = this.autoDetectLangs[0].split('-')[0]
         options.language = dgLang
+        this.logger.info(`[SttSession:${this.roomId}] Single auto-detect language: ${dgLang}`)
+      } else if (!this.isAutoDetect) {
+        const dgLang = this.sourceLang.split('-')[0]
+        options.language = dgLang
+      } else {
+        options.language = 'en'
       }
 
       // Add keywords/phrase hints if available
@@ -284,6 +366,9 @@ class SttSession {
       })
 
       this.connection.on(LiveTranscriptionEvents.Transcript, async (data) => {
+        const alt = data.channel?.alternatives?.[0]
+        const text = alt?.transcript?.trim() || ''
+        this.logger.info(`[SttSession:${this.roomId}] Transcript event: is_final=${data.is_final}, text="${text.substring(0, 50)}"`)
         await this.handleTranscript(data)
       })
 
@@ -297,7 +382,7 @@ class SttSession {
       })
 
       this.connection.on(LiveTranscriptionEvents.Error, (err) => {
-        this.logger.error(`[SttSession:${this.roomId}] Deepgram error:`, err)
+        this.logger.error({ err, errMessage: err?.message, errCode: err?.code }, `[SttSession:${this.roomId}] Deepgram error`)
         // TODO: Implement Azure fallback here
       })
 
@@ -451,6 +536,35 @@ class SttSession {
       return
     }
 
+    // Track audio stats
+    if (!this.audioStats) {
+      this.audioStats = { chunks: 0, bytes: 0, lastLog: Date.now(), maxAmplitude: 0 }
+    }
+    this.audioStats.chunks++
+    this.audioStats.bytes += audioData.length
+
+    // Analyze first chunk to verify audio format
+    if (this.audioStats.chunks === 1) {
+      const samples = new Int16Array(audioData.buffer, audioData.byteOffset, Math.min(100, audioData.length / 2))
+      const nonZero = Array.from(samples).filter(s => s !== 0).length
+      this.logger.info(`[SttSession:${this.roomId}] First chunk: ${audioData.length} bytes, first 10 samples: [${Array.from(samples.slice(0, 10)).join(',')}], non-zero: ${nonZero}/100`)
+    }
+
+    // Track max amplitude to detect silence
+    const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.length / 2)
+    for (let i = 0; i < samples.length; i++) {
+      const abs = Math.abs(samples[i])
+      if (abs > this.audioStats.maxAmplitude) this.audioStats.maxAmplitude = abs
+    }
+
+    // Log audio flow every second
+    const now = Date.now()
+    if (now - this.audioStats.lastLog >= 1000) {
+      this.logger.info(`[SttSession:${this.roomId}] Audio: ${this.audioStats.chunks} chunks, ${this.audioStats.bytes} bytes, maxAmp: ${this.audioStats.maxAmplitude}, connected: ${this.isConnected}`)
+      this.audioStats.lastLog = now
+      this.audioStats.maxAmplitude = 0  // Reset for next second
+    }
+
     if (!this.isConnected) {
       // Buffer audio during connection
       if (this.pendingAudio.length < this.maxPendingAudio) {
@@ -501,6 +615,13 @@ class SttSession {
     }
 
     this.deepgram = null
+  }
+
+  /**
+   * Get any feature limitations/degradations
+   */
+  getLimitations() {
+    return this.limitations
   }
 
   /**
