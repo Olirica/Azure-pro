@@ -1,9 +1,32 @@
 node_modules/
 coverage/
 dist/
+client/dist/
 .env
 .DS_Store
 *.log
+*.tar.gz
+
+# Test artifacts
 playwright-report/
 test-results/
+*-test.json
+*-output*.json
+*-metrics.json
+tests/*.wav
+tests/*.raw
+
+# Local config
+.claude/settings.local.json
+.mcp.json
+.playwright-mcp/
 nul
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/

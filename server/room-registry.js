@@ -107,6 +107,7 @@ function createRoomRegistry({ logger, redisClient } = {}) {
       ? input.defaultTargetLangs.map((s) => String(s).trim()).filter(Boolean)
       : [];
     const title = (input.title || '').trim();
+    const sttPrompt = (input.sttPrompt || '').trim();
     const speakerCode = input.speakerCode || null;
     const listenerCode = input.listenerCode || null;
     return {
@@ -117,6 +118,7 @@ function createRoomRegistry({ logger, redisClient } = {}) {
       sourceLang: srcLang,
       autoDetectLangs,
       defaultTargetLangs,
+      sttPrompt,
       speakerCode,
       listenerCode,
       createdAt: Number(input.createdAt || now),

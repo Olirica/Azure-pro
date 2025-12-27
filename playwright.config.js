@@ -22,7 +22,7 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
-        headless: false, // Show browser for visual debugging
+        headless: true, // Headless for WSL2 compatibility
         launchOptions: {
           args: [
             '--use-fake-ui-for-media-stream', // Auto-grant mic permissions

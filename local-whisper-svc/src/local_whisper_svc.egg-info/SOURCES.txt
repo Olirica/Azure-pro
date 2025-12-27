@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+src/local_whisper_svc/__init__.py
+src/local_whisper_svc/local_agreement.py
+src/local_whisper_svc/protocol.py
+src/local_whisper_svc/server.py
+src/local_whisper_svc/vad.py
+src/local_whisper_svc/whisper_engine.py
+src/local_whisper_svc.egg-info/PKG-INFO
+src/local_whisper_svc.egg-info/SOURCES.txt
+src/local_whisper_svc.egg-info/dependency_links.txt
+src/local_whisper_svc.egg-info/entry_points.txt
+src/local_whisper_svc.egg-info/requires.txt
+src/local_whisper_svc.egg-info/top_level.txt
+tests/test_local_agreement.py

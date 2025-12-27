@@ -1,8 +1,6 @@
 // Listener page for real-time translation captions
+// Aurora Glass Design System
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Button } from '../components/ui/button'
-import { Input } from '../components/ui/input'
-import { Label } from '../components/ui/label'
 import { LANGS } from '../data/languages'
 import { cn } from '../lib/utils'
 
@@ -33,6 +31,17 @@ function getRoomFromUrl(): string {
     return (r && r.trim()) ? r.trim().toLowerCase() : 'demo-room'
   } catch {
     return 'demo-room'
+  }
+}
+
+function getLangFromUrl(): string | null {
+  try {
+    if (typeof window === 'undefined') return null
+    const url = new URL(window.location.href)
+    const l = url.searchParams.get('lang')
+    return (l && l.trim()) ? l.trim() : null
+  } catch {
+    return null
   }
 }
 
@@ -75,13 +84,35 @@ type TtsEvent = {
   error?: string
 }
 
+// Aurora Glass Design System
+const glassPanel = "relative backdrop-blur-xl bg-white/[0.03] border border-white/[0.08] rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)]"
+const glassInput = "w-full bg-white/[0.03] backdrop-blur border border-white/[0.1] rounded-xl px-4 py-3 text-white/90 placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50 focus:ring-1 focus:ring-cyan-400/30 transition-all duration-200"
+const btnPrimary = "relative px-6 py-3 rounded-xl font-semibold text-sm tracking-wide transition-all duration-200 bg-gradient-to-br from-cyan-500/80 to-teal-600/80 text-white shadow-[0_4px_20px_rgba(20,184,166,0.3),inset_0_1px_0_rgba(255,255,255,0.2)] hover:shadow-[0_6px_24px_rgba(20,184,166,0.4),inset_0_1px_0_rgba(255,255,255,0.3)] hover:translate-y-[-1px] active:translate-y-[1px] active:shadow-[0_2px_12px_rgba(20,184,166,0.3),inset_0_1px_0_rgba(255,255,255,0.1)] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+const btnSecondary = "px-5 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 bg-white/[0.03] border border-white/[0.1] text-white/70 hover:bg-white/[0.06] hover:border-white/[0.15] hover:text-white/90 disabled:opacity-40 disabled:cursor-not-allowed"
+
+const StatusDot = ({ active, color = 'emerald' }: { active: boolean; color?: 'emerald' | 'amber' | 'cyan' }) => {
+  const colors = {
+    emerald: { bg: 'bg-emerald-400', glow: 'bg-emerald-400/20' },
+    amber: { bg: 'bg-amber-400', glow: 'bg-amber-400/20' },
+    cyan: { bg: 'bg-cyan-400', glow: 'bg-cyan-400/20' }
+  }
+  const c = colors[color]
+  return (
+    <div className={`relative w-2.5 h-2.5 rounded-full ${active ? c.bg : 'bg-white/20'}`}>
+      {active && <div className={`absolute inset-0 rounded-full ${c.bg} animate-ping opacity-50`} />}
+      {active && <div className={`absolute inset-[-3px] rounded-full ${c.glow} blur-sm`} />}
+    </div>
+  )
+}
+
 export function ListenerApp() {
   const PATCH_TTL_MS = 5 * 60 * 1000
   const [room, setRoom] = useState(getRoomFromUrl())
   const [roomInput, setRoomInput] = useState('')
   const [roomUnlocked, setRoomUnlocked] = useState(false)
   const [unlockError, setUnlockError] = useState('')
-  const [lang, setLang] = useState('fr-CA')
+  const urlLang = useRef(getLangFromUrl())
+  const [lang, setLang] = useState(getLangFromUrl() || 'fr-CA')
   const [tts, setTts] = useState(true)
   const [status, setStatus] = useState('Idle')
   const [roomMeta, setRoomMeta] = useState<any>(null)
@@ -101,6 +132,7 @@ export function ListenerApp() {
   const [ttsEvents, setTtsEvents] = useState<TtsEvent[]>([])
   const isPlayingRef = useRef(false)
   const [audioBlocked, setAudioBlocked] = useState(false)
+  const userDisconnectedRef = useRef(false)
 
   function playNextTts() {
     const el = audioRef.current
@@ -110,7 +142,6 @@ export function ListenerApp() {
       isPlayingRef.current = false
       return
     }
-    // Validate src before setting to avoid MEDIA_ELEMENT_ERROR
     if (!next.src || next.src.length < 20) {
       console.warn('[TTS] Skipping invalid/empty src:', next.src?.substring(0, 50))
       playNextTts()
@@ -144,7 +175,6 @@ export function ListenerApp() {
     try {
       const el = audioRef.current
       if (!el) return
-      // Try playing a silent data URI to satisfy gesture requirements
       const silent = 'data:audio/mp3;base64,/+MYxAAAAANIAAAAAExBTUUzLjk5LjIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
       el.src = silent
       await el.play().catch(() => {})
@@ -158,7 +188,6 @@ export function ListenerApp() {
     }
   }
 
-  // Batch patches per animation frame
   const patchBufferRef = useRef<Patch[]>([])
   const rafFlushRef = useRef<number | null>(null)
   function flushPatchBuffer() {
@@ -182,9 +211,8 @@ export function ListenerApp() {
   }
 
   const paragraphs = useMemo(() => {
-    // Collapse to the latest hard patch per root unit to avoid duplicate/revision noise
     const latestByRoot = new Map<string, Patch>()
-    const pendingSoft = new Map<string, Patch>() // soft preview until first hard
+    const pendingSoft = new Map<string, Patch>()
     for (const p of patches.values()) {
       const root = rootFromUnitId(p.unitId)
       if (p.stage === 'hard') {
@@ -192,9 +220,8 @@ export function ListenerApp() {
         if (!prev || (p.version ?? 0) > (prev.version ?? 0) || (p.receivedAt ?? 0) > (prev.receivedAt ?? 0)) {
           latestByRoot.set(root, p)
         }
-        pendingSoft.delete(root) // hard arrived; drop soft preview
+        pendingSoft.delete(root)
       } else {
-        // only keep soft if no hard yet
         if (!latestByRoot.has(root)) {
           const prev = pendingSoft.get(root)
           if (!prev || (p.version ?? 0) >= (prev.version ?? 0)) {
@@ -204,13 +231,8 @@ export function ListenerApp() {
       }
     }
 
-    // Combine hards + pending soft previews
     const combined: Patch[] = [...latestByRoot.values(), ...pendingSoft.values()]
-
-    // Sort by arrival time
-    const sorted = combined.sort(
-      (a, b) => (a.receivedAt || 0) - (b.receivedAt || 0)
-    )
+    const sorted = combined.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0))
 
     const acc: Paragraph[] = []
     let lastText = ''
@@ -221,7 +243,6 @@ export function ListenerApp() {
       if (!text) continue
       const now = patch.receivedAt || Date.now()
 
-      // Drop rapid duplicates of the exact same text (server hiccups)
       if (text === lastText && now - lastAt < 2000) {
         continue
       }
@@ -256,18 +277,15 @@ export function ListenerApp() {
       lastAt = now
     }
 
-    return acc.slice(-20).reverse() // newest first, cap length
+    return acc.slice(-20).reverse()
   }, [patches])
 
-  // Set page title
-  useEffect(() => { document.title = 'Simo' }, [])
+  useEffect(() => { document.title = 'Simo · Listener' }, [])
 
-  // Keep ref in sync for message handlers
   useEffect(() => {
     patchesRef.current = patches
   }, [patches])
 
-  // Debug toggle via ?debug=true
   const debugMode = useMemo(() => {
     try { return new URLSearchParams(window.location.search).get('debug') === 'true' } catch { return false }
   }, [])
@@ -277,7 +295,6 @@ export function ListenerApp() {
     return l?.name || code
   }
 
-  // Setup audio element
   useEffect(() => {
     if (audioRef.current) return
     const audio = new Audio()
@@ -302,7 +319,6 @@ export function ListenerApp() {
     })
   }, [])
 
-  // Prune old patches from view to avoid stale paragraphs
   useEffect(() => {
     const id = setInterval(() => {
       setPatches((prev) => {
@@ -319,7 +335,6 @@ export function ListenerApp() {
     return () => clearInterval(id)
   }, [])
 
-  // Enumerate audio output devices
   useEffect(() => {
     async function getDevices() {
       try {
@@ -336,7 +351,6 @@ export function ListenerApp() {
     getDevices()
   }, [])
 
-  // Update audio output device when selected
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -355,7 +369,6 @@ export function ListenerApp() {
       })
   }, [selectedDeviceId])
 
-  // Close device selector when clicking outside
   useEffect(() => {
     if (!showDeviceSelector) return
     const handler = (e: MouseEvent) => {
@@ -368,15 +381,13 @@ export function ListenerApp() {
     return () => document.removeEventListener('click', handler)
   }, [showDeviceSelector])
 
-  // Reconnect automatically when translation language changes
   useEffect(() => {
     if (!roomUnlocked) return
     if (status === 'Connected' || status === 'Connecting') {
       disconnect()
     }
-  }, [lang, roomUnlocked])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lang, roomUnlocked])
 
-  // Unlock room with access code
   async function unlockRoom(e: React.FormEvent) {
     e.preventDefault()
     setUnlockError('')
@@ -396,7 +407,8 @@ export function ListenerApp() {
       setRoom(code)
       setRoomMeta(meta)
       setRoomUnlocked(true)
-      if (Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
+      // Only set lang from room defaults if not specified in URL
+      if (!urlLang.current && Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
         setLang(meta.defaultTargetLangs[0])
       }
     } catch (err) {
@@ -404,7 +416,6 @@ export function ListenerApp() {
     }
   }
 
-  // Fetch room meta
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -416,7 +427,8 @@ export function ListenerApp() {
           const meta = body.room
           setRoomMeta(meta)
           setRoomUnlocked(true)
-          if (Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
+          // Only set lang from room defaults if not specified in URL
+          if (!urlLang.current && Array.isArray(meta.defaultTargetLangs) && meta.defaultTargetLangs.length) {
             setLang(meta.defaultTargetLangs[0])
           }
         }
@@ -426,7 +438,6 @@ export function ListenerApp() {
     return () => { cancelled = true }
   }, [room])
 
-  // Auto-connect immediately when ready
   const lastAutoConnectKeyRef = useRef<string | null>(null)
   useEffect(() => {
     if (roomMeta && lang && status === 'Idle') {
@@ -438,20 +449,20 @@ export function ListenerApp() {
     }
   }, [roomMeta, lang, status])
 
-  // Ensure language changes always reopen the socket with the new lang
   useEffect(() => {
     if (!roomUnlocked) return
+    if (userDisconnectedRef.current) return  // Don't auto-reconnect after user disconnect
     lastAutoConnectKeyRef.current = null
     if (status === 'Connected' || status === 'Connecting') {
-      disconnect()
+      disconnect(false)  // Not user-initiated
       setTimeout(() => connect(), 60)
     } else if (status === 'Idle') {
       connect()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang, roomUnlocked])
 
   function connect() {
+    userDisconnectedRef.current = false  // Allow auto-reconnect again
     try { wsRef.current?.close() } catch {}
     patchBufferRef.current = []
     if (rafFlushRef.current != null) {
@@ -482,7 +493,6 @@ export function ListenerApp() {
         if (msg?.type === 'patch' && msg?.payload) {
           const payload = msg.payload
 
-          // Suppression patches hide a segment that was merged into a previous one
           if (payload.op === 'suppress' && payload.unitId) {
             patchBufferRef.current = patchBufferRef.current.filter(p => p.unitId !== payload.unitId)
             setPatches(prev => {
@@ -506,7 +516,6 @@ export function ListenerApp() {
             return
           }
           const base = (code?: string) => (code ? code.split('-')[0].toLowerCase() : '')
-          // Filter out patches for other languages
           if (p.targetLang && p.targetLang !== lang) {
             return
           }
@@ -560,7 +569,8 @@ export function ListenerApp() {
     }
   }
 
-  function disconnect() {
+  function disconnect(userInitiated = true) {
+    if (userInitiated) userDisconnectedRef.current = true
     try { wsRef.current?.close() } catch {}
     wsRef.current = null
     lastAutoConnectKeyRef.current = null
@@ -569,7 +579,8 @@ export function ListenerApp() {
       cancelAnimationFrame(rafFlushRef.current)
       rafFlushRef.current = null
     }
-    setPatches(new Map())
+    // Don't clear patches on user disconnect - keep history visible
+    if (!userInitiated) setPatches(new Map())
     ttsQueueRef.current = []
     setTtsEvents([])
     isPlayingRef.current = false
@@ -580,223 +591,235 @@ export function ListenerApp() {
     setStatus('Idle')
   }
 
-  // Access gate - show unlock screen if not authenticated
+  // Access gate - Aurora Glass unlock screen
   if (!roomUnlocked) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6">
-        <div className="w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-violet-500/20 to-pink-500/20 border border-violet-500/30 flex items-center justify-center">
-              <svg className="w-8 h-8 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-              </svg>
+      <>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap');
+          @keyframes aurora { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+          @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+          .aurora-bg { background: linear-gradient(-45deg, #0a0f1c, #1a1f3c, #0f172a, #1e1b4b, #0c1929); background-size: 400% 400%; animation: aurora 20s ease infinite; }
+          .font-display { font-family: 'Outfit', system-ui, sans-serif; }
+          .font-body { font-family: 'DM Sans', system-ui, sans-serif; }
+        `}</style>
+        <main className="aurora-bg min-h-screen flex items-center justify-center p-6 font-body text-white">
+          <div className="w-full max-w-md">
+            <div className="text-center mb-8">
+              <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-gradient-to-br from-violet-500/20 to-pink-500/20 border border-violet-400/30 flex items-center justify-center shadow-[0_0_40px_rgba(139,92,246,0.3)] animate-[float_4s_ease-in-out_infinite]">
+                <svg className="w-10 h-10 text-violet-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                </svg>
+              </div>
+              <h1 className="font-display text-4xl font-semibold text-white mb-2 tracking-tight">Listener Access</h1>
+              <p className="text-white/50 text-lg">Enter your room code to begin</p>
             </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-violet-400 to-pink-400 bg-clip-text text-transparent mb-2">Listener Access</h1>
-            <p className="text-slate-400">Enter your room code to begin</p>
-          </div>
-          <form onSubmit={unlockRoom} className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-8 shadow-2xl space-y-4">
-            <div>
-              <Label className="mb-2 block text-slate-300">Room Code</Label>
-              <Input
-                value={roomInput}
-                onChange={(e) => setRoomInput(e.target.value)}
-                placeholder="Enter your room code"
-                className="bg-slate-900/50 border-slate-700 focus:border-violet-500 transition-colors text-center text-lg tracking-wider"
-                autoFocus
-              />
-            </div>
-            <div className="pt-2">
-              <Button type="submit" className="w-full bg-gradient-to-r from-violet-500 to-pink-500 hover:from-violet-600 hover:to-pink-600 transition-all">
+            <form onSubmit={unlockRoom} className={`${glassPanel} p-8 space-y-6`}>
+              <div>
+                <label className="block text-sm font-medium text-white/60 mb-2">Room Code</label>
+                <input
+                  value={roomInput}
+                  onChange={(e) => setRoomInput(e.target.value)}
+                  placeholder="Enter your room code"
+                  className={`${glassInput} text-center text-lg tracking-widest uppercase`}
+                  autoFocus
+                />
+              </div>
+              <button type="submit" className={`${btnPrimary} w-full`}>
                 Access Room
-              </Button>
+              </button>
               {unlockError && (
-                <p className="text-sm mt-3 text-center text-red-400">{unlockError}</p>
+                <p className="text-sm text-center text-rose-400">{unlockError}</p>
               )}
-            </div>
-          </form>
-        </div>
-      </main>
+            </form>
+          </div>
+        </main>
+      </>
     )
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 px-4 py-8">
-      <div className="container mx-auto max-w-4xl">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-violet-400 to-pink-400 bg-clip-text text-transparent mb-2">Listener</h1>
-            <p className="text-slate-400">Receive live translations in real-time</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-xs text-slate-500 mb-1">Room</div>
-              <code className="text-sm text-slate-300 bg-slate-800/50 px-3 py-1 rounded-lg border border-slate-700/50">{room}</code>
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap');
+        @keyframes aurora { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+        .aurora-bg { background: linear-gradient(-45deg, #0a0f1c, #1a1f3c, #0f172a, #1e1b4b, #0c1929); background-size: 400% 400%; animation: aurora 20s ease infinite; }
+        .font-display { font-family: 'Outfit', system-ui, sans-serif; }
+        .font-body { font-family: 'DM Sans', system-ui, sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+      `}</style>
+      <main className="aurora-bg min-h-screen px-4 py-8 font-body text-white">
+        <div className="container mx-auto max-w-4xl">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <h1 className="font-display text-4xl font-semibold text-white mb-1 tracking-tight">Listener</h1>
+              <p className="text-white/40">Receive live translations in real-time</p>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className={cn(
-              'flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm',
-              status === 'Connected' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' :
-              status === 'Connecting' ? 'border-blue-500/50 bg-blue-500/10 text-blue-400' :
-              status === 'Error' ? 'border-red-500/50 bg-red-500/10 text-red-400' :
-              'border-slate-600 bg-slate-800/50 text-slate-400'
-            )}>
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <div className="text-xs text-white/30 mb-1">Room</div>
+                <code className="text-sm text-cyan-300/80 bg-cyan-400/10 px-3 py-1.5 rounded-lg border border-cyan-400/20">{room}</code>
+              </div>
               <div className={cn(
-                'w-2 h-2 rounded-full',
-                status === 'Connected' ? 'bg-emerald-400 animate-pulse' :
-                status === 'Connecting' ? 'bg-blue-400 animate-pulse' :
-                status === 'Error' ? 'bg-red-400' :
-                'bg-slate-600'
-              )}></div>
-              <span>{status}</span>
-            </div>
-          <div className="relative" data-device-selector>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setShowDeviceSelector(!showDeviceSelector)}
-              title="Audio output settings"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </Button>
-            {showDeviceSelector && (
-              <div className="absolute right-0 top-full mt-2 w-64 rounded-md border border-slate-600 bg-slate-900/95 shadow-lg z-10 p-3">
-                <div className="mb-2 text-sm font-medium">Audio Output Device</div>
-                <select
-                  value={selectedDeviceId}
-                  onChange={(e) => setSelectedDeviceId(e.target.value)}
-                  className="w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm [&>option]:bg-slate-800"
+                'flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-medium',
+                status === 'Connected' ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300' :
+                status === 'Connecting' ? 'border-cyan-400/30 bg-cyan-400/10 text-cyan-300' :
+                status === 'Error' ? 'border-rose-400/30 bg-rose-400/10 text-rose-300' :
+                'border-white/10 bg-white/[0.03] text-white/50'
+              )}>
+                <StatusDot active={status === 'Connected'} color={status === 'Connected' ? 'emerald' : status === 'Connecting' ? 'cyan' : 'emerald'} />
+                <span>{status}</span>
+              </div>
+              <div className="relative" data-device-selector>
+                <button
+                  type="button"
+                  onClick={() => setShowDeviceSelector(!showDeviceSelector)}
+                  className={btnSecondary}
+                  title="Audio output settings"
                 >
-                  {audioDevices.map(device => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                      {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
-                    </option>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </button>
+                {showDeviceSelector && (
+                  <div className={`${glassPanel} absolute right-0 top-full mt-2 w-72 p-4 z-10`}>
+                    <div className="mb-3 text-sm font-medium text-white/80">Audio Output Device</div>
+                    <select
+                      value={selectedDeviceId}
+                      onChange={(e) => setSelectedDeviceId(e.target.value)}
+                      className={glassInput}
+                    >
+                      {audioDevices.map(device => (
+                        <option key={device.deviceId} value={device.deviceId} className="bg-slate-900">
+                          {device.label || `Device ${device.deviceId.substring(0, 8)}...`}
+                        </option>
+                      ))}
+                      <option value="" className="bg-slate-900">System default</option>
+                    </select>
+                    {audioDevices.length === 0 && (
+                      <p className="text-xs text-white/30 mt-2">No audio output devices found</p>
+                    )}
+                    {audioOutputError && (
+                      <p className="text-xs text-amber-400/80 mt-2">{audioOutputError}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className={`${glassPanel} p-6 mb-6`}>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              <div>
+                <label className="block text-sm font-medium text-white/60 mb-2">Translation Language</label>
+                <select
+                  className={glassInput}
+                  value={lang}
+                  onChange={(e)=> setLang(e.target.value)}
+                >
+                  {(roomMeta?.defaultTargetLangs && Array.isArray(roomMeta.defaultTargetLangs) && roomMeta.defaultTargetLangs.length > 0
+                    ? LANGS.filter(l => roomMeta.defaultTargetLangs.includes(l.code))
+                    : LANGS
+                  ).map(l => (
+                    <option key={l.code} value={l.code} className="bg-slate-900">{l.name}</option>
                   ))}
-                  <option value="">System default</option>
                 </select>
-                {audioDevices.length === 0 && (
-                  <p className="text-xs text-slate-500 mt-2">No audio output devices found</p>
-                )}
-                {audioOutputError && (
-                  <p className="text-xs text-amber-400 mt-2">{audioOutputError}</p>
-                )}
               </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-6 shadow-xl mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-          <div>
-            <Label className="mb-2 block text-slate-300">Translation Language</Label>
-            <select
-              className="flex h-10 w-full rounded-lg border border-slate-700 bg-slate-900/50 text-slate-100 px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:border-violet-500 [&>option]:bg-slate-800"
-              value={lang}
-              onChange={(e)=> setLang(e.target.value)}
-            >
-              {(roomMeta?.defaultTargetLangs && Array.isArray(roomMeta.defaultTargetLangs) && roomMeta.defaultTargetLangs.length > 0
-                ? LANGS.filter(l => roomMeta.defaultTargetLangs.includes(l.code))
-                : LANGS
-              ).map(l => (
-                <option key={l.code} value={l.code}>{l.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              id="tts"
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-700 bg-slate-900/50 text-violet-500 focus:ring-violet-500 focus:ring-offset-0"
-              checked={tts}
-              onChange={(e)=> setTts(e.target.checked)}
-            />
-            <Label htmlFor="tts" className="text-slate-300 cursor-pointer">Enable Text-to-Speech</Label>
-          </div>
-          <div className="flex items-center gap-2 justify-end">
-            {audioBlocked && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={unlockAudio}
-                className="border-amber-500 text-amber-200 hover:bg-amber-500/10"
-                title="Enable audio playback"
-              >
-                Enable audio
-              </Button>
-            )}
-            <Button
-              type="button"
-              onClick={connect}
-              disabled={status === 'Connected'}
-              className="bg-gradient-to-r from-violet-500 to-pink-500 hover:from-violet-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Connect
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={disconnect}
-              disabled={status !== 'Connected'}
-              className="border-slate-700 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Disconnect
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-slate-700/50 bg-slate-800/40 backdrop-blur-sm p-6 shadow-xl">
-        <div className="flex items-center gap-2 mb-4 pb-4 border-b border-slate-700/50">
-          <svg className="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-          </svg>
-          <h2 className="text-xl font-semibold text-slate-200">Live Captions</h2>
-          <span className="text-xs text-slate-500 ml-auto">{getLangName(lang)}</span>
-        </div>
-        <ul className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
-          {paragraphs.map(p => (
-            <li
-              key={p.id}
-              data-stage={p.stage}
-              className={cn(
-                'rounded-lg border p-4 transition-all hover:-translate-y-0.5 hover:shadow-lg/20',
-                p.stage === 'hard'
-                  ? 'border-slate-700/70 bg-slate-900/70'
-                  : 'border-amber-400/40 bg-amber-500/10'
-              )}
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <div className={cn(
-                  'h-2 w-2 rounded-full',
-                  p.stage === 'hard' ? 'bg-emerald-400' : 'bg-amber-300 animate-pulse'
-                )} />
-                <span className="text-xs text-slate-600 ml-auto">
-                  {p.updatedAt ? new Date(p.updatedAt).toLocaleTimeString() : ''}
-                </span>
+              <div className="flex items-center gap-3">
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tts}
+                    onChange={(e)=> setTts(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white/60 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500/50 peer-checked:after:bg-cyan-300"></div>
+                </label>
+                <span className="text-sm text-white/70">Text-to-Speech</span>
               </div>
-              <div className="text-lg text-slate-100 whitespace-pre-wrap leading-relaxed">{p.text}</div>
-            </li>
-          ))}
-          {paragraphs.length === 0 && (
-            <li className="text-center py-12">
-              <div className="text-slate-500 mb-2">
-                <svg className="w-12 h-12 mx-auto opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              <div className="flex items-center gap-2 justify-end">
+                {audioBlocked && (
+                  <button
+                    type="button"
+                    onClick={unlockAudio}
+                    className="px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 bg-amber-500/20 border border-amber-400/30 text-amber-300 hover:bg-amber-500/30"
+                  >
+                    Enable audio
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={connect}
+                  disabled={status === 'Connected'}
+                  className={btnPrimary}
+                >
+                  Connect
+                </button>
+                <button
+                  type="button"
+                  onClick={disconnect}
+                  disabled={status !== 'Connected'}
+                  className={btnSecondary}
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Live Captions */}
+          <div className={`${glassPanel} p-6`}>
+            <div className="flex items-center gap-3 mb-4 pb-4 border-b border-white/[0.06]">
+              <div className="w-8 h-8 rounded-lg bg-violet-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-violet-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
                 </svg>
               </div>
-              <p className="text-slate-400">Waiting for translations...</p>
-              <p className="text-sm text-slate-600 mt-1">Connect to start receiving live transcripts</p>
-            </li>
-          )}
-        </ul>
-      </div>
-      </div>
-    </main>
+              <h2 className="font-display text-xl font-semibold text-white/90">Live Captions</h2>
+              <span className="text-xs text-white/40 ml-auto px-2 py-1 rounded-md bg-white/[0.03] border border-white/[0.06]">{getLangName(lang)}</span>
+            </div>
+            <ul className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
+              {paragraphs.map(p => (
+                <li
+                  key={p.id}
+                  data-stage={p.stage}
+                  className={cn(
+                    'rounded-xl border p-4 transition-all duration-300 hover:translate-x-1',
+                    p.stage === 'hard'
+                      ? 'border-white/[0.06] bg-white/[0.02]'
+                      : 'border-amber-400/30 bg-amber-400/10'
+                  )}
+                >
+                  <div className="flex items-center gap-3 mb-2">
+                    <StatusDot active={true} color={p.stage === 'hard' ? 'emerald' : 'amber'} />
+                    <span className="text-xs text-white/30 ml-auto">
+                      {p.updatedAt ? new Date(p.updatedAt).toLocaleTimeString() : ''}
+                    </span>
+                  </div>
+                  <div className="text-lg text-white/90 whitespace-pre-wrap leading-relaxed">{p.text}</div>
+                </li>
+              ))}
+              {paragraphs.length === 0 && (
+                <li className="text-center py-16">
+                  <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center">
+                    <svg className="w-8 h-8 text-white/20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                  </div>
+                  <p className="text-white/50 font-medium">Waiting for translations...</p>
+                  <p className="text-sm text-white/30 mt-1">Connect to start receiving live transcripts</p>
+                </li>
+              )}
+            </ul>
+          </div>
+        </div>
+      </main>
+    </>
   )
 }

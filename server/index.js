@@ -17,6 +17,13 @@ const { createWatchdog } = require('./watchdog');
 const { createStateStore } = require('./state-store');
 const { createRoomRegistry } = require('./room-registry');
 const { createRoomRegistryPg } = require('./room-registry-pg');
+const {
+  createSttSession,
+  getProviderConfig,
+  isProviderAvailable,
+  isServerSideProvider,
+  STT_PROVIDER,
+} = require('./stt-provider-factory');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -170,6 +177,7 @@ const AUTO_DETECT_LANGS = (process.env.AUTO_DETECT_LANGS || '')
   .filter(Boolean);
 const SPEECH_TTS_FORMAT = process.env.SPEECH_TTS_FORMAT || '';
 const RECOGNITION_MODE = process.env.RECOGNITION_MODE || 'conversation';
+// STT_PROVIDER imported from stt-provider-factory
 
 const translator = createTranslator({ logger, metrics });
 const stateStore = createStateStore({
@@ -651,6 +659,9 @@ async function broadcastPatch(room, result) {
 
     if (message) {
       const payload = message.payload;
+      if (client.role === 'speaker') {
+        room.logger.info({ component: 'broadcast', role: 'speaker', lang: client.lang, hasMessage: !!message, unitId: payload?.unitId?.substring(0, 30) }, 'Speaker matched for patch');
+      }
       const lastSeenVersion =
         client.lastSeen && typeof client.lastSeen[payload.unitId] === 'number'
           ? client.lastSeen[payload.unitId]
@@ -659,6 +670,9 @@ async function broadcastPatch(room, result) {
       // Only skip sending if already seen, but ALWAYS check TTS for ttsFinal
       const alreadySeen = lastSeenVersion !== undefined && payload.version <= lastSeenVersion;
       if (!alreadySeen) {
+        if (client.role === 'speaker') {
+          room.logger.debug({ component: 'broadcast', role: client.role, lang: client.lang, unitId: payload.unitId?.substring(0, 20) }, 'Sending patch to speaker');
+        }
         safeSend(client.socket, message);
         if (client.lastSeen) {
           client.lastSeen[payload.unitId] = payload.version;
@@ -903,7 +917,8 @@ app.post('/api/admin/rooms', async (req, res) => {
         : String(body.defaultTargetLangs || '')
             .split(',')
             .map((s) => s.trim())
-            .filter(Boolean)
+            .filter(Boolean),
+      sttPrompt: String(body.sttPrompt || '').trim()
     };
     const saved = await roomRegistry.upsert(meta, {
       speakerCode,
@@ -1035,8 +1050,20 @@ app.post('/api/access/resolve', async (req, res) => {
   }
 });
 
-app.get('/api/config', (_req, res) => {
+app.get('/api/config', async (_req, res) => {
+  // Build list of available STT providers with their availability status
+  const { PROVIDERS } = require('./stt-provider-factory');
+  const sttProviders = await Promise.all(
+    Object.entries(PROVIDERS).map(async ([name, p]) => ({
+      name,
+      available: await Promise.resolve(typeof p.isConfigured === 'function' ? p.isConfigured() : p.isConfigured),
+      isServerSide: p.isServerSide
+    }))
+  );
+
   res.json({
+    sttProvider: STT_PROVIDER,
+    sttProviders,  // Array of available providers with availability status
     recognitionMode: RECOGNITION_MODE,
     stablePartials: STABLE_PARTIALS,
     segmentationSilenceMs: SEG_SILENCE_MS,
@@ -1182,6 +1209,8 @@ wsServer.on('connection', async (socket, request) => {
     const lang = url.searchParams.get('lang') || 'source';
     const wantsTts = url.searchParams.get('tts') === 'true';
     const requestedVoice = url.searchParams.get('voice') || undefined;
+    const sttMode = url.searchParams.get('stt');  // 'stream' for server-side STT
+    const requestedProvider = url.searchParams.get('provider');  // Client-selected STT provider
     // Enforce room window if registry has metadata
     try {
       const meta = await roomRegistry.get(roomId);
@@ -1218,9 +1247,63 @@ wsServer.on('connection', async (socket, request) => {
         roomId,
         role,
         lang,
-        wantsTts
+        wantsTts,
+        sttMode: sttMode || null
       }
     });
+
+    // Server-side STT session for speakers in stream mode
+    // Use client-requested provider if valid, otherwise fall back to default
+    const effectiveProvider = requestedProvider || STT_PROVIDER;
+    let sttSession = null;
+    if (role === 'speaker' && sttMode === 'stream' && isServerSideProvider(effectiveProvider)) {
+      const providerAvailable = await isProviderAvailable(effectiveProvider);
+      if (!providerAvailable) {
+        room.logger.warn({ component: 'stt', provider: effectiveProvider }, 'STT provider not available, falling back to client-side STT');
+        safeSend(socket, { type: 'stt:error', payload: { error: `${effectiveProvider} not available` } });
+      } else {
+        try {
+          // Get room metadata for language config
+          const meta = await roomRegistry.get(roomId);
+          const sourceLang = meta?.sourceLang || 'en-US';
+          const autoDetectLangs = meta?.autoDetectLangs || AUTO_DETECT_LANGS;
+          const defaultTargets = meta?.defaultTargetLangs || [];
+
+          // Broadcast function for STT patches
+          const broadcastSttPatch = async (result) => {
+            if (!result.stale) {
+              await broadcastPatch(room, result);
+            }
+          };
+
+          sttSession = await createSttSession(
+            {
+              roomId,
+              sourceLang,
+              autoDetectLangs,
+              targetLangs: defaultTargets,
+              phraseHints: PHRASE_HINTS,
+              sttPrompt: meta?.sttPrompt || '',
+              provider: effectiveProvider
+            },
+            room.processor,
+            broadcastSttPatch,
+            room.logger.child({ component: 'stt' })
+          );
+
+          if (sttSession && typeof sttSession.start === 'function') {
+            await sttSession.start();
+          }
+
+          const limitations = sttSession.getLimitations?.() || [];
+          room.logger.info({ component: 'stt', provider: effectiveProvider, sourceLang, limitations: limitations.length }, 'Server-side STT session created');
+          safeSend(socket, { type: 'stt:ready', payload: { provider: effectiveProvider, limitations } });
+        } catch (err) {
+          room.logger.error({ component: 'stt', provider: effectiveProvider, err: err?.message }, 'Failed to create STT session');
+          safeSend(socket, { type: 'stt:error', payload: { error: err?.message } });
+        }
+      }
+    }
 
     let history = [];
     const now = Date.now();
@@ -1272,12 +1355,27 @@ wsServer.on('connection', async (socket, request) => {
       if (role === 'speaker') {
         room.watchdog.markEvent();
       }
+
+      // Handle binary audio data for server-side STT
+      // Must be a Buffer AND not start with '{' (0x7B) which indicates JSON text
+      if (sttSession && Buffer.isBuffer(data) && data.length > 0 && data[0] !== 0x7B) {
+        room.watchdog.markPcm();
+        sttSession.feedAudio(data);
+        return;
+      }
+
       let parsed = null;
       let raw = '';
       try {
         raw = typeof data === 'string' ? data : data?.toString?.() || '';
         parsed = JSON.parse(raw);
       } catch (err) {
+        // Could be binary data that we didn't handle
+        if (sttSession && data instanceof ArrayBuffer) {
+          room.watchdog.markPcm();
+          sttSession.feedAudio(Buffer.from(data));
+          return;
+        }
         wsVerbose(roomId, 'bad-json', { role, error: err?.message, raw: raw.slice(0, 160) });
         room.logger.debug({ component: 'ws', err: err?.message }, 'Failed to parse WS message.');
         return;
@@ -1307,6 +1405,42 @@ wsServer.on('connection', async (socket, request) => {
         client.lastSeen = parsed.payload.versions || {};
         return;
       }
+
+      // Handle STT control messages
+      if (sttSession && parsed?.type?.startsWith('stt:')) {
+        const sttCommand = parsed.type;
+        const payload = parsed.payload || {};
+
+        if (sttCommand === 'stt:start') {
+          sttSession.start().then(() => {
+            safeSend(socket, { type: 'stt:started', payload: {} });
+          }).catch((err) => {
+            room.logger.error({ component: 'stt', err: err?.message }, 'Failed to start STT');
+            safeSend(socket, { type: 'stt:error', payload: { error: err?.message } });
+          });
+          return;
+        }
+
+        if (sttCommand === 'stt:stop') {
+          sttSession.stop().then(() => {
+            safeSend(socket, { type: 'stt:stopped', payload: {} });
+          }).catch((err) => {
+            room.logger.error({ component: 'stt', err: err?.message }, 'Failed to stop STT');
+          });
+          return;
+        }
+
+        if (sttCommand === 'stt:config') {
+          // Update STT configuration mid-session
+          if (payload.targetLangs) {
+            sttSession.updateConfig({ targetLangs: payload.targetLangs });
+          }
+          if (payload.phraseHints) {
+            sttSession.updateConfig({ phraseHints: payload.phraseHints });
+          }
+          return;
+        }
+      }
     });
 
     socket.on('pong', () => {
@@ -1316,6 +1450,11 @@ wsServer.on('connection', async (socket, request) => {
     socket.on('close', () => {
       room.clients.delete(client);
       metrics.trackWsConnection(roomId, role, -1);
+      // Clean up STT session if active
+      if (sttSession) {
+        sttSession.dispose();
+        sttSession = null;
+      }
     });
 
     socket.on('error', (err) => {
@@ -1361,9 +1500,28 @@ setInterval(() => {
   }
 }, 5000).unref();
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, async () => {
   const COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || '';
   logger.info({ port: PORT, host: HOST, commit: COMMIT ? COMMIT.slice(0, 7) : 'dev' }, 'Server listening.');
+
+  // Seed dev room in development mode
+  if (process.env.NODE_ENV === 'development') {
+    try {
+      const devRoom = await roomRegistry.upsert({
+        slug: 'dev',
+        title: 'Development Room',
+        sourceLang: 'auto',
+        autoDetectLangs: ['en-CA', 'fr-CA'],
+        defaultTargetLangs: ['en-CA', 'fr-CA'],
+        startsAt: 0,
+        endsAt: 0,
+        status: 'active'
+      });
+      logger.info({ component: 'dev-room', slug: 'dev' }, 'Dev room seeded: bilingual EN/FR, access code "dev"');
+    } catch (err) {
+      logger.warn({ component: 'dev-room', err: err?.message }, 'Failed to seed dev room');
+    }
+  }
 });
 
 process.on('SIGINT', shutdown);

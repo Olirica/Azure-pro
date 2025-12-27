@@ -1,0 +1,179 @@
+# Local Whisper STT Service
+
+Real-time speech-to-text service using [faster-whisper](https://github.com/guillaumekln/faster-whisper) with LocalAgreement commit policy.
+
+## Features
+
+- **faster-whisper large-v3-turbo** model for high-quality transcription
+- **Silero VAD** for voice activity detection
+- **LocalAgreement** commit policy for stable, low-latency output
+- **Dual connection modes**: Unix socket (local) or TCP (Railway/cloud)
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- CUDA-capable GPU (recommended) or CPU
+- ~4GB VRAM for large-v3-turbo with float16
+
+### Installation
+
+```bash
+cd local-whisper-svc
+pip install -e .
+```
+
+### Running Locally (Unix Socket)
+
+```bash
+# Default: listens on /tmp/whisper-stt.sock
+whisper-svc
+
+# Custom socket path
+whisper-svc --socket /tmp/my-whisper.sock
+```
+
+### Running for Railway (TCP)
+
+```bash
+# TCP mode on port 8765
+whisper-svc --tcp-port 8765
+
+# Or via environment variable
+WHISPER_TCP_PORT=8765 whisper-svc
+```
+
+## Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `WHISPER_MODEL` | `large-v3-turbo` | Whisper model name |
+| `WHISPER_COMPUTE_TYPE` | `float16` | Compute type (float16, int8, float32) |
+| `WHISPER_DEVICE` | `cuda` | Device (cuda or cpu) |
+| `WHISPER_SOCKET_PATH` | `/tmp/whisper-stt.sock` | Unix socket path |
+| `WHISPER_TCP_HOST` | `0.0.0.0` | TCP bind host |
+| `WHISPER_TCP_PORT` | (none) | TCP port (enables TCP mode) |
+| `WHISPER_VAD_THRESHOLD` | `0.5` | VAD speech probability threshold |
+| `WHISPER_VAD_MIN_SPEECH_MS` | `250` | Min speech duration to trigger |
+| `WHISPER_VAD_MIN_SILENCE_MS` | `300` | Min silence to end utterance |
+| `WHISPER_AGREEMENT_K` | `3` | History window size |
+| `WHISPER_AGREEMENT_N` | `2` | Required stable iterations |
+| `WHISPER_AGREEMENT_MIN_CHARS` | `10` | Min new chars before commit |
+
+## Protocol
+
+JSON-lines over Unix socket or TCP. Each message is a single JSON object followed by newline.
+
+### Commands (Client → Server)
+
+**START** - Create a new session
+```json
+{"cmd": "START", "session_id": "uuid", "source_lang": "en-US", "auto_detect_langs": [], "phrase_hints": []}
+```
+
+**AUDIO** - Send audio chunk
+```json
+{"cmd": "AUDIO", "session_id": "uuid", "pcm_b64": "<base64 PCM>"}
+```
+Audio format: 16kHz, 16-bit signed little-endian, mono
+
+**STOP** - End session and flush
+```json
+{"cmd": "STOP", "session_id": "uuid"}
+```
+
+### Responses (Server → Client)
+
+**READY** - Session created
+```json
+{"type": "READY", "session_id": "uuid"}
+```
+
+**PARTIAL** - Interim transcript (soft patch)
+```json
+{"type": "PARTIAL", "session_id": "uuid", "text": "Hello world", "language": "en", "confidence": 0.95}
+```
+
+**FINAL** - Committed transcript (hard patch)
+```json
+{"type": "FINAL", "session_id": "uuid", "text": "Hello world.", "language": "en", "words": [...], "tts_final": true}
+```
+
+## LocalAgreement Algorithm
+
+The commit policy balances low-latency previews with stable commits:
+
+1. Track last K=3 transcription outputs
+2. Find longest common prefix across last N=2 entries
+3. Commit when prefix stable AND has 10+ new characters
+4. Force commit on silence (VAD speech_end)
+
+This prevents flickering/corrections in the final output while maintaining responsive previews.
+
+## Testing
+
+```bash
+# Run unit tests
+cd local-whisper-svc
+pip install -e ".[dev]"
+pytest tests/
+
+# Test with socat (Unix socket)
+echo '{"cmd":"START","session_id":"test","source_lang":"en-US","auto_detect_langs":[],"phrase_hints":[]}' | socat - UNIX-CONNECT:/tmp/whisper-stt.sock
+
+# Test with netcat (TCP)
+echo '{"cmd":"START","session_id":"test","source_lang":"en-US","auto_detect_langs":[],"phrase_hints":[]}' | nc localhost 8765
+```
+
+## Railway Deployment
+
+1. Create a new Railway service from the `local-whisper-svc/` directory
+2. Set environment variables:
+   ```
+   WHISPER_TCP_PORT=8765
+   WHISPER_MODEL=large-v3-turbo
+   WHISPER_COMPUTE_TYPE=float16
+   ```
+3. Railway will auto-detect Python and build with Nixpacks
+4. In your Node.js service, set:
+   ```
+   STT_PROVIDER=local-whisper
+   WHISPER_TCP_HOST=<whisper-service-name>.railway.internal
+   WHISPER_TCP_PORT=8765
+   ```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    WhisperServer                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
+│  │ WhisperEngine│  │  SileroVAD  │  │ LocalAgreement  │  │
+│  │ (faster-    │  │  (speech    │  │ (commit policy) │  │
+│  │  whisper)   │  │  detection) │  │                 │  │
+│  └──────┬──────┘  └──────┬──────┘  └────────┬────────┘  │
+│         │                │                   │          │
+│         └────────────────┼───────────────────┘          │
+│                          ▼                              │
+│              ┌───────────────────────┐                  │
+│              │   Session Manager     │                  │
+│              │  (per-client state)   │                  │
+│              └───────────────────────┘                  │
+│                          ▲                              │
+│         Unix Socket ─────┴───── TCP Socket              │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Performance Targets
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| TTFT (Time to First Token) | <500ms | First partial transcript |
+| TTFC (Time to First Commit) | <2000ms | First stable commit |
+| WER | <15% | Against reference transcripts |
+| Model load time | <10s | Cold start |
+
+## License
+
+MIT
