@@ -1136,6 +1136,43 @@ app.post('/api/speech/token', async (_req, res) => {
   }
 });
 
+// Zoom OAuth callback (for app authorization)
+app.get('/oauth/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) {
+    return res.status(400).send('Missing authorization code');
+  }
+
+  const clientId = process.env.ZOOM_CLIENT_ID;
+  const clientSecret = process.env.ZOOM_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return res.status(500).send('Zoom credentials not configured');
+  }
+
+  try {
+    // Exchange code for access token
+    const tokenRes = await axios.post(
+      'https://zoom.us/oauth/token',
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: `${req.protocol}://${req.get('host')}/oauth/callback`
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`
+        }
+      }
+    );
+    logger.info({ component: 'zoom-oauth' }, 'Zoom app authorized successfully');
+    res.send('Zoom app authorized! You can close this window and start a meeting with Live Transcript enabled.');
+  } catch (err) {
+    logger.error({ component: 'zoom-oauth', err: err?.response?.data || err?.message }, 'OAuth token exchange failed');
+    res.status(500).send(`Authorization failed: ${err?.response?.data?.reason || err?.message}`);
+  }
+});
+
 // Zoom RTMS webhook endpoint
 app.post('/api/zoom/webhook', (req, res) => {
   const result = zoomRtms.handleWebhook(req.body || {}, {
