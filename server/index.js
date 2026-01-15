@@ -24,6 +24,7 @@ const {
   isServerSideProvider,
   STT_PROVIDER,
 } = require('./stt-provider-factory');
+const zoomRtms = require('./zoom-rtms');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -1133,6 +1134,21 @@ app.post('/api/speech/token', async (_req, res) => {
     );
     return res.status(500).json({ ok: false, error: 'Unable to acquire speech token.' });
   }
+});
+
+// Zoom RTMS webhook endpoint
+app.post('/api/zoom/webhook', (req, res) => {
+  const result = zoomRtms.handleWebhook(req.body || {}, {
+    logger,
+    ensureRoom,
+    broadcastPatch,
+    roomRegistry,
+    defaultRoomTargets
+  }, req); // Pass req for signature verification
+  if (result) {
+    return res.status(result.status).json(result.body);
+  }
+  return res.status(400).json({ ok: false, error: 'Unhandled request' });
 });
 
 app.post('/api/segments', async (req, res) => {
