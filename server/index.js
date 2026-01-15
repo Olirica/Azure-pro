@@ -79,6 +79,15 @@ app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 app.use(metrics.httpMetricsMiddleware);
 
+// OWASP security headers (required for Zoom App Surface validation)
+app.use((_req, res, next) => {
+  res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' wss: https:; frame-ancestors 'self' https://*.zoom.us");
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 // Do not gate the admin UI route here. The React app handles login UX; APIs enforce auth.
 app.use((req, _res, next) => next());
 
