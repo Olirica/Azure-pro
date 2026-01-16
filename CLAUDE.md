@@ -1,540 +1,119 @@
-If you’re about to modify code, read this first.
+# AI working rules (read this first)
 
-# Remove AI code slop
-
-   Check the diff against main, 
-   and remove all AI generated slop 
-   introduced in this branch.
-
-   This includes:
-      - Extra comments that a human wouldn't 
-         add or is inconsistent with the rest 
-         of the file
-      - Extra defensive checks or try/catch
-         blocks that are abnormal for that area
-         of the codebase (especially if called by 
-         trusted / validated codepaths)
-      - Casts to any to get around type issues
-      - Any other style that is inconsistent with 
-         the file
-
-      Report at the end with only a 1-3 
-      sentence summary of what you changed
-
-# Team culture
-
-To accomplish this, the team has a shared culture and sense of identity that
-drives how they build products. You'll be expected to contribute to this, and
-the work you do is critical in helping us drive toward our goals.
-
-## Build less, ship more
-
-It's really important we solve the right problems, than solve lots of problems.
-Rather than try to build the most complex feature that covers all cases, we
-strive to build precisely the right amount of software to solve the problem
-we're currently facing. We're ok with leaving work for "future us" rather than
-today. This maxim hopefully prevents us from over engineering solutions that our
-3-person development team can't maintain.
----
-
-## 1. What this repo does (mental model)
-
-### Core Purpose of the Project
-
-This project mimicks the work of a conference interpreter, using AI, through Azure Cognitive Services for speech recognition. The app provides **real-time multilingual speech translation**, enabling any speaker to talk in one language and allowing listeners to hear (or read) the message in another. 
-
-The system:
-1. **Captures audio input** from the speaker’s microphone.
-2. **Processes the audio through Azure Cognitive Services**, including:
-   - Speech recognition (ASR)
-   - Optional multi-language **auto detection**
-3. **Transcribes** the speech into text with low latency.
-4. **Translates** that text into one or more target languages.
-5. **Synthesizes translated audio** (TTS) and streams it to listeners.
-6. Provides **listener pages** where users can:
-   - select a language,
-   - read live captions,
-   - or listen to real-time translated speech.
-
-This entire chain — **audio → text → translation → audio** — runs in real time
-for multilingual events and is configurable per “room” through the Admin UI.
-
-Simo is a **real‑time speech translation platform** built primarily on
-**Azure Cognitive Services**:
-
--**Speaker page** captures microphone audio, runs **Azure Speech SDK**
-  **in the browser**, and streams **sentence‑level text patches** to the server.
--**Node.js server**:
-  - normalizes and stabilizes partial transcripts into “segments”
-  - translates segments into one or more target languages
-  - queues **TTS audio** per language and streams it to listeners
--**Listener page**:
-  - subscribes via WebSocket
-  - displays live subtitles
-  - optionally plays synthesized audio in the chosen target language
-
-Core goals:
-
-1. **Real‑time**: low latency soft+hard captions, plus TTS that stays close
-   to the speaker.
-2. **Multilingual**: configurable per‑room target languages.
-3. **Auto language detection**: when a speaker mixes 2+ input languages
-   (e.g. en‑US + fr‑CA).
-4. **Key‑terms / glossary support (planned)**: room‑specific terminology that
-   translation should respect (product names, medical terms, etc.).
+- **Think first, then edit**: start every task with a short plan (files to touch, constraints/invariants, how you’ll verify). This prevents “codegen wandering.”
+- **Keep changes minimal**: prefer small diffs over rewrites; reuse existing patterns/files.
+- **No AI code slop** (match local style):
+  - Don’t add filler comments.
+  - Don’t add defensive `try/catch` or extra validation unless the surrounding code already does it or the boundary is truly untrusted.
+  - Don’t use `any` casts to silence type issues.
+  - Don’t introduce new abstractions/files unless they pay for themselves immediately.
+  - Before finishing, skim the diff and remove anything that looks “generated” rather than idiomatic for this repo.
+- **Back-compat matters**: patch shapes + WebSocket messages must remain compatible with `public/*.html` clients and the React clients.
+- **Secrets**: never hard-code credentials; if you add config, wire it via `process.env` and update `.env.example`.
+- **Verification**: when relevant, run `npm run lint` and `npm test` (and Playwright specs for E2E changes).
+- **Response format**: end with **only** a 1–3 sentence summary of what changed (no long narration).
 
 ---
 
-## 2. High‑level architecture
+# Project snapshot (what this repo is)
 
-### 2.1 Components
+Simo is a real-time, multilingual “conference interpreter”:
 
-- **Server (Node.js / Express)**
-  - Entry point: `server/index.js`
-  - Azure integration:
-    - Uses Azure Speech SDK on the **client** (browser) for ASR
-    - Uses Speech SDK on the **server** for TTS (`server/tts.js`)
-  - Translation:
-    - `server/translator.js` supports:
-      - `TRANSLATOR_PROVIDER=openai` (default) or `azure`
-  - Patch pipeline:
-    - `server/segment-processor.js` – merges partials into stable segments
-    - `server/translation-buffer.js` – merges fast‑final segments before MT
-    - `server/state-store.js` – optional Redis/FS persistence
-    - `server/room-registry.js` (+ `room-registry-pg.js`) – room metadata
-  - Observability:
-    - Prometheus metrics in `server/metrics.js`
-    - `/metrics`, `/healthz` endpoints
+1. **Speaker** captures audio and produces STT text.
+2. Speaker sends **text patches** to the server.
+3. Server **stabilizes** partials into segments, **translates**, and (optionally) **TTS** synthesizes.
+4. **Listeners** subscribe over WebSocket for live captions + optional TTS audio.
 
-- **Client (React + Vite + Tailwind + shadcn)**
-  - `client/src/pages/Speaker.tsx`
-    - Microphone capture via Azure Speech SDK (browser CDN)
-    - Emits **soft** and **hard** patches via HTTP → server
-    - Can use **auto‑detect source language** based on room metadata
-  - `client/src/pages/Listener.tsx`
-    - Connects to server via WebSocket (`/ws?room=…&role=listener&lang=…`)
-    - Renders patch stream, manages subtitle view + TTS playback
-  - `client/src/pages/Admin.tsx`
-    - Creates/updates “rooms” with:
-      - `slug` (event id)
-      - `sourceLang` or `autoDetectLangs` (for bilingual input)
-      - `defaultTargetLangs` (typical audience languages)
-  - Shared:
-    - `client/src/data/languages.ts` – curated Azure locale list
-    - `client/src/components/ui` – shadcn style primitives
-
-- **Static fallbacks**
-  - `public/speaker.html`, `public/listener.html`, `public/admin.html`
-  - `server/index.js` serves SPA variants at `/speaker`, `/listener`, `/admin`
-
-- **Testing / tooling**
-  - `scripts/patch-fuzzer.js` – segment processor fuzzing + `--lint-check`
-  - `scripts/wav-harness.js` – streams WAV → Azure STT → local server
-  - `tests/pipeline-bench/`
-    - Node test suite for STT / MT / TTS health & latency
-  - `tests/e2e-bilingual-autodetect.spec.js`
-    - Playwright test for bilingual auto‑detect pipeline
-  - `mcp/playwright-server/`
-    - MCP server to drive Simo via Playwright for agents/CI
+Deep details live in:
+- `README.md` (setup + ops)
+- `docs/SYSTEM-ARCHITECTURE.md` (pipeline internals)
 
 ---
 
-## 3. Running the app (for agents)
+# Critical concepts and invariants
 
-**Requirements**
+## Rooms
+A **room** is a translation session identified by `slug` (created/edited in Admin).
+Room meta drives source language behavior (`sourceLang` vs `autoDetectLangs`) and default target languages.
 
-- Node 20 (see `Dockerfile`: `FROM node:20-alpine`)
-- Azure Cognitive Services keys
+## Patches (the unit of truth)
+Speaker/server/listener speak in **patches**. The stable contract is:
 
-**Minimal steps**
+- `unitId`: `sessionId|srcLang|counter` (monotonic within a speaker session)
+- `version`: increments for updates to the same `unitId`
+- `stage`: `soft` (partial) or `hard` (final)
+- `op`: currently `"replace"`
+- `text`: transcript for this unit
+- `srcLang`: BCP-47 language code (required for correct MT fan-out)
 
-From repo root:
+Invariants to preserve:
+- **Monotonic `version` per `unitId`** (listeners drop stale versions).
+- **Hard-finals drive TTS** (prevents repeated audio).
+- **Don’t change message shapes** on `/ws` without updating both React and static clients.
+
+## Auto-detect (source language)
+- Admin “Languages” with **1 value** ⇒ fixed `sourceLang`.
+- Admin “Languages” with **2+ values** ⇒ `sourceLang: "auto"` + `autoDetectLangs`.
+- Azure’s browser SDK expects a **small candidate set** (Speaker currently caps to ≤4).
+- Speaker applies a **stability/lock** so detection doesn’t flap mid-sentence.
+
+## “Glossary” field on Speaker
+The Speaker UI’s “Glossary” textbox is currently used as **ASR phrase hints** (biasing STT / named entities), not a translation glossary.
+
+---
+
+# Repo map (where to make changes)
+
+## Server (Node.js, CommonJS, Express 5)
+- `server/index.js` — HTTP routes, WebSocket upgrade/router, room APIs, patch ingest, broadcast fan-out, metrics endpoints.
+- `server/segment-processor.js` — merges partial patches into stable segments (“fast-finals”).
+- `server/translation-buffer.js` — batching/merge before MT.
+- `server/translator.js` — Azure Translator with optional OpenAI path (`TRANSLATOR_PROVIDER=openai|azure`).
+- `server/tts.js` — per-language TTS queue, backlog controls, audio broadcast.
+- `server/state-store.js` — optional persistence (Redis / filesystem).
+- `server/room-registry*.js` — room metadata storage (in-mem/FS/Redis; Postgres when `DATABASE_URL` set).
+- `server/stt-provider-factory.js` — STT provider selection; some providers are server-side.
+- `server/edge-agent-hub.js` + `edge-agent/` — reverse WebSocket bridge for local GPU STT (`local-canary`, `local-whisper`).
+
+## Client (React + Vite)
+- `client/src/pages/Speaker.tsx` — STT + patch emission; also streams PCM to server for server-side STT providers.
+- `client/src/pages/Listener.tsx` — WebSocket patches + TTS playback.
+- `client/src/pages/Admin.tsx` — room CRUD + language configuration.
+- `client/src/data/languages.ts` — supported locale list.
+
+---
+
+# Common commands
 
 ```bash
-cp .env.example .env   # fill in keys
 npm install
-npm run dev            # or `npm start` for production mode
-````
-
-Key envs (see `.env.example` for full list):
-
-* `PORT`, `HOST`
-* `SPEECH_KEY`, `SPEECH_REGION`
-* `TRANSLATOR_KEY`, `TRANSLATOR_REGION`, `TRANSLATOR_ENDPOINT`
-* `TRANSLATOR_PROVIDER` (`openai` or `azure`)
-* `DEFAULT_TTS_VOICE`
-* `ADMIN_TOKEN` (for /admin)
-* Optional:
-
-  * `REDIS_URL` for durable patch/TTS state
-  * `DATABASE_URL` if using Postgres room registry
-  * Tuning params: `FASTFINALS_*`, `TTS_*`, `TRANSLATION_*`, `WATCHDOG_*`
-
-**Pages**
-
-* Speaker: `http://localhost:3000/speaker`
-* Listener: `http://localhost:3000/listener`
-* Admin: `http://localhost:3000/admin`
-
----
-
-## 4. Core data concepts
-
-### 4.1 Rooms
-
-A **room** is a translation session identified by `slug`:
-
-* Stored via `room-registry.js` (in memory / Redis / filesystem / Postgres).
-* Metadata includes (as seen in `server/index.js`):
-
-  * `slug`
-  * `title`
-  * `startsAt`, `endsAt` (room window)
-  * `sourceLang` (`en-CA`, `fr-CA`, or `'auto'`)
-  * `autoDetectLangs` (array of source candidates when `sourceLang === 'auto'`)
-  * `defaultTargetLangs` (e.g. `['fr-CA', 'es-MX']`)
-  * Optional access codes (`baseCode`, `speakerCode`, `viewerCode`)
-
-Admin UI (`Admin.tsx`) writes this via `POST /api/admin/rooms`.
-
-### 4.2 Patches (text units)
-
-Speaker and server communicate in **patches**:
-
-Typical fields (see `server/segment-processor.js`/`server/index.js`):
-
-* `unitId`: `sessionId|srcLang|counter` (monotonic within a speech session)
-* `version`: integer, increments for updates to the same unit
-* `stage`: `'soft'` (partial) or `'hard'` (final)
-* `op`: usually `"replace"` for current implementation
-* `text`: transcript text for this unit
-* `srcLang`: BCP‑47 language code when known (e.g. `'en-CA'`, `'fr-CA'`)
-* `ts`: optional `{ t0, t1 }` timestamps (ms) relative to session
-
-The **SegmentProcessor**:
-
-* Accepts incoming patches from speaker (`POST /api/segments`).
-* Stabilizes partials into final segments (fast‑finals logic).
-* Hands off segments to:
-
-  * Translation buffer (for MT)
-  * State store (for late‑joiner snapshots)
-  * TTS queue (per language)
-
-Listeners receive patches via the `/ws` WebSocket and render them.
-
----
-
-## 5. Auto language detection (multi‑language input)
-
-### 5.1 How auto detection is configured
-
-**Admin page (`Admin.tsx`)**
-
-* `Languages` field allows comma‑separated BCP‑47 codes.
-
-* Logic:
-
-  ```ts
-  const langs = parseList(languages)
-  let sourceLang = ''
-  let autoDetectLangs: string[] = []
-
-  if (langs.length <= 1) {
-    sourceLang = langs[0] || ''
-  } else {
-    sourceLang = 'auto'
-    autoDetectLangs = langs
-  }
-  ```
-
-* Payload is sent to `/api/admin/rooms` with:
-
-  * `sourceLang: 'auto'`
-  * `autoDetectLangs: ['en-US', 'fr-CA', …]`
-  * `defaultTargetLangs: […]`
-
-**Server (`server/index.js`)**
-
-* `POST /api/admin/rooms` persists `sourceLang` and `autoDetectLangs` via
-  `roomRegistry.upsert` / `updateRoomMeta`.
-* `GET /api/rooms/:slug` returns this metadata to the Speaker page.
-
-### 5.2 How auto detection behaves on the Speaker page
-
-In `Speaker.tsx`:
-
-1. On `start()`:
-
-   * Fetches room meta: `/api/rooms/:slug`.
-   * If `meta.sourceLang === 'auto'` and `meta.autoDetectLangs.length > 0`:
-
-     * Uses **Azure Speech SDK AutoDetectSourceLanguageConfig**:
-
-       ```ts
-       const candidates = meta.autoDetectLangs.slice(0, 4)
-       isAutoDetect.current = true
-       if (candidates.length >= 2) {
-         speechConfig.setProperty(
-           SDK.PropertyId.SpeechServiceConnection_LanguageIdMode,
-           'Continuous'
-         )
-       }
-       const autoCfg = SDK.AutoDetectSourceLanguageConfig.fromLanguages(candidates)
-       recognizer = SDK.SpeechRecognizer.FromConfig(speechConfig, autoCfg, audioConfig)
-       ```
-
-     * If targets are empty and `meta.defaultTargetLangs` is set, it seeds the
-       `Targets` field with those values.
-
-2. During `recognizing` / `recognized` events:
-
-   * Extracts detected language from the Azure result via `detectedLangFrom(result)`:
-
-     * tries `result.language`
-     * then `AutoDetectSourceLanguageResult.fromResult`
-     * finally JSON from `SpeechServiceConnection_AutoDetectSourceLanguageResult`
-   * Applies **stability logic** in `getStableLanguage()`:
-
-     * Only used when `isAutoDetect.current === true`.
-     * Locks onto a detected language for ~15s.
-     * Requires multiple consecutive detections before switching.
-     * This prevents rapid flapping between languages mid‑sentence.
-
-3. When posting soft/hard patches:
-
-   * Uses the **stable language**:
-
-     ```ts
-     const rawDetected = detectedLangFrom(e.result)
-     const fallback = meta?.sourceLang !== 'auto' ? meta.sourceLang : srcLang
-     const stableLang = getStableLanguage(rawDetected, fallback)
-
-     await postPatch({
-       unitId: unitId(),
-       stage: 'hard',
-       text,
-       srcLang: stableLang,
-       ts: timestamps(e.result),
-       // ...
-     })
-     ```
-
-The server then uses `srcLang` as `fromLang` for translation.
-
-### 5.3 Where to modify auto‑detect behavior
-
-If you need to **tune or extend multi‑language detection**, touch:
-
-* `client/src/pages/Admin.tsx`
-
-  * How `Languages` → `sourceLang` & `autoDetectLangs` is computed.
-* `client/src/pages/Speaker.tsx`
-
-  * Construction of `AutoDetectSourceLanguageConfig`
-  * `getStableLanguage()` thresholds and behavior
-* `server/index.js`
-
-  * How patches’ `srcLang` are passed into `translator.translate(...)`
-
-Don’t break the following invariants:
-
-* If `sourceLang` is a specific language (not `'auto'`), ignore auto‑detect and
-  trust that language.
-* `autoDetectLangs` must be a small BCP‑47 set (Azure expects up to 4).
-
----
-
-## 6. Key‑terms / glossary support (planned)
-
-> Current state: **no user‑facing glossary input exists** on the Speaker page.
-> Translation is purely MT (plus any provider‑specific tuning).
-
-### 6.1 Intended behavior
-
-Goal: allow per‑room **terminology hints** that influence translation without
-breaking real‑time behavior.
-
-High‑level design intent:
-
-* **Glossary defined at room level**, editable in Admin or Speaker UI.
-* Stored as structured data (e.g. JSON or simple DSL), not freeform text.
-* Passed to the translation layer in a **provider‑agnostic** way.
-* Fallback behavior:
-
-  * If glossary is invalid or missing, translation **must still work**.
-  * Glossary should not block or slow down the pipeline.
-
-### 6.2 Likely integration points
-
-**UI / UX**
-
-* **Speaker page (`Speaker.tsx`)**
-
-  * Add a **“Key terms / glossary”** input region:
-
-    * e.g. a textarea or structured editor near the `Targets` field.
-  * For a first iteration, a simple format is fine:
-
-    * `sourceTerm => targetTerm (langCode)` per line, or
-    * JSON like `{ "en": { "Simo": "Simo" }, "fr-CA": { "Simo": "Simo" } }`
-
-* **Admin page (`Admin.tsx`)**
-
-  * Optionally allow room‑level glossary definition so all speakers for that
-    room share the same glossary.
-
-**API / backend**
-
-* **Room metadata**
-
-  * Extend room meta object (in `Admin.tsx` and `server/index.js`) with a new
-    field such as:
-
-    * `glossary` or `terminologyHints` (serialized JSON string or map)
-  * Store it via `room-registry` just like `defaultTargetLangs`.
-
-* **Translator (`server/translator.js`)**
-
-  * Extend `translate(roomId, text, fromLang, targetLangs, options?)` to accept
-    a glossary/hints object.
-  * For Azure:
-
-    * If using Text Translator, you may eventually map glossary to its
-      dictionary features or pre/post‑process.
-  * For OpenAI:
-
-    * Inject glossary in the system/user prompt as *strict terminology rules*.
-  * Ensure:
-
-    * Timeouts still enforced.
-    * Errors recorded in metrics.
-    * Fallback to standard translation on failure.
-
-* **Patch / room plumbing**
-
-  * When SegmentProcessor triggers translation, it must pass:
-
-    * `roomId`
-    * `text`
-    * `fromLang`
-    * `targetLangs`
-    * `glossary` derived from room meta (if present)
-
-### 6.3 Constraints for agents
-
-When implementing glossary support:
-
-* Do **not** block or delay patch processing if glossary parsing fails.
-* Avoid per‑patch heavy work:
-
-  * Normalize glossary once per room / per update.
-  * Reuse across segments.
-* Preserve existing behavior when no glossary is configured.
-* Maintain compatibility with both `TRANSLATOR_PROVIDER=openai` and `azure`.
-
----
-
-## 7. Testing & diagnostics
-
-Before and after changes, agents should run:
-
-### 7.1 Quick checks
-
-From repo root:
-
-```bash
-npm run lint    # uses scripts/patch-fuzzer.js --lint-check
-npm test        # runs scripts/wav-harness.js --self-test
+cp .env.example .env
+npm run dev           # server on :3000 (serves React if built; serves public/ always)
+
+npm run lint          # quick structural checks (patch fuzzer lint-check)
+npm test              # wav-harness self-test
 ```
 
-### 7.2 Pipeline Bench
+Useful endpoints (dev):
+- Speaker: `http://localhost:3000/speaker` (or `/speaker.html`)
+- Listener: `http://localhost:3000/listener` (or `/listener.html`)
+- Admin: `http://localhost:3000/admin` (or `/admin.html`)
+- Metrics: `http://localhost:3000/metrics`
+- Health: `http://localhost:3000/healthz`
 
-For deeper STT/MT/TTS health checks:
-
-```bash
-cd tests/pipeline-bench
-npm install
-cp .env.example .env   # fill required keys + server URL
-node tests/00_env_check.js
-node tests/10_stt_file.js
-node tests/20_mt_eval.js
-node tests/30_pipeline_smoke.js
-node tests/40_tts_backlog_probe.js
-```
-
-Read `tests/pipeline-bench/README.md` for details.
-
-### 7.3 Bilingual / auto‑detect tests
-
-* `tests/BILINGUAL_TEST_GUIDE.md` – manual procedure for bilingual WAV tests.
-* `tests/e2e-bilingual-autodetect.spec.js` – Playwright E2E, subject to
-  Azure browser SDK limitations.
-* `test-results/` – reference screenshots & metrics JSON.
+Node baseline: **Node 20** (matches `Dockerfile`).
 
 ---
 
-## 8. Coding conventions & guardrails
+# Known footguns (read before changing plumbing)
 
-Agents should follow these practices:
-
-* **Server**
-
-  * Use existing logging (`pino`) and metrics (`server/metrics.js`) patterns.
-  * Keep WebSocket message shapes backward compatible for `listener.html`
-    and React listener.
-  * Don’t break `SegmentProcessor` invariants for `unitId` / `version`
-    ordering and patch stages.
-
-* **Client**
-
-  * Use React functional components and hooks (no new class components).
-  * Reuse shadcn primitives in `client/src/components/ui`.
-  * Respect `LANGS` in `client/src/data/languages.ts` for language lists.
-  * Avoid blocking the main thread with heavy computation; prefer async calls.
-
-* **Secrets & configuration**
-
-  * Never hard‑code keys; use `.env` / `process.env` and document changes in
-    `.env.example` if you add new variables.
-
-* **Performance**
-
-  * Keep translation and TTS calls batched/reused where possible.
-  * Don’t introduce per‑patch global reinitialization of SDK clients.
+- **WebSocket wiring**: the server uses a single HTTP upgrade handler and `WebSocketServer({ noServer: true })`. Don’t add a separate WS server in `{ server, path }` mode (it can trigger RSV1/compression issues).
+- **Token refresh**: if you touch Azure Speech token refresh, verify you’re updating the *recognizer’s* auth token (details in `docs/SYSTEM-ARCHITECTURE.md`).
+- **Binary vs JSON frames**: some `ws` paths may deliver text as `Buffer`; don’t assume “Buffer == audio.” (See edge-agent framing in `server/edge-agent-hub.js`.)
 
 ---
 
-## 9. Quick task recipes (for agents)
+# When you’re unsure
 
-1. **Add a new supported language**
-
-   * Add it to `client/src/data/languages.ts`.
-   * Ensure Azure supports this locale for:
-
-     * STT (browser SDK)
-     * TTS (server `tts.js`)
-   * Optionally add a mapping to a preferred voice in env (e.g. via
-     `TTS_VOICE_OVERRIDES_*` if present).
-
-2. **Tune auto‑detect stability**
-
-   * Adjust thresholds in `getStableLanguage()` in `Speaker.tsx`.
-   * Keep a reasonable lockout window (~10–20s) to avoid flapping.
-   * Re‑run bilingual tests (`BILINGUAL_TEST_GUIDE.md`).
-
-3. **Implement glossary input UI**
-
-   * Add a textarea/field on `Speaker.tsx` (and/or `Admin.tsx`).
-   * Wire it to a new `glossary` field in room meta.
-   * Extend `translator.translate` to accept a glossary parameter.
-   * Ensure translation still works with no glossary configured.
-
----
-
-This file is the source of truth for how **agents** should reason about and
-modify Simo. If you add major features (especially around auto‑detect,
-glossaries, or the ASR/MT/TTS pipeline), update this `agents.md` accordingly.
-
-```
-```
+- Prefer reading `docs/SYSTEM-ARCHITECTURE.md` before refactoring pipeline code.
+- If behavior is ambiguous, add a focused test (or extend the existing harness) instead of guessing.
